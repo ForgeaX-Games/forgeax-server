@@ -63,6 +63,16 @@ export interface ModelSpec {
   contextWindow: number;
   maxOutput: number;
   defaultTemperature: number;
+  // ── custom model 直连声明 (可选): 绕过 auto-resolver 前缀路由, 用声明的端点/凭证 ──
+  // 预制条目不带这些字段 → 行为不变; custom 条目带 baseUrl → 触发 auto-resolver 查表回退.
+  /** UI 显示名 (缺省用条目 id). */
+  displayName?: string;
+  /** Adapter 类型; custom model 显式声明走哪个适配器 (缺省 openai-compat). */
+  api?: "anthropic-messages" | "openai-compat" | "openai-responses";
+  /** 自定义端点 base url (custom model 触发查表回退的必填项). */
+  baseUrl?: string;
+  /** 自定义凭证, 与 baseUrl 配套. */
+  apiKey?: string;
 }
 
 // ─── Models config (per-agent / per-session) ───

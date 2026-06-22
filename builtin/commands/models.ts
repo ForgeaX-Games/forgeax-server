@@ -136,7 +136,11 @@ function loadDiskCatalog(ctx: { paths: { user(): { modelsFile(): string } } }):
     const out: Record<string, Record<string, unknown>> = {};
     for (const [id, spec] of Object.entries(raw)) {
       if (spec && typeof spec === "object" && !Array.isArray(spec)) {
-        out[id] = spec as Record<string, unknown>;
+        // custom model 的 apiKey 仅供 server 内部路由 (auto-resolver 查表) 使用,
+        // 绝不透传到 list_models API 响应 —— 避免明文 key 泄露到前端浏览器.
+        const safe = { ...(spec as Record<string, unknown>) };
+        delete safe.apiKey;
+        out[id] = safe;
       } else {
         out[id] = { spec };
       }
