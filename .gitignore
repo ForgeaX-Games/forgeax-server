@@ -1,0 +1,30 @@
+node_modules/
+dist/
+.cache/
+build/
+
+bun.lockb.txt
+.bun/
+
+.DS_Store
+Thumbs.db
+
+.vscode/
+.idea/
+*.swp
+
+*.log
+npm-debug.log*
+
+.env
+.env.local
+.env.*.local
+
+*.tsbuildinfo
+
+# forgeax 运行期数据
+.forgeax/
+
+# Smoke-test artifacts (本地真 key 与生成的 markdown 报告，不进库)
+test/fixtures/user-dir/key/
+test/reports/
