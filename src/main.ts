@@ -24,24 +24,52 @@ import { resolve } from 'node:path';
   }
 }
 
+import { Hono } from 'hono';
 import { serveStatic } from 'hono/bun';
-// 产品壳:初始化编排层(forgeax-cli)并注入产品相关内容,自己只负责进程/服务/代理。
-import { createForgeaxApp } from 'forgeax-cli';
-import { getVersion } from 'forgeax-cli/api/version';
-import { loadBrand } from 'forgeax-cli/brand';
-import { defaultProjectRoot } from 'forgeax-cli/api/lib/safe-path';
-import { friendlyPath } from 'forgeax-cli/api/lib/friendly-path';
-import { mp, interfaceDist as resolveInterfaceDist } from 'forgeax-cli/lib/asset-root';
-import { FsWatcher } from 'forgeax-cli/api/lib/watcher';
-import { WsHub, createWsHandler, type WsClientData } from 'forgeax-cli/ws';
-import { getSessionManager } from 'forgeax-cli/core/session-manager';
-// 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
-import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
-// 业务能力注入(DIP):marketplace UI 资产清洗由产品壳提供,编排层不直接依赖 marketplace。
-import {
-  inspectUiAssetCanvas,
-  normalizeStandaloneUiAsset,
-} from '../../marketplace/plugins/wb-ui/src/pipelines/ui-design/ui-asset-cleanup';
+import { createFilesRouter } from './api/files';
+import { createAssetsRouter } from './api/assets';
+import { createWorkbenchRouter } from './api/workbench';
+import { createProjectsRouter } from './api/projects';
+import { createFsBrowserRouter } from './api/fs-browser';
+import { createWorkspacesRouter } from './api/workspaces';
+import { createSettingsRouter } from './api/settings';
+import { createBootSplashRouter } from './api/boot-splash';
+import { createVersionRouter, getVersion } from './api/version';
+import { createChangelogRouter } from './api/changelog';
+import { createSessionsRouter } from './api/sessions';
+import { createCommandsApiRouter } from './api/commands';
+import { createCliRouter } from './api/cli/chat';
+import { createBrandRouter, loadBrand } from './brand';
+import { createBusRouter } from './api/bus';
+import { createPluginsRouter } from './api/plugins';
+import { reloadPlugins } from './plugins/registry';
+import { createThreadsRouter } from './api/threads';
+import { createCharacterRouter } from './api/wb-character';
+import { createBgmRouter } from './api/wb-bgm';
+import { createLlmTestRouter } from './api/llm-test';
+import { createUsageRouter } from './api/usage';
+import { createToolsRouter } from './api/tools';
+import { createEventsRouter } from './api/events';
+import { createSkillsRouter } from './api/skills';
+import { createPacksRouter } from './api/packs';
+import { createRuntimeRouter } from './api/runtime';
+import { createObservatoryRouter } from './api/observatory';
+import { createCeApiShimRouter } from './api/ce-api-shim';
+import { createPrefsRouter } from './api/prefs';
+import { createLogsRouter, appendToStream, logsDir } from './api/logs';
+import { bootCliProviders } from './cli-providers';
+import { defaultProjectRoot } from './api/lib/safe-path';
+import { friendlyPath } from './api/lib/friendly-path';
+import { mp, interfaceDist as resolveInterfaceDist } from './lib/asset-root';
+import { FsWatcher } from './api/lib/watcher';
+import { WsHub, createWsHandler, type WsClientData } from './ws';
+import { initPathManager } from './fs/path-manager';
+import { ensureUserDirDefaults } from './defaults/scaffold';
+import { initSessionManager, getSessionManager } from './core/session-manager';
+import { listAllCommands } from './commands/runner';
+import { getTerminalManager } from './terminal/manager';
+import { listProviders } from './cli-providers/registry';
+import './llm/register-all';
 
 // ──────────────────────────────────────────────────────────────────────────
 // FaultBoundary — top-level process-wide exception backstop (perf-analysis-2
@@ -60,8 +88,6 @@ import {
 //     downgraded from "kill the whole process" to "log one structured line
 //     and keep serving every other session". NEVER process.exit here.
 let serverReady = false;
-// Guards the shutdown handler against double-entry (SIGINT then SIGTERM, etc.).
-let shuttingDown = false;
 
 function logFatal(kind: string, err: unknown): void {
   const e = err instanceof Error ? err : new Error(String(err));
@@ -118,38 +144,88 @@ try {
 }
 const WATCH_FS = process.env.FORGEAX_NO_WATCH !== '1';
 
+const app = new Hono();
 const hub = new WsHub();
 const watcher = new FsWatcher();
 const projectRoot = defaultProjectRoot();
 
-// 内环切换:产品壳**默认走原生内核 forgeax-core**(DIP——编排层 cli 不依赖具体内核,这里把
-// forgeax-core 注册进共享 registry;claude-code/codex 仍由 cli 自带注册)。逃生闸:显式
-// FORGEAX_KERNEL_IMPL=claude-code(或 codex)回租用内核。必须在任何 chat 之前完成。
-//
-// R3 内核归一:注册的是**连接式** adapter —— forgeax-core 经 sidecar spawn 成
-// `--serve` 子进程(与 claude-code/codex 同级),**不再 in-process**(in-process 路径已删,
-// 不留逃生)。详见 forgeax-core-adapter.ts。
-if (!process.env.FORGEAX_KERNEL_IMPL?.trim()) {
-  process.env.FORGEAX_KERNEL_IMPL = 'forgeax-core';
-}
-if (process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core') {
-  registerForgeaxCoreKernel();
+const pm = initPathManager();
+await ensureUserDirDefaults(pm);
+const sm = initSessionManager(pm);
+
+// Phase B3 — plugin scan MUST finish before scheduler.start(): host_tool_bridge
+// enumerates listTools() on agent attach; if agents boot first, character:* /
+// narrative:* tools stay empty for the whole session until a lucky re-sync.
+{
+  const snap = await reloadPlugins();
+  const issueCount = snap.scanErrors.length + snap.mergeIssues.length + snap.kinds.issues.length;
+  console.log(
+    `[forgeax-server] plugins loaded: ${snap.manifests.length} manifest(s) · ` +
+      `${snap.kinds.workbench.length} workbench · ${snap.kinds.skills.length} skill · ` +
+      `${snap.kinds.agents.length} agent · ${issueCount} issue(s)`,
+  );
+  for (const e of snap.scanErrors) console.warn(`[forgeax-server] plugin scan error (${e.layer}): ${e.originPath} — ${e.reason}`);
+  for (const i of snap.mergeIssues) console.warn(`[forgeax-server] plugin merge issue: ${i.pluginId} — ${i.detail}`);
+  for (const i of snap.kinds.issues) console.warn(`[forgeax-server] plugin kind issue: ${i.pluginId} — ${i.reason}`);
 }
 
-// 初始化编排层 + 注入产品上下文。createForgeaxApp(forgeax-cli)负责 boot(path /
-// session / plugins / cli-providers / brand)并挂载全部 /api 路由,返回已就绪的 Hono
-// app。产品壳(本文件)只在其上叠加:静态资源(SPA / 插件 dist)、引擎/界面反向代理、
-// WS、Bun.serve、文件 watcher。这是"产品层初始化并注入编排层"的落点;换产品 = 换这层注入。
-const { app } = await createForgeaxApp({
-  projectRoot,
-  version: VERSION,
-  broadcast: (msg) => hub.broadcast(msg as Parameters<typeof hub.broadcast>[0]),
-  rebindWatcher: WATCH_FS ? (root) => watcher.rebind(root) : undefined,
-  uiAssetCleanup: { inspectUiAssetCanvas, normalizeStandaloneUiAsset },
+const restored = await sm.bootAutoStart();
+for (const s of restored) s.scheduler.start();
+console.log(`[forgeax-server] sessions restored: ${restored.length}`);
+
+// Commands transport — stateless directory scanner (agenteam-os-ref parity).
+// Modules live at `packages/server/commands/*.ts`; runner re-scans on every
+// list/query/execute call (mtime cache-bust dynamic import). Boot-time pass
+// is purely diagnostic: surfaces _error:<file> specs early so a broken module
+// shows up in startup log instead of silently 500-ing the first caller.
+{
+  const specs = await listAllCommands({ sm, paths: pm });
+  const real = specs.filter((s) => !s.name.startsWith("_error:"));
+  const bad = specs.filter((s) => s.name.startsWith("_error:"));
+  console.log(`[forgeax-server] commands discovered: ${real.length} ok · ${bad.length} broken`);
+  for (const b of bad) console.warn(`[forgeax-server] ${b.name}: ${b.description}`);
+}
+
+// Temporary cli-providers bridge (claude-code only for now). Independent REST
+// branch under /api/cli/*, every response carries `Deprecation: true`. Will be
+// replaced by commands.attach_script_agent + ScriptAgent at forgeax-v1.0.
+await bootCliProviders();
+
+// ── Server-side logging (mirrors the browser log sink into .forgeax/logs) ─────
+// Server errors previously hit ONLY stderr (uncaughtException/logFatal); the UI
+// never saw them and they weren't on disk with the browser streams. Capture them
+// into the 'server' stream (readable via GET /api/logs/server).
+const LOGS_DIR = logsDir(projectRoot);
+function serverLog(entry: Record<string, unknown>): void {
+  // Fire-and-forget; appendToStream is async + serialized + size-rotated and
+  // never throws into the request path.
+  void appendToStream(LOGS_DIR, 'server', [{ ts: Date.now(), ...entry }]).catch(() => {});
+}
+
+// Request logger — HIGH SIGNAL ONLY (5xx or slow ≥1s). Logging every request
+// would flood the stream with health polls / SSE / fs events (the disk-flood we
+// are hardening against). Registered before routes so it wraps them all.
+app.use('*', async (c, next) => {
+  const t0 = performance.now();
+  await next();
+  const ms = Math.round(performance.now() - t0);
+  const status = c.res.status;
+  if ((status >= 500 || ms >= 1000) && !c.req.path.startsWith('/api/logs')) {
+    serverLog({ kind: 'request', method: c.req.method, path: c.req.path, status, ms });
+  }
 });
 
-app.get('/api/health', (c) =>
-  c.json({
+// Global error handler — previously absent, so a thrown route handler became an
+// opaque 500 with the cause only on stderr. Capture + return a clean 500.
+app.onError((err, c) => {
+  serverLog({ kind: 'error', method: c.req.method, path: c.req.path, message: err.message, stack: err.stack });
+  console.error('[forgeax-server] unhandled route error:', c.req.method, c.req.path, err);
+  return c.json({ error: 'internal error' }, 500);
+});
+
+app.get('/api/health', (c) => {
+  const mem = process.memoryUsage();
+  return c.json({
     status: 'ok',
     version: VERSION,
     name: '@forgeax/server',
@@ -157,8 +233,10 @@ app.get('/api/health', (c) =>
     uptime: process.uptime(),
     projectRoot: friendlyPath(projectRoot),
     wsClients: hub.size(),
-  }),
-);
+    // Resource usage for the status-bar RES chip (rss = process working set).
+    mem: { rss: mem.rss, heapUsed: mem.heapUsed },
+  });
+});
 
 console.log(`[forgeax-server] project root = ${projectRoot}`);
 
@@ -266,19 +344,6 @@ app.use('/plugins/wb-narrative/*', serveStatic({
   },
 }));
 
-// wb-bgm — Music & BGM workbench plugin (audio/SFX library SPA). Audio LOGIC
-// lives in the marketplace plugin (registry tools) + the orchestration ce-api
-// gateway (/reel-tts, /reel-music); this just serves the vendored SPA. Restored
-// in Phase 2d alongside the audio-gateway port.
-const wbBgmDist = mp('wb-bgm', 'dist');
-app.use('/plugins/wb-bgm/*', serveStatic({
-  root: wbBgmDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-bgm/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
-
 const wbSkillDist = mp('wb-skill', 'dist');
 app.use('/plugins/wb-skill/*', serveStatic({
   root: wbSkillDist,
@@ -357,6 +422,19 @@ app.use('/plugins/wb-observatory/*', serveStatic({
   },
 }));
 
+// wb-bgm — Music & BGM plugin. Vendored vanilla-TS SPA (audio/SFX library)
+// built with vite `base: /plugins/wb-bgm/` so emitted asset URLs resolve
+// behind this mount. The audio LOGIC now lives in the marketplace plugin
+// (registry tools via /api/tools/call); only /api/wb/bgm/cos-proxy remains here.
+const wbBgmDist = resolve(import.meta.dir, '../../marketplace/plugins/wb-bgm/dist');
+app.use('/plugins/wb-bgm/*', serveStatic({
+  root: wbBgmDist,
+  rewriteRequestPath: (p) => {
+    const rest = p.replace(/^\/plugins\/wb-bgm/, '') || '/';
+    return rest === '/' ? '/index.html' : rest;
+  },
+}));
+
 // wb-scene — node-pipeline editor (3-pane: editor + renderer + assetstore).
 // Editor is the iframe entry; built dist with vite `base: /plugins/wb-scene/`
 // is served here. Renderer (9556) + AssetStore (9560) remain separate dev
@@ -397,6 +475,9 @@ app.all('/api/v1/*', async (c) => {
     method: c.req.method,
     headers: c.req.raw.headers,
     body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
+    // duplex: 'half' is needed for streaming request bodies; recent
+    // @types/node / lib.dom.d.ts now ship the type so the @ts-expect-error
+    // it used to need has been dropped.
     duplex: 'half',
   });
   return new Response(resp.body, { status: resp.status, headers: resp.headers });
@@ -432,8 +513,69 @@ app.all('/api/narrative/*', async (c) => {
   }
 });
 
-// 注:全部 /api/* + /__ce-api__ 路由由 createForgeaxApp(编排层)挂载(见上)。
-// 产品壳只追加下面的静态资源 / 代理 / SPA fallback。
+app.route('/api/files', createFilesRouter());
+app.route('/api/assets', createAssetsRouter());
+app.route('/api/workbench', createWorkbenchRouter());
+app.route('/api/projects', createProjectsRouter());
+app.route('/api/fs', createFsBrowserRouter());
+app.route('/api/workspaces', createWorkspacesRouter({
+  broadcast: (msg) => hub.broadcast(msg as Parameters<typeof hub.broadcast>[0]),
+  rebindWatcher: WATCH_FS ? (root) => watcher.rebind(root) : undefined,
+}));
+app.route('/api/settings', createSettingsRouter());
+app.route('/api/boot-splash', createBootSplashRouter());
+app.route('/api/version', createVersionRouter());
+app.route('/api/changelog', createChangelogRouter());
+app.route('/api/sessions', createSessionsRouter());
+app.route('/api/prefs', createPrefsRouter(projectRoot));
+app.route('/api/logs', createLogsRouter(projectRoot));
+app.route('/api/commands', createCommandsApiRouter());
+app.route('/api/cli', createCliRouter());
+app.route('/api/brand', createBrandRouter());
+// /api/bus + /api/threads —— R2 把 src/bus 删掉了,但 interface 的
+// Sidebar/AgentsPanel/BuildBadge/dashboard-api 都还在调,这里给个 stub
+// 让 UI 在 R3 重写之前不至于 404 满屏。详见 api/bus.ts + api/threads.ts。
+app.route('/api/bus', createBusRouter());
+app.route('/api/plugins', createPluginsRouter());
+app.route('/api/threads', createThreadsRouter());
+
+// wb-character —— canonical 角色编辑器 API. 共享 @server-lib/character-forge
+// handlers.ts SSOT (5 真实 pipeline + 7 stub),dispatchToSurface 钩子让
+// iframe panel 在 generate 完成后自刷新。
+// 2026-05-21 Phase 6: wb-character-forge plugin 已删除,此为唯一入口。
+app.route('/api/wb/character', createCharacterRouter({
+  projectRoot,
+  env: process.env as Record<string, string | undefined>,
+}));
+
+// /api/wb/bgm —— residual host route for wb-bgm. The library/attach LOGIC moved
+// to the marketplace plugin (Host ToolRegistry); this mount now only serves the
+// generic /cos-proxy binary stream the SPA's <audio> preview + zip download use.
+app.route('/api/wb/bgm', createBgmRouter());
+
+// /api/llm/test — Model Lab one-shot completion endpoint (Stage E). Wraps
+// lib/llm-gateway so SettingsPanel → Model Lab can fire prompts at any
+// configured model with caller-tuned temperature/top_p/max_tokens.
+app.route('/api/llm', createLlmTestRouter());
+app.route('/api/usage', createUsageRouter());
+app.route('/api/tools', createToolsRouter());
+app.route('/api/events', createEventsRouter());
+app.route('/api/skills', createSkillsRouter());
+app.route('/api/packs', createPacksRouter());
+app.route('/api/runtime', createRuntimeRouter());
+app.route('/api/observatory', createObservatoryRouter());
+
+// /__ce-api__/* —— wb-character iframe shim (Phase 3). The plugin submodule's
+// 88 fetch sites still hit the legacy vite-dev plugin endpoints; this router
+// terminates them on the studio host and forwards to lib/llm-gateway,
+// lib/image-gateway (via ImageDispatcher), and FS persistence under
+// <projectRoot>/.forgeax/wb-character/. Deferred endpoints (monster, video,
+// MCP-backed pipelines) return success:false envelopes so the iframe shows
+// a friendly toast instead of a network failure.
+app.route('/__ce-api__', createCeApiShimRouter({
+  projectRoot,
+  env: process.env as Record<string, string | undefined>,
+}));
 
 // ──────────────────────────────────────────────────────────────────────────
 // Interface SPA (single-origin form) — Tauri desktop / web-server prod.
@@ -593,6 +735,7 @@ try {
         headers,
         body: req.body,
         redirect: 'manual',
+        // Bun streams the request body with duplex:'half'.
         duplex: 'half',
       }).catch(
         (e) => new Response(`engine preview unavailable: ${e}`, { status: 502 }),
@@ -629,39 +772,34 @@ serverReady = true;
 console.log(`[forgeax-server] listening on http://${server.hostname}:${server.port}`);
 console.log(`[forgeax-server] websocket on ws://${server.hostname}:${server.port}/ws`);
 
-// R3-15:存在 user-imported soul-pack 但内核/sidecar 被关(逃生回旧路径)→ loud warn
-// (不可信 pack 缺凭据保险箱/进程监督)。内核+sidecar 现默认开,仅当被显式关掉才告警。
-try {
-  const importedDir = `${process.env.FORGEAX_PROJECT_ROOT ?? process.cwd()}/.forgeax/souls-imported`;
-  const { existsSync, readdirSync } = await import('node:fs');
-  const { kernelEnabled, sidecarEnabled } = await import('forgeax-cli/kernel/kernel-mode');
-  const guarded = kernelEnabled() && sidecarEnabled();
-  if (!guarded && existsSync(importedDir) && readdirSync(importedDir).length > 0) {
-    console.warn('[forgeax-server] ⚠️  user-imported soul-pack 存在但内核/sidecar 被关 —— 不可信 pack 缺凭据保险箱/进程监督。移除 FORGEAX_KERNEL=cli / FORGEAX_SIDECAR=off / .forgeax/use-cli 以恢复保护。');
-  }
-} catch { /* ignore */ }
+// Child-process reaper (perf-analysis-2 server P0-1, 维度 1). On exit the
+// server MUST kill every child it spawned, or they accumulate as orphans —
+// the physical root cause of stray vite / EADDRINUSE / black-screen between
+// restarts. Long-lived children owned by this process:
+//   • bash shell pool — TerminalManager.sessions (cleanup(0) SIGTERMs each)
+//   • cli-providers — each provider.shutdown() tears down any app-server /
+//     long-lived state it holds (claude/cursor are per-turn no-ops today;
+//     codex's shared app-server gets killed here if alive).
+// Per-turn transient spawns (claude/codex/cursor CLI turns, zip/unzip,
+// --version probes) are bounded by their own AbortSignal/exit and are not an
+// orphan source at shutdown, so they are deliberately not enumerated here.
+let shuttingDown = false;
 
-// R3-02 / ship-gate 闸#3:**kernel-only 模式**(FORGEAX_KERNEL_ONLY=1)下,把真模型 key 交给 sidecar
-// 后从 **server 进程 env 擦除** —— 真 key 连 server 都不持(防 server 被攻破泄密)。默认关:旧 in-process
-// 路径(auto-resolver / claude-code provider)+ 设置页仍需 key,故仅在显式 kernel-only(内核为唯一对话
-// 路径)时才擦。擦前先确保 sidecar 起来且拿到 key;sidecar 起不来则**不擦**(否则无可用路径)。
-if (process.env.FORGEAX_KERNEL_ONLY === '1') {
-  try {
-    const { kernelEnabled, sidecarEnabled } = await import('forgeax-cli/kernel/kernel-mode');
-    if (!kernelEnabled() || !sidecarEnabled()) {
-      console.warn('[forgeax-server] FORGEAX_KERNEL_ONLY=1 但内核/sidecar 未启用 —— 跳过擦 key(否则无可用模型路径)。');
-    } else {
-      const { ensureSidecar } = await import('forgeax-cli/kernel/sidecar-singleton');
-      await ensureSidecar(); // boot 即起 sidecar,真 key 随 spawn env 交给它(cred-vault 持有)
-      const before = Boolean(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY);
-      delete process.env.ANTHROPIC_API_KEY;
-      delete process.env.OPENAI_API_KEY;
-      console.log(`[forgeax-server] 🔒 kernel-only:真模型 key 已交 sidecar 并从 server env 擦除(was present=${before})。子进程经 cred-vault scoped token,server 不再持真 key(R3-02)。`);
+const reapChildren = async (): Promise<void> => {
+  // 1. cli-providers teardown (these were implemented but NEVER called before).
+  for (const p of listProviders()) {
+    try {
+      const r = p.shutdown?.();
+      if (r && typeof (r as Promise<void>).then === 'function') {
+        await Promise.race([r, new Promise((res) => setTimeout(res, 3000))]);
+      }
+    } catch (e) {
+      logFatal('provider-shutdown', e);
     }
-  } catch (e) {
-    console.warn(`[forgeax-server] kernel-only 擦 key 跳过(sidecar 起不来:${(e as Error).message})—— 保留 key 以免无可用路径。`);
   }
-}
+  // 2. bash shell pool — cleanup(0) SIGTERMs every pooled shell + clears maps.
+  try { getTerminalManager().cleanup(0); } catch (e) { logFatal('terminal-cleanup', e); }
+};
 
 const shutdown = async (sig: string) => {
   if (shuttingDown) return;
@@ -674,10 +812,17 @@ const shutdown = async (sig: string) => {
   // live session（per-Session logger 各自 close）+ detach console bridge +
   // close SM 单例 logger，确保 `<userRoot>/debug.log` 尾部 buffer 落盘。
   try { await getSessionManager().shutdown(); } catch { /* SM 可能未 init */ }
-  // Spawned children (incl. the agent-host sidecar) are supervised by the
-  // sidecar/forgeax-cli runtime now, not by the thin server shell — they tear
-  // themselves down on the SM shutdown above / their own exit handlers.
+  // Reap every spawned child so none survive as an orphan.
+  await reapChildren();
   process.exit(0);
 };
 process.on('SIGINT', () => void shutdown('SIGINT'));
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+// Last-resort sync backstop: if the process is exiting through any path that
+// didn't run the async shutdown above (e.g. uncaughtException during startup,
+// explicit process.exit elsewhere), still SIGTERM the bash pool synchronously
+// so we never leak the shells. cleanup(0) is sync + idempotent.
+process.on('exit', () => {
+  try { getTerminalManager().cleanup(0); } catch { /* best-effort */ }
+});

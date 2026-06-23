@@ -3,25 +3,31 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Product shell: spawn engine/interface, host the forgeax-cli orchestration layer in-process, serve SPA + vite proxy, HTTP+WS bridge for UI",
+  "description": "Local daemon orchestrator: spawn engine/interface, in-process host forgeax-cli, HTTP+WS bridge for UI",
   "main": "src/main.ts",
   "bin": {
-    "forgeax-server": "./bin/forgeax-server"
+    "forgeax-server": "./bin/forgeax-server",
+    "forgeax-pack": "./bin/forgeax-pack"
   },
   "scripts": {
     "dev": "bun --watch src/main.ts",
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "e2e:inner-ring": "bun test/inner-ring-e2e.ts",
-    "e2e:full": "bun test/full-flow-e2e.ts"
+    "test:e2e": "bun test/e2e-multi-cli.ts",
+    "test:e2e-p6c": "bun test/e2e-p6c-reload-resume.ts",
+    "test:e2e-dashboard": "bun test/e2e-dashboard-api.ts"
   },
   "dependencies": {
-    "@forgeax/agent-host": "workspace:*",
-    "@forgeax/agent-runtime": "workspace:*",
-    "@forgeax/forgeax-core": "workspace:*",
-    "forgeax-cli": "workspace:*",
-    "hono": "^4.6.0"
+    "@ag-ui/core": "^0.0.53",
+    "@google/genai": "^1.0.0",
+    "chokidar": "^4.0.0",
+    "hono": "^4.6.0",
+    "minimatch": "^10.2.5",
+    "sharp": "^0.34.5",
+    "yaml": "^2.8.2",
+    "zod": "^3.25.0",
+    "@forgeax/engine-project": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "^1.3.13",

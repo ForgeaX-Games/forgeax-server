@@ -25,10 +25,8 @@
       "@forgeax/types/*": ["../../types/src/*"],
       "@forgeax/agent-runtime": ["../../agent-runtime/src/index.ts"],
       "@forgeax/agent-runtime/*": ["../../agent-runtime/src/*"],
-      "@forgeax/forgeax-core": ["../../core/src/index.ts"],
-      "@forgeax/forgeax-core/*": ["../../core/src/*"],
-      "@server-lib/character-forge": ["../../cli/src/lib/character-forge/index.ts"],
-      "@server-lib/character-forge/*": ["../../cli/src/lib/character-forge/*"]
+      "@server-lib/character-forge": ["lib/character-forge/index.ts"],
+      "@server-lib/character-forge/*": ["lib/character-forge/*"]
     }
   },
   "include": ["src", "bin", "test", "builtin"]
