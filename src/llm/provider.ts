@@ -1,19 +1,18 @@
 /** LLM Provider registry — config-driven adapter factory with fallback chain support */
 
-import { readFileSync, existsSync, statSync } from "node:fs";
 import { prepareMessagesForModel } from "../message/modality.js";
 import {
   createPendingToolMessages,
   createToolResultMessage,
 } from "../context-window/tool-normalizer.js";
-import type { ModelSpec, ModelsConfig, ReasoningEffort } from "../core/types.js";
+import type { ModelsConfig, ReasoningEffort } from "../core/types.js";
 import { responseToAssistantMessage } from "./stream.js";
 import type { LLMProvider } from "./types.js";
 import { withRetry, calculateDelay, type RetryOptions, type RetryInfo } from "./retry.js";
 import { annotateLLMError, classifyLLMError, getRecommendedDelay } from "./errors.js";
 import { sleep } from "../utils.js";
-import { getPathManager } from "../fs/path-manager.js";
 import { resolveModelAdapter } from "./auto-resolver.js";
+import { getModelSpec } from "./model-catalog.js";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -49,46 +48,11 @@ export function parseModelSpec(raw: string): { model: string; keySection?: strin
   return { model: raw };
 }
 
-// ── Model catalog cache ─────────────────────────────────────────
-// mtime-keyed cache. getModelSpec() is hit 2-6 times per LLM turn
-// (prepareInbound + materialize* + chatStream); without this cache each call
-// would re-parse models.json. Falls through to a fresh read when stat fails.
-let _modelCatalogCache: { path: string; mtime: number; parsed: Record<string, ModelSpec> } | null = null;
-
-// ── Model catalog loading (key/models.json) ──────────────────────
-
-const DEFAULT_SPEC: ModelSpec = {
-  input: ["text"],
-  reasoning: false,
-  contextWindow: 128000,
-  maxOutput: 4096,
-  defaultTemperature: 0.7,
-};
-
-/** Always re-read from disk so model spec changes take effect without restart.
- *  Uses mtime to skip re-parse when the file is unchanged. */
-function loadModelCatalog(): Record<string, ModelSpec> {
-  const p = getPathManager().user().modelsFile();
-  if (!existsSync(p)) return {};
-  let mtime = 0;
-  try { mtime = statSync(p).mtimeMs; } catch { /* fall through */ }
-  if (_modelCatalogCache && _modelCatalogCache.path === p && _modelCatalogCache.mtime === mtime) {
-    return _modelCatalogCache.parsed;
-  }
-  try {
-    const parsed = JSON.parse(readFileSync(p, "utf-8")) as Record<string, ModelSpec>;
-    _modelCatalogCache = { path: p, mtime, parsed };
-    return parsed;
-  } catch {
-    if (_modelCatalogCache && _modelCatalogCache.path === p) return _modelCatalogCache.parsed;
-    return {};
-  }
-}
-
-export function getModelSpec(model: string): ModelSpec {
-  const catalog = loadModelCatalog();
-  return catalog[model] ?? DEFAULT_SPEC;
-}
+// ── Model catalog (key/models.json) ─────────────────────────────
+// catalog 读取 + mtime 缓存抽到 ./model-catalog.ts (供 auto-resolver 前缀 miss
+// 时查表回退共用, 避免 provider ↔ auto-resolver 循环依赖). 此处 re-export 保持
+// conscious-agent / summary-compaction 的现有 import 路径不变.
+export { getModelSpec } from "./model-catalog.js";
 
 // ── Effort downgrade ─────────────────────────────────────────────
 

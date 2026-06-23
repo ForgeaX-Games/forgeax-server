@@ -8,7 +8,8 @@ import { createSettingsRouter } from '../src/api/settings';
 // — the Settings drawer parses .allowed[] to render the editable-keys list.
 // EXPECTED_ALLOWED_COUNT mirrors SAFE_ENV_KEYS.size in src/api/settings.ts;
 // bump it when a new multimodal key joins the allowlist.
-const EXPECTED_ALLOWED_COUNT = 13;
+// 21 = 15 base + 6 FORGEAX_CUSTOM_* (custom model 一处声明).
+const EXPECTED_ALLOWED_COUNT = 21;
 describe('PUT /api/settings/env — SAFE_ENV_KEYS allowlist', () => {
   async function putEnv(body: unknown): Promise<Response> {
     const r = createSettingsRouter();
