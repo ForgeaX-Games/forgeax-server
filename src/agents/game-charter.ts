@@ -73,7 +73,7 @@ The static scene is the engine's NATIVE scene pack \`scene.pack.json\` (the edit
         "MeshFilter": { "assetHandle": 0 },             // index into refs[] → a mesh GUID
         "MeshRenderer": { "material": 6 }               // index into refs[] → a material GUID
       } },
-      // lights: "DirectionalLight": {directionX,Y,Z, colorR,G,B, intensity} (+ "DirectionalLightShadow":{} for shadows); "PointLight": {colorR,G,B, intensity, range}
+      // lights: "DirectionalLight": {directionX,Y,Z, colorR,G,B, intensity, castShadow:true} (shadow fields merged onto DirectionalLight, gated by castShadow — engine #479); "PointLight": {colorR,G,B, intensity, range}
     ] },
     "refs": ["<cube-guid>", "...", "<material-guid>", "..."] },        // GUIDs the indices point at
   { "guid": "<material-guid>", "kind": "material",

@@ -15,7 +15,7 @@ function monorepoRoot(): string {
 }
 
 const ROOT = monorepoRoot();
-const ENGINE_SRC_DIR = join(ROOT, 'packages', 'build', 'engine-src');
+const ENGINE_SRC_DIR = join(ROOT, 'packages', 'editor', 'packages', 'play-runtime');
 
 export function repointEngineForgeaXSymlink(workspaceRoot: string): string {
   if (!existsSync(ENGINE_SRC_DIR)) {
@@ -35,6 +35,6 @@ export function repointEngineForgeaXSymlink(workspaceRoot: string): string {
       throw new Error(`${link} is a real directory; cannot hot-switch — restart stack manually`);
     }
   }
-  symlinkSync(target, link);
+  symlinkSync(target, link, 'junction');
   return target;
 }

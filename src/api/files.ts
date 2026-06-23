@@ -46,6 +46,14 @@ export function createFilesRouter() {
       if (msg.startsWith('is a directory')) {
         return c.json({ error: msg }, 400);
       }
+      // `optional=1`: the caller probes a file that legitimately may not exist
+      // (per-developer launcher state like play-config.json). Return 200
+      // { exists:false } so the browser's network panel logs no red 404 for an
+      // expected-absent file. 404 stays the default for genuine missing-file
+      // errors every other caller relies on.
+      if (c.req.query('optional') === '1') {
+        return c.json({ exists: false, content: null });
+      }
       return c.json({ error: 'not found' }, 404);
     }
   });
