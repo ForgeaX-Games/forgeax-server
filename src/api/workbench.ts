@@ -184,7 +184,16 @@ async function listAllGames(root: string): Promise<Array<{ slug: string; name: s
     for (const slug of readdirSync(gamesDir)) {
       if (slug.startsWith('.') || slug.startsWith('_')) continue;
       const dir = resolve(gamesDir, slug);
-      const st = statSync(dir);
+      // Guard the ENTIRE per-game body: a dangling symlink (e.g. a stale
+      // .forgeax/games/<old-slug> link left behind by a rename whose target was
+      // deleted) makes statSync throw ENOENT. Previously that propagated to the
+      // outer catch and aborted the WHOLE loop — silently dropping every game
+      // listed after the bad entry (observed: a stale `test3` link hid
+      // cow-survivor/fps/shoot-opt). Skip the bad entry instead of nuking the list.
+      let st;
+      try {
+        st = statSync(dir);
+      } catch { continue; }
       if (!st.isDirectory()) continue;
       let name = slug;
       try {
