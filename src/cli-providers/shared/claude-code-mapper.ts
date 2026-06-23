@@ -1,4 +1,4 @@
-// Stateful translator: one Claude Code ndjson event → 0..N ChatEvents.
+// Stateful translator: one the reference agent CLI ndjson event → 0..N ChatEvents.
 // Schema captured under /tmp/cli-providers-cron-state.json phases.2.research.
 // Streaming flow:
 //   system.init                                  → ignore (just records session_id)

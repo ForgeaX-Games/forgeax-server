@@ -102,7 +102,7 @@ const DEFAULT_BINARY = 'claude';
 
 export class ClaudeCodeProvider implements CliProvider {
   readonly id = 'claude-code' as const;
-  readonly displayName = 'Claude Code';
+  readonly displayName = 'the reference agent CLI';
   readonly capabilities = CAPABILITIES;
 
   private binary = DEFAULT_BINARY;

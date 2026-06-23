@@ -41,7 +41,7 @@ export default {
   name: "ask_user",
   description:
     // 命中率主要靠这段 model-facing 描述驱动。forgeax 不把工具 prompt 注入系统
-    // 提示(guidance 仅用于 observatory),所以这里把 Claude Code 的两段都合进
+    // 提示(guidance 仅用于 observatory),所以这里把 the reference agent CLI 的两段都合进
     // description:① 短描述(tools 数组那条)②系统提示里的 AskUserQuestion 引导
     // (numbered use-cases + Usage notes),原文措辞尽量保留;plan-mode 那段不适用,删。
     "Asks the user multiple choice questions to gather information, clarify " +

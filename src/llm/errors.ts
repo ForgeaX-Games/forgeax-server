@@ -411,7 +411,7 @@ export function isRetryable(err: unknown): boolean {
  *    "context_length_exceeded"（DeepSeek/Kimi/Qwen 同款文案族）
  *  - 部分网关: 413 Payload Too Large
  *  这类错误重试同样会失败，但 compact 后可救 —— agent loop 据此触发
- *  reactive compact 重试（对齐老项目 02.8 / Claude Code tryReactiveCompact）。 */
+ *  reactive compact 重试（对齐老项目 02.8 / the reference agent CLI tryReactiveCompact）。 */
 export function isContextOverflowError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? "");
   return /prompt is too long|maximum context length|context[ _]length[ _]exceeded|too many tokens|exceeds? (the )?(model'?s? )?(maximum )?context|input is too long|413 payload too large/i.test(

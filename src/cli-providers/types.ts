@@ -1,4 +1,4 @@
-// CliProvider — the abstraction over agent backends (forgeax-cli, Claude Code,
+// CliProvider — the abstraction over agent backends (forgeax-cli, the reference agent CLI,
 // Codex, future homegrown providers). See docs/CLI-PROVIDERS-DESIGN.md.
 //
 // Phase 1: types only. ChatEvent here is a strict superset of the legacy

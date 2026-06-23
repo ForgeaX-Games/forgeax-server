@@ -1,4 +1,4 @@
-// forgeax-managed Claude Code settings, injected per chat turn via the CLI's
+// forgeax-managed the reference agent CLI settings, injected per chat turn via the CLI's
 // `--settings <json>` flag (see providers/claude-code.ts). This is how forgeax
 // makes "dangerous operations pop the approval card" deterministic and
 // MACHINE-INDEPENDENT — instead of relying on whatever the operator happens to
@@ -10,7 +10,7 @@
 // `--permission-prompt-tool` (our approval card) is therefore only consulted
 // for ops OUTSIDE the workspace or commands matching an `ask`/`deny` rule. Since
 // Forge writes games into cwd-relative `.forgeax/games/<slug>/`, the card almost
-// never fired ("审批不容易触发"). Claude Code's `permissions.ask` rules force a
+// never fired ("审批不容易触发"). the reference agent CLI's `permissions.ask` rules force a
 // prompt REGARDLESS of permission-mode, and when a `--permission-prompt-tool` is
 // wired that prompt becomes our card. So an injected `ask` list reliably gates
 // the dangerous stuff while normal game-dev edits stay smooth.
