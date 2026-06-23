@@ -35,7 +35,7 @@ const FILE_TOOL_OPS: Record<string, FileActivityOp> = {
 };
 
 /** Pull the absolute file path out of a Write/Edit/NotebookEdit/MultiEdit
- *  arg object. the reference agent CLI's tool spec mandates absolute paths for
+ *  arg object. Claude Code's tool spec mandates absolute paths for
  *  `file_path`, so we trust that and just defensive-check the shape. */
 function extractToolFilePath(args: unknown): string | null {
   if (!args || typeof args !== 'object') return null;
