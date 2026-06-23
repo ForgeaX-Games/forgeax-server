@@ -7,6 +7,19 @@ test("未配 FORGEAX_CUSTOM_MODEL → null (不启用 custom)", () => {
   expect(parseCustomModelFromEnv({})).toBeNull();
 });
 
+test("配 MODEL 但缺 BASE_URL → null + warn (避免'看得见选不通')", () => {
+  const warns: string[] = [];
+  const orig = console.warn;
+  console.warn = (m: string) => warns.push(m);
+  try {
+    const r = parseCustomModelFromEnv({ FORGEAX_CUSTOM_MODEL: "orphan-model" });
+    expect(r).toBeNull();
+    expect(warns.some((w) => /FORGEAX_CUSTOM_BASE_URL 缺失/.test(w))).toBe(true);
+  } finally {
+    console.warn = orig;
+  }
+});
+
 test("配齐 → 解析出 id + spec (含 baseUrl/apiKey/api/displayName)", () => {
   const r = parseCustomModelFromEnv({
     FORGEAX_CUSTOM_MODEL: "glm-5.2",

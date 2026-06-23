@@ -27,6 +27,14 @@ const SAFE_ENV_KEYS = new Set([
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_BASE_URL',
   'FORGEAX_MODEL',
+  // Custom model (.env 一处声明; auto-resolver 查表路由 + ModelPicker 列出).
+  // 见 src/llm/custom-model-env.ts。NAME 可能含空格/中文括号 → serializeEnv 加引号。
+  'FORGEAX_CUSTOM_MODEL',
+  'FORGEAX_CUSTOM_BASE_URL',
+  'FORGEAX_CUSTOM_API_KEY',
+  'FORGEAX_CUSTOM_API',
+  'FORGEAX_CUSTOM_NAME',
+  'FORGEAX_CUSTOM_CONTEXT_WINDOW',
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
   'GEMINI_API_KEY',
@@ -62,13 +70,17 @@ function parseEnv(raw: string): Record<string, string> {
 function serializeEnv(env: Record<string, string>, original?: string): string {
   // Preserve any comments / unknown lines from the original, just update
   // recognized keys in place; append new keys at the end.
+  // 值含空格 / shell 特殊字符 (如 FORGEAX_CUSTOM_NAME="GLM 5.2 (智谱)") 时加双引号,
+  // 否则 run.sh 等 `source .env` 的脚本会在括号处报 syntax error。
+  const fmt = (v: string): string =>
+    /[\s"'#()$`&|;<>]/.test(v) ? `"${v.replace(/(["\\$`])/g, "\\$1")}"` : v;
   const seen = new Set<string>();
   const lines: string[] = [];
   if (original) {
     for (const line of original.split('\n')) {
       const m = /^\s*([A-Z_][A-Z0-9_]*)\s*=/.exec(line);
       if (m && env[m[1]] !== undefined) {
-        lines.push(`${m[1]}=${env[m[1]]}`);
+        lines.push(`${m[1]}=${fmt(env[m[1]])}`);
         seen.add(m[1]);
       } else {
         lines.push(line);
@@ -76,7 +88,7 @@ function serializeEnv(env: Record<string, string>, original?: string): string {
     }
   }
   for (const [k, v] of Object.entries(env)) {
-    if (!seen.has(k)) lines.push(`${k}=${v}`);
+    if (!seen.has(k)) lines.push(`${k}=${fmt(v)}`);
   }
   return lines.join('\n');
 }
@@ -112,6 +124,13 @@ export function createSettingsRouter(): Hono {
         ANTHROPIC_API_KEY: maskKey(env.ANTHROPIC_API_KEY),
         ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL ?? null,
         FORGEAX_MODEL: env.FORGEAX_MODEL ?? null,
+        // Custom model: API_KEY 脱敏, 其余明文 (用户需看到/编辑 id / base url / name)。
+        FORGEAX_CUSTOM_MODEL: env.FORGEAX_CUSTOM_MODEL ?? null,
+        FORGEAX_CUSTOM_BASE_URL: env.FORGEAX_CUSTOM_BASE_URL ?? null,
+        FORGEAX_CUSTOM_API_KEY: maskKey(env.FORGEAX_CUSTOM_API_KEY),
+        FORGEAX_CUSTOM_API: env.FORGEAX_CUSTOM_API ?? null,
+        FORGEAX_CUSTOM_NAME: env.FORGEAX_CUSTOM_NAME ?? null,
+        FORGEAX_CUSTOM_CONTEXT_WINDOW: env.FORGEAX_CUSTOM_CONTEXT_WINDOW ?? null,
         OPENAI_API_KEY: maskKey(env.OPENAI_API_KEY),
         OPENAI_BASE_URL: env.OPENAI_BASE_URL ?? null,
         GEMINI_API_KEY: maskKey(env.GEMINI_API_KEY),

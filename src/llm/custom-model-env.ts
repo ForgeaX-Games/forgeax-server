@@ -19,12 +19,24 @@ const DEFAULT_CUSTOM_CONTEXT_WINDOW = 1_000_000;
 const VALID_API = new Set(["anthropic-messages", "openai-compat", "openai-responses"]);
 
 /** 从 env 解析单个 custom model 条目; 未配 FORGEAX_CUSTOM_MODEL 返回 null.
- *  返回 [id, ModelSpec] 便于调用方直接并入 catalog map. */
+ *  返回 [id, ModelSpec] 便于调用方直接并入 catalog map.
+ *  FORGEAX_CUSTOM_MODEL 已设但 FORGEAX_CUSTOM_BASE_URL 缺失时返回 null 并打 warn ——
+ *  否则 catalog 会注入一条"看得见却选不通"的 custom 条目 (auto-resolver 查表因无
+ *  baseUrl 不触发, 静默落到前缀/throw, 用户无感知). */
 export function parseCustomModelFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): { id: string; spec: ModelSpec } | null {
   const id = env.FORGEAX_CUSTOM_MODEL?.trim();
   if (!id) return null; // 未声明 custom model → 不启用
+
+  const baseUrl = env.FORGEAX_CUSTOM_BASE_URL?.trim();
+  if (!baseUrl) {
+    console.warn(
+      `[custom-model] FORGEAX_CUSTOM_MODEL='${id}' 已设但 FORGEAX_CUSTOM_BASE_URL 缺失, ` +
+        `custom model 未启用 (需提供端点 base url). 请在 .env 补 FORGEAX_CUSTOM_BASE_URL.`,
+    );
+    return null;
+  }
 
   // adapter 类型: 非法值落回 openai-compat (多数第三方兼容端点适用).
   const apiRaw = env.FORGEAX_CUSTOM_API?.trim();
@@ -43,7 +55,7 @@ export function parseCustomModelFromEnv(
     defaultTemperature: 1.0,
     displayName: env.FORGEAX_CUSTOM_NAME?.trim() || id,
     api,
-    baseUrl: env.FORGEAX_CUSTOM_BASE_URL?.trim() || undefined,
+    baseUrl,
     apiKey: env.FORGEAX_CUSTOM_API_KEY?.trim() || "",
   };
   return { id, spec };
