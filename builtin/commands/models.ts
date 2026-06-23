@@ -27,6 +27,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { CommandModule } from "../../src/commands/types";
 import { isValidAgentPath } from "../../src/core/agent-scaffold";
 import { fetchLiveCatalog } from "../../src/lib/llm-gateway/live-catalog";
+import { parseCustomModelFromEnv } from "../../src/llm/custom-model-env";
 
 interface ReadModelArgs {
   sid: string;
@@ -178,9 +179,20 @@ async function loadModelsCatalog(
   const seen = new Set<string>();
   const out: Array<{ id: string; hidden: boolean } & Record<string, unknown>> = [];
 
+  // .env 声明的 custom model 最优先列出, 且豁免 live 剔除 (它是用户显式指定的本地/
+  // 第三方端点, 不应被 proxy live 列表否决). apiKey 在出口统一过滤 (见 loadDiskCatalog
+  // / list_models 出口), 不外泄到 UI.
+  const custom = parseCustomModelFromEnv();
+  if (custom) {
+    const { apiKey: _omit, ...safe } = custom.spec as unknown as Record<string, unknown>;
+    out.push({ id: custom.id, source: "custom", ...safe, hidden: hidden.has(custom.id) });
+    seen.add(custom.id);
+  }
+
   // Disk entries first — keeps user's manually-tuned models at the top of UI lists.
   // When live is authoritative, drop disk ids the proxy doesn't serve.
   for (const [id, spec] of Object.entries(disk)) {
+    if (seen.has(id)) continue;
     if (liveAuthoritative && !liveSet.has(id)) continue;
     out.push({ id, source: "disk", ...spec, hidden: hidden.has(id) });
     seen.add(id);
