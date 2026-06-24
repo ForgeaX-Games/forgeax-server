@@ -47,8 +47,11 @@ import { materializeEnv, stripModelKeys } from 'forgeax-cli/kernel/sidecar-spawn
 import { tt, ttEnabled } from 'forgeax-cli/lib/turn-trace';
 import { getConsoleRouterSnapshot } from 'forgeax-cli/core/logger';
 import { createHash, randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { TelemetryRecord } from '@forgeax/types';
+import { createTelemetryFileSink, type TelemetryFileSink } from './telemetry-file-sink';
 
 /** forgeax-core serve 入口:经**包解析**定位(`@forgeax/forgeax-core/cli` 导出 + server 包依赖,
  *  发布后跨包仍成立),monorepo 源码态回退相对路径(发包前过渡)。耦合从「硬编码兄弟路径」
@@ -77,14 +80,22 @@ function serveReuseEnabled(): boolean {
 export interface CreateForgeaxCoreKernelOpts {
   /** host-tool 桥定位的默认 agentPath(主对话恒 'forge')。 */
   defaultAgentPath?: string;
+  /** WS 广播(observability v3 / B 档):telemetry record 经此推给浏览器 viewer。
+   *  来自 main.ts 的 `hub.broadcast`(经 registerForgeaxCoreKernel 注入)。缺省 = noop
+   *  (不广播,仅落盘)。 */
+  broadcast?: (msg: { type: string; [k: string]: unknown }) => void;
+  /** host-side telemetry 落盘 sink(默认 createTelemetryFileSink();测试可注入)。 */
+  telemetrySink?: TelemetryFileSink;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** per-turn endpoint sock 路径:短路径(/tmp)避 sun_path 104 限。 */
+/** per-session endpoint sock 路径:落在 `os.tmpdir()`(跨平台正确——Windows 上硬编码 `/tmp`
+ *  会被按工作盘符解析成 `<drive>:\tmp`,常不存在;`os.tmpdir()` 走 TEMP/TMP/SystemRoot 回退链,
+ *  恒为真实目录)。sha1 截断成短名(`fxcore-<16hex>.sock`)压住 AF_UNIX sun_path(~104)长度。 */
 function deriveSock(sessionId: string): string {
   const h = createHash('sha1').update(sessionId).digest('hex').slice(0, 16);
-  return `/tmp/fxcore-${h}.sock`;
+  return join(tmpdir(), `fxcore-${h}.sock`);
 }
 
 /** 连 serve endpoint;serve 刚 spawn 需片刻才 listen → 重试到 deadline。 */
@@ -159,9 +170,57 @@ class ForgeaxCoreServeKernel implements AgentKernel {
   private readonly starting = new Map<string, Promise<ServeSession>>();
   /** callId → serve 会话(供 openHandle 软取消寻址)。 */
   private readonly callSession = new Map<string, ServeSession>();
+  /** WS 广播(telemetry → 浏览器 viewer);未注入 = noop。 */
+  private readonly broadcast: (msg: { type: string; [k: string]: unknown }) => void;
+  /** host-side telemetry 落盘 sink。 */
+  private readonly telemetrySink: TelemetryFileSink;
 
   constructor(opts: CreateForgeaxCoreKernelOpts = {}) {
     this.hostBridge = makeInProcessExecuteTool(opts.defaultAgentPath ?? 'forge');
+    this.broadcast = opts.broadcast ?? ((): void => {});
+    this.telemetrySink =
+      opts.telemetrySink ??
+      createTelemetryFileSink({ onError: (err) => tt('adapter.telemetry-sink-error', { err: String(err) }) });
+  }
+
+  /** out-of-band telemetry notify 路由:method==='telemetry' → 消费(落盘+广播)并返 true;
+   *  否则返 false 让调用方继续走 `event` 分支。两处 onNotify 站点共用,避免重复判定。 */
+  private maybeHandleTelemetry(method: string, params: unknown, hostSid: string | undefined): boolean {
+    if (method !== 'telemetry') return false;
+    this.handleTelemetry(params, hostSid);
+    return true;
+  }
+
+  /** RPC `telemetry` notify 的处理:落盘 + 广播。**绝不抛进 RPC 层**(observability
+   *  铁律:可观测性永不反噬主流程)——整体 try/catch 吞掉并经 turn-trace 上报。
+   *  sid 解析:优先该 serve 会话的 hostSessionId(与 attachServeLogRouting 的
+   *  `<sid>/logs/` 归属一致);缺省回落首条 record 自带的 sid。 */
+  private handleTelemetry(params: unknown, hostSid: string | undefined): void {
+    try {
+      const records = (params as { records?: unknown })?.records;
+      if (!Array.isArray(records) || records.length === 0) return;
+      // 结构化容错:只保留有 'span'/'log' kind 的 record;非法形状 log-and-drop。
+      const valid: TelemetryRecord[] = [];
+      let dropped = 0;
+      for (const r of records) {
+        const kind = (r as { kind?: unknown } | null)?.kind;
+        if (r && typeof r === 'object' && (kind === 'span' || kind === 'log')) {
+          valid.push(r as TelemetryRecord);
+        } else {
+          dropped++;
+        }
+      }
+      if (dropped > 0) tt('adapter.telemetry-dropped', { dropped, kept: valid.length });
+      if (valid.length === 0) return;
+      const sid = hostSid ?? (valid[0] as { sid?: string }).sid;
+      // (a) 落盘:span→trace.jsonl / log→log.jsonl(sink 自己 best-effort + rotate)。
+      this.telemetrySink.write(sid, valid);
+      // (b) 广播:浏览器 viewer 收 `{ type:'telemetry', records }`。
+      this.broadcast({ type: 'telemetry', records: valid });
+    } catch (err) {
+      // 永不让 telemetry 处理抛回 RPC notify 回调。
+      tt('adapter.telemetry-error', { err: String(err) });
+    }
   }
 
   private sessionKeyOf(req: TurnRequest): string {
@@ -280,8 +339,10 @@ class ForgeaxCoreServeKernel implements AgentKernel {
     const conn = await connectWithRetry(grant.endpoint ?? endpoint, signal);
     const s: ServeSession = { sessionId, conn, turns: new Map(), inflight: 0, idleTimer: null, closing: false };
 
-    // 一次性 notify:按 callId 路由事件到对应轮的 sink。
+    // 一次性 notify:按 callId 路由事件到对应轮的 sink;telemetry 走旁路(落盘+广播)。
     conn.onNotify((method, params) => {
+      // observability v3 / B 档:out-of-band telemetry 通道(与 `event` 平行)。
+      if (this.maybeHandleTelemetry(method, params, s.hostSessionId)) return;
       if (method !== 'event') return;
       const { callId, event } = (params ?? {}) as { callId?: string; event?: KernelEvent };
       if (!event) return;
@@ -371,6 +432,8 @@ class ForgeaxCoreServeKernel implements AgentKernel {
     if (this.sessions.get(key) === s) this.sessions.delete(key);
     try { s.offData?.(); } catch { /* ignore */ }
     try { s.conn.close(); } catch { /* ignore */ }
+    // 回收该 session 的 telemetry 字节计数缓存,避免 byteCounters 随 session 数单调增长。
+    try { this.telemetrySink.evict(s.hostSessionId); } catch { /* ignore */ }
     if (reap) ensureSidecar().then((sc) => sc.shutdownSession(s.sessionId)).catch(() => {});
   }
 
@@ -410,6 +473,8 @@ class ForgeaxCoreServeKernel implements AgentKernel {
     let finished = false; let errMsg: string | null = null; let wake: (() => void) | null = null;
     const poke = (): void => { if (wake) { const w = wake; wake = null; w(); } };
     conn.onNotify((method, params) => {
+      // observability v3 / B 档:out-of-band telemetry 通道(与 `event` 平行)。
+      if (this.maybeHandleTelemetry(method, params, req.hostSessionId)) return;
       if (method !== 'event') return;
       const { event } = (params ?? {}) as { event?: KernelEvent };
       if (event) { queue.push(event); poke(); }
@@ -455,7 +520,8 @@ export function createForgeaxCoreKernel(opts: CreateForgeaxCoreKernelOpts = {}):
   return new ForgeaxCoreServeKernel(opts);
 }
 
-/** 把连接式 forgeax-core 内核注册进共享 registry(幂等:已注册则跳过)。 */
+/** 把连接式 forgeax-core 内核注册进共享 registry(幂等:已注册则跳过)。
+ *  `opts.broadcast` 由产品壳(main.ts)注入 `hub.broadcast`,使 telemetry 能推给浏览器。 */
 export function registerForgeaxCoreKernel(opts: CreateForgeaxCoreKernelOpts = {}): void {
   if (getKernel('forgeax-core')) return;
   registerKernel(createForgeaxCoreKernel(opts));

@@ -133,7 +133,25 @@ if (!process.env.FORGEAX_KERNEL_IMPL?.trim()) {
   process.env.FORGEAX_KERNEL_IMPL = 'forgeax-core';
 }
 if (process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core') {
-  registerForgeaxCoreKernel();
+  // observability v3 / B 档:把 hub.broadcast 注入 adapter,让 forgeax-core serve 经
+  // RPC `telemetry` 推回的 span/log 既落盘(<sid>/logs/{trace,log}.jsonl)又广播给
+  // 浏览器 viewer(WS `{ type:'telemetry', records }`)。
+  registerForgeaxCoreKernel({
+    broadcast: (msg) => hub.broadcast(msg as Parameters<typeof hub.broadcast>[0]),
+  });
+  // 冷启动消除:server boot 即预热 agent-host(fire-and-forget),让首轮 chat 命中"已存在实例"
+  // 的快路径,而非在首轮里现 `Bun.spawn`——后者在 Windows 上冷启可能超过 ensureSidecar 的 spawn
+  // 窗口,误报 "sidecar (agent-host) not reachable after spawn"。kernel-only 路径(下方)已会
+  // 自行预热并擦 key,这里只覆盖默认(非 kernel-only)路径;预热失败不阻塞 boot(首轮仍会自行
+  // spawn + 重试)。
+  if (process.env.FORGEAX_KERNEL_ONLY !== '1') {
+    void (async (): Promise<void> => {
+      const { sidecarEnabled } = await import('forgeax-cli/kernel/kernel-mode');
+      if (!sidecarEnabled()) return;
+      const { ensureSidecar } = await import('forgeax-cli/kernel/sidecar-singleton');
+      await ensureSidecar();
+    })().catch(() => { /* 预热失败不阻塞 boot;首轮 chat 会自行 spawn+重试 */ });
+  }
 }
 
 // 初始化编排层 + 注入产品上下文。createForgeaxApp(forgeax-cli)负责 boot(path /
