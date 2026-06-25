@@ -36,7 +36,10 @@ import { FsWatcher } from 'forgeax-cli/api/lib/watcher';
 import { WsHub, createWsHandler, type WsClientData } from 'forgeax-cli/ws';
 import { getSessionManager } from 'forgeax-cli/core/session-manager';
 // 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
-import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
+import { registerForgeaxCoreKernel, projectSessionLogsDir } from './kernel/forgeax-core-adapter';
+import { createTelemetryFileSink } from './kernel/telemetry-file-sink';
+import { setHostTelemetry } from 'forgeax-cli/kernel/host-telemetry';
+import type { TelemetryRecord } from '@forgeax/types';
 // 业务能力注入(DIP):marketplace UI 资产清洗由产品壳提供,编排层不直接依赖 marketplace。
 import {
   inspectUiAssetCanvas,
@@ -122,6 +125,22 @@ const hub = new WsHub();
 const watcher = new FsWatcher();
 const projectRoot = defaultProjectRoot();
 
+// 全链路 trace 落盘 sink(项目本地 .forgeax/sessions/<sid>/logs/)——后端 adapter 与
+// 浏览器 span 上传路由 `/api/telemetry` 共用同一实例,后端 + 浏览器 span 同落一处、拼一棵树。
+const telemetrySink = createTelemetryFileSink({
+  resolveLogsDir: projectSessionLogsDir,
+  onError: (err) => process.stderr.write(`[telemetry-sink] ${String(err)}\n`),
+});
+
+// observability v3 / B 档 · 第 2 层:把同一份 sink + 广播注入 host-telemetry 单例,使 **CLI 内核**
+//   (codebuddy/claude-code/codex/cursor,跑在本进程、不经 sidecar 回流)产的 kernel.turn span/log
+//   也落项目本地 <sid>/logs/ + 广播给浏览器 viewer,与 forgeax-core/浏览器 span 同 trace。无条件接
+//   (即便默认内核是 forgeax-core,用户仍可经 providerOverride 选 CLI 内核)。
+setHostTelemetry((sid, records) => {
+  telemetrySink.write(sid, records);
+  hub.broadcast({ type: 'telemetry', records } as Parameters<typeof hub.broadcast>[0]);
+});
+
 // 内环切换:产品壳**默认走原生内核 forgeax-core**(DIP——编排层 cli 不依赖具体内核,这里把
 // forgeax-core 注册进共享 registry;claude-code/codex 仍由 cli 自带注册)。逃生闸:显式
 // FORGEAX_KERNEL_IMPL=claude-code(或 codex)回租用内核。必须在任何 chat 之前完成。
@@ -138,6 +157,7 @@ if (process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core') {
   // 浏览器 viewer(WS `{ type:'telemetry', records }`)。
   registerForgeaxCoreKernel({
     broadcast: (msg) => hub.broadcast(msg as Parameters<typeof hub.broadcast>[0]),
+    telemetrySink,
   });
   // 冷启动消除:server boot 即预热 agent-host(fire-and-forget),让首轮 chat 命中"已存在实例"
   // 的快路径,而非在首轮里现 `Bun.spawn`——后者在 Windows 上冷启可能超过 ensureSidecar 的 spawn
@@ -177,6 +197,31 @@ app.get('/api/health', (c) =>
     wsClients: hub.size(),
   }),
 );
+
+// 全链路 trace:浏览器产的 span(ui.send/ui.request/ui.stream/ui.render、app.boot.*)经此
+// 上传 → 与后端 span 同落项目本地 .forgeax/sessions/<sid>/logs/(同 traceId 拼一棵树)+ 广播给
+// 其它 viewer。best-effort,绝不抛回客户端。records 按 sid 分组写(一批可能跨 sid)。
+app.post('/api/telemetry', async (c) => {
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as { records?: unknown };
+    const records = Array.isArray(body.records) ? (body.records as TelemetryRecord[]) : [];
+    const valid = records.filter(
+      (r): r is TelemetryRecord => !!r && typeof r === 'object' && ((r as { kind?: unknown }).kind === 'span' || (r as { kind?: unknown }).kind === 'log'),
+    );
+    if (valid.length === 0) return c.json({ ok: true, written: 0 });
+    const bySid = new Map<string, TelemetryRecord[]>();
+    for (const r of valid) {
+      const sid = (r as { sid?: string }).sid ?? 'browser';
+      (bySid.get(sid) ?? bySid.set(sid, []).get(sid)!).push(r);
+    }
+    for (const [sid, group] of bySid) telemetrySink.write(sid, group);
+    hub.broadcast({ type: 'telemetry', records: valid } as Parameters<typeof hub.broadcast>[0]);
+    return c.json({ ok: true, written: valid.length });
+  } catch (err) {
+    process.stderr.write(`[api/telemetry] ${String(err)}\n`);
+    return c.json({ ok: false }, 200); // 诊断不反噬:即便出错也回 200,不让浏览器报错
+  }
+});
 
 console.log(`[forgeax-server] project root = ${projectRoot}`);
 
