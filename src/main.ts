@@ -27,11 +27,11 @@ import { resolve } from 'node:path';
 import { serveStatic } from 'hono/bun';
 // 产品壳:初始化编排层(forgeax-cli)并注入产品相关内容,自己只负责进程/服务/代理。
 import { createForgeaxApp } from 'forgeax-cli';
-import { getVersion } from 'forgeax-cli/api/version';
+import { getVersion } from '@forgeax/platform-io';
 import { loadBrand } from 'forgeax-cli/brand';
-import { defaultProjectRoot } from 'forgeax-cli/api/lib/safe-path';
-import { friendlyPath } from 'forgeax-cli/api/lib/friendly-path';
-import { mp, interfaceDist as resolveInterfaceDist } from 'forgeax-cli/lib/asset-root';
+import { defaultProjectRoot } from '@forgeax/platform-io';
+import { friendlyPath } from '@forgeax/platform-io';
+import { mp, interfaceDist as resolveInterfaceDist } from '@forgeax/platform-io';
 import { FsWatcher } from 'forgeax-cli/api/lib/watcher';
 import { WsHub, createWsHandler, type WsClientData } from 'forgeax-cli/ws';
 import { getSessionManager } from 'forgeax-cli/core/session-manager';

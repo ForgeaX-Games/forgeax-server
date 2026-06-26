@@ -20,6 +20,7 @@
     "@forgeax/agent-host": "workspace:*",
     "@forgeax/agent-runtime": "workspace:*",
     "@forgeax/forgeax-core": "workspace:*",
+    "@forgeax/platform-io": "workspace:*",
     "forgeax-cli": "workspace:*",
     "hono": "^4.6.0"
   },

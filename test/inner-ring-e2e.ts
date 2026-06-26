@@ -11,7 +11,7 @@ import { createForgeaxApp } from 'forgeax-cli';
 import { runKernelTurn } from 'forgeax-cli/core/kernel-turn';
 import { resolveKernel } from 'forgeax-cli/kernel/resolve-kernel';
 import { getSessionManager } from 'forgeax-cli/core/session-manager';
-import { defaultProjectRoot } from 'forgeax-cli/api/lib/safe-path';
+import { defaultProjectRoot } from '@forgeax/platform-io';
 import { Hook } from 'forgeax-cli/hooks/types';
 import { registerForgeaxCoreKernel } from '../src/kernel/forgeax-core-adapter';
 

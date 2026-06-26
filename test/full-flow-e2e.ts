@@ -9,7 +9,7 @@
 import { createForgeaxApp } from 'forgeax-cli';
 import { getSessionManager } from 'forgeax-cli/core/session-manager';
 import { resolveKernel } from 'forgeax-cli/kernel/resolve-kernel';
-import { defaultProjectRoot } from 'forgeax-cli/api/lib/safe-path';
+import { defaultProjectRoot } from '@forgeax/platform-io';
 import { registerForgeaxCoreKernel } from '../src/kernel/forgeax-core-adapter';
 
 if (!process.env.ANTHROPIC_API_KEY) {
