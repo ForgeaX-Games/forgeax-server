@@ -12,9 +12,11 @@
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { createForgeaxCoreKernel, projectSessionLogsDir } from '../src/kernel/forgeax-core-adapter';
+import { join, resolve } from 'node:path';
+import { createForgeaxCoreKernel } from '../src/kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from '../src/kernel/telemetry-file-sink';
+import { initPathManager, getPathManager } from 'forgeax-cli/fs/path-manager';
+import { FlatSessionLayout } from 'forgeax-cli/fs/session-layout';
 import type { TurnRequest, KernelEvent } from '@forgeax/agent-runtime/contract';
 
 const MODEL = process.env.FORGEAX_E2E_MODEL || process.env.FORGEAX_MODEL || 'claude-opus-4-8';
@@ -46,13 +48,17 @@ async function main(): Promise<void> {
     console.log('[obs-fullchain-e2e] 跳过:未设 ANTHROPIC_API_KEY(需 `set -a; source .env; set +a`)。');
     process.exit(0);
   }
-  const logsDir = projectSessionLogsDir(SID);
+  // 装一个 SessionLayout(扁平,workDir=projectRoot),logs 路径由 PathManager 决定。
+  const projectRoot = process.env.FORGEAX_PROJECT_ROOT ?? process.cwd();
+  initPathManager({ projectRoot, layout: new FlatSessionLayout(resolve(projectRoot, '.forgeax', 'sessions'), projectRoot) });
+  const logsDir = getPathManager().session(SID).logsDir();
   const traceFile = join(logsDir, 'trace.jsonl');
   console.log(`[obs-fullchain-e2e] model=${MODEL} sid=${SID}`);
   console.log(`[obs-fullchain-e2e] 项目本地落盘: ${logsDir}\n`);
 
   // ── 1. 模拟浏览器侧:经真 sink(= /api/telemetry 同路径)写 ui.send(root)+ ui.request ──
-  const sink = createTelemetryFileSink({ resolveLogsDir: projectSessionLogsDir });
+  //   sink 省略 resolveLogsDir → 默认走 getPathManager().session(sid).logsDir()(同上 layout)。
+  const sink = createTelemetryFileSink({});
   const traceId = hex(16);
   const uiSendId = hex(8);
   const uiReqId = hex(8);

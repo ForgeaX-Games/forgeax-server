@@ -35,8 +35,10 @@ import { mp, interfaceDist as resolveInterfaceDist } from '@forgeax/platform-io'
 import { FsWatcher } from 'forgeax-cli/api/lib/watcher';
 import { WsHub, createWsHandler, type WsClientData } from 'forgeax-cli/ws';
 import { getSessionManager } from 'forgeax-cli/core/session-manager';
+import { getActiveGame } from 'forgeax-cli/api/lib/active-game';
+import { GameSessionLayout } from './studio-session-layout';
 // 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
-import { registerForgeaxCoreKernel, projectSessionLogsDir } from './kernel/forgeax-core-adapter';
+import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from './kernel/telemetry-file-sink';
 import { setHostTelemetry } from 'forgeax-cli/kernel/host-telemetry';
 import type { TelemetryRecord } from '@forgeax/types';
@@ -127,8 +129,10 @@ const projectRoot = defaultProjectRoot();
 
 // 全链路 trace 落盘 sink(项目本地 .forgeax/sessions/<sid>/logs/)——后端 adapter 与
 // 浏览器 span 上传路由 `/api/telemetry` 共用同一实例,后端 + 浏览器 span 同落一处、拼一棵树。
+// 方案B PR1 D1:不再各算各的 projectSessionLogsDir,省略 resolveLogsDir → sink 默认走
+// getPathManager().session(sid).logsDir(),即下方注入的 SessionLayout(studio=项目本地)。
+// 于是 trace/log 与 session WAL 由**同一个** PathManager/layout 决定路径 → split-brain 收口。
 const telemetrySink = createTelemetryFileSink({
-  resolveLogsDir: projectSessionLogsDir,
   onError: (err) => process.stderr.write(`[telemetry-sink] ${String(err)}\n`),
 });
 
@@ -184,6 +188,11 @@ const { app } = await createForgeaxApp({
   broadcast: (msg) => hub.broadcast(msg as Parameters<typeof hub.broadcast>[0]),
   rebindWatcher: WATCH_FS ? (root) => watcher.rebind(root) : undefined,
   uiAssetCleanup: { inspectUiAssetCanvas, normalizeStandaloneUiAsset },
+  // 方案B PR2:session 状态树落**绑定 game 下** <projectRoot>/.forgeax/games/<slug>/sessions/<sid>/
+  //   ——新建时绑当前 active game(永久绑定,路径即 SSOT,无 defaultDir)。WAL 的 logsDir() 与
+  //   telemetrySink(回落同一 PathManager 路径)同落该 game 的 <sid>/logs/ → trace/log 与 WAL
+  //   同源同根,且整份记录随 game 目录可迁移/上传(#033)。slug→sid 缓存,切 game 不动既有 session。
+  sessionLayout: new GameSessionLayout(projectRoot, () => getActiveGame(projectRoot)),
 });
 
 app.get('/api/health', (c) =>

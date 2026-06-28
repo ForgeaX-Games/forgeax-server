@@ -76,7 +76,7 @@ async function main(): Promise<void> {
 
   // 3) 工具 turn:真模型调 host-tool list_games,经 in-process 桥执行(真 session+root agent)
   await safe('tool turn · model invokes list_games via in-process bridge', async () => {
-    const session = await getSessionManager().create({ defaultDir: 'default', autoStart: true });
+    const session = await getSessionManager().create({ autoStart: true });
     session.scheduler.start();
     const cap = capturingBus();
     const r = await runKernelTurn({
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
 
   // 4) subagent turn:facade 注入的原生 Task 在内环路径可用 —— 真模型派子 agent
   await safe('subagent · facade 注入 Task,内环可派 subagent', async () => {
-    const session = await getSessionManager().create({ defaultDir: 'default', autoStart: true });
+    const session = await getSessionManager().create({ autoStart: true });
     session.scheduler.start();
     const cap = capturingBus();
     const r = await runKernelTurn({

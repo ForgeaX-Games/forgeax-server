@@ -134,16 +134,6 @@ function toWire(req: TurnRequest): Record<string, unknown> {
   };
 }
 
-/** telemetry 落点:**项目本地** `<projectRoot>/.forgeax/sessions/<sid>/logs/`(随项目走,
- *  用户拷一个 .forgeax 即可复盘整条 trace),而非 user 层 `~/.forgeax`。projectRoot 写入时读
- *  env(跟随 workspace 热切);sid 做 safe-segment 防穿越。host sink(adapter)与浏览器 span
- *  上传路由(main.ts /api/telemetry)共用,保证后端 + 浏览器 span 同落一处、同 trace 拼一棵树。 */
-export function projectSessionLogsDir(sid: string): string {
-  const projectRoot = process.env.FORGEAX_PROJECT_ROOT ?? process.cwd();
-  const safe = sid.replace(/[^A-Za-z0-9._-]/g, '_') || 'unknown';
-  return resolve(projectRoot, '.forgeax', 'sessions', safe, 'logs');
-}
-
 /** 一轮的事件 push→pull sink(单连接多轮:按 callId 路由 notify)。 */
 interface TurnSink {
   queue: KernelEvent[];
@@ -194,7 +184,9 @@ class ForgeaxCoreServeKernel implements AgentKernel {
     this.telemetrySink =
       opts.telemetrySink ??
       createTelemetryFileSink({
-        resolveLogsDir: projectSessionLogsDir, // 项目本地落盘(见 projectSessionLogsDir)
+        // 省略 resolveLogsDir → sink 默认走 getPathManager().session(sid).logsDir(),
+        // 即注入的 SessionLayout(studio = 项目本地)。telemetry 与 WAL 同源同根,
+        // 不再各算各的路径(方案B PR1 D1:删 projectSessionLogsDir,收口到 PathManager)。
         onError: (err) => tt('adapter.telemetry-sink-error', { err: String(err) }),
       });
   }
