@@ -320,6 +320,36 @@ app.get('/api/game-assets/:slug/*', async (c) => {
   return new Response(file);
 });
 
+// wb-gen3d scratch (transfer) artifacts — pose-standardized images, etc. The
+// plugin's per-game store writes these to
+// `.forgeax/games/<slug>/.gen3d/tmp/<sha>.<ext>` and persists localUrl as
+// `/api/gen3d-scratch/<slug>/<sha>.<ext>`. NOT assets: no manifest, no delete UI.
+const GEN3D_SCRATCH_RE = /^\/api\/gen3d-scratch\/([^/]+)\/([^/]+)$/;
+app.get('/api/gen3d-scratch/:slug/*', async (c) => {
+  const m = GEN3D_SCRATCH_RE.exec(c.req.path);
+  if (!m) return c.text('not found', 404);
+  let slug: string;
+  let fileName: string;
+  try {
+    slug = decodeURIComponent(m[1]!);
+    fileName = decodeURIComponent(m[2]!);
+  } catch {
+    return c.text('bad path', 400);
+  }
+  if (!SAFE_SLUG_RE.test(slug) || slug === '..') return c.text('bad slug', 400);
+  if (fileName.includes('\0') || fileName.includes('/') || fileName.includes('..')) {
+    return c.text('bad path', 400);
+  }
+  const scratchDir = resolve(gamesRoot, slug, '.gen3d', 'tmp');
+  const abs = resolve(scratchDir, fileName);
+  if (abs !== scratchDir && !abs.startsWith(scratchDir + '/')) return c.text('forbidden', 403);
+  const file = Bun.file(abs);
+  if (!(await file.exists())) return c.text('not found', 404);
+  c.header('Cache-Control', 'public, max-age=3600');
+  c.header('Cross-Origin-Resource-Policy', 'cross-origin');
+  return new Response(file);
+});
+
 const wbCharDist = mp('wb-character', 'dist');
 app.use('/plugins/wb-character/*', serveStatic({
   root: wbCharDist,
