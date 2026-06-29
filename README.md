@@ -13,7 +13,7 @@ preview. No Docker, no microservice sprawl — one process, started in seconds.
 ## Why it matters
 
 - **One process, instant boot.** The whole studio runtime is a single Bun + Hono server. There
-  is no instance-provisioning step and no container to wait on — `start.sh` and you're live.
+  is no instance-provisioning step and no container to wait on — `bun fx start` and you're live.
 - **The agent kernel runs in-process.** Rather than talking to a separate agent daemon over a
   socket, the server imports the kernel directly and streams its `ChatEvent`s straight to the UI
   as SSE / WebSocket. Fewer moving parts, lower latency, one place to reason about a turn.
@@ -61,7 +61,7 @@ bun install
 bun dev        # server on :18900 (spawns interface :18920 + engine :15173)
 ```
 
-In normal use you don't run this directly — the studio's `start.sh` does, from the repo root.
+In normal use you don't run this directly — the studio's `bun fx start` command does, from the repo root.
 
 ---
 
