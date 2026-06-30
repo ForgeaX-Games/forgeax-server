@@ -48,11 +48,12 @@ import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from './kernel/telemetry-file-sink';
 import { setHostTelemetry } from 'forgeax-cli/kernel/host-telemetry';
 import type { TelemetryRecord } from '@forgeax/types';
-// 业务能力注入(DIP):marketplace UI 资产清洗由产品壳提供,编排层不直接依赖 marketplace。
+// UI 资产清洗作为 host 能力由 server 自身实现(game/ui-asset-cleanup.ts)，经
+// UiAssetCleanup seam 注入给 ce-api-shim —— 编排层不 source-import marketplace plugin。
 import {
   inspectUiAssetCanvas,
   normalizeStandaloneUiAsset,
-} from '../../marketplace/plugins/wb-ui/src/pipelines/ui-design/ui-asset-cleanup';
+} from './game/ui-asset-cleanup';
 
 // ──────────────────────────────────────────────────────────────────────────
 // FaultBoundary — top-level process-wide exception backstop (perf-analysis-2
