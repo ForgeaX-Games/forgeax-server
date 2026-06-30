@@ -55,34 +55,53 @@ export function isReelGame(gameDir: string): boolean {
   }
 }
 
-/** After scaffold-copying a game template, replace every GUID in all
- *  .pack.json files with fresh crypto.randomUUID() values, maintaining
- *  internal cross-references (refs[]). Without this, every game created
- *  from the same template shares the same GUIDs → pack-guid-collision. */
-async function regeneratePackGuids(gameDir: string): Promise<void> {
-  const glob = new Glob('**/*.pack.json');
-  const packFiles: string[] = [];
-  for await (const entry of glob.scan({ cwd: gameDir, absolute: true, dot: true })) {
-    if (entry.includes('node_modules')) continue;
-    packFiles.push(entry);
-  }
+const GUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
+
+/** After scaffold-copying a game template, give the new game its own identity
+ *  for every asset it DEFINES, while leaving references to SHARED/builtin assets
+ *  intact.
+ *
+ *  Why: template GUIDs are shared across all scaffolds, so without regeneration
+ *  two games collide in the global catalog. But a scaffold also *references*
+ *  assets it does not define — builtin meshes (the cylinder), shared HDR/material
+ *  GUIDs — via pack `refs[]` and hardcoded literals in main.ts (SCENE_GUID,
+ *  CYLINDER_GUID). Those must keep pointing at the real shared asset.
+ *
+ *  So the map is seeded ONLY from locally-defined `asset.guid` (pass 1), then
+ *  every GUID reference across all game text files — pack payloads/refs,
+ *  forge.json.defaultScene, main.ts/src literals — is rewritten through it
+ *  (pass 2, `map.get ?? keep`). A reference to a GUID the game never defines is
+ *  a map miss and survives unchanged. Regenerating those (the previous bug)
+ *  pointed them at phantom GUIDs → asset-not-found / `/__import` 404 → blank
+ *  scene. */
+async function regenerateGameGuids(gameDir: string): Promise<void> {
+  // Pass 1 — collect the GUIDs this game DEFINES (asset.guid in its packs) and
+  // assign each a fresh unique identity.
   const guidMap = new Map<string, string>();
-  const fresh = (old: string): string => {
-    let g = guidMap.get(old);
-    if (!g) { g = crypto.randomUUID(); guidMap.set(old, g); }
-    return g;
-  };
-  for (const fp of packFiles) {
+  const packGlob = new Glob('**/*.pack.json');
+  for await (const fp of packGlob.scan({ cwd: gameDir, absolute: true, dot: true })) {
+    if (fp.includes('node_modules')) continue;
+    try {
+      const pack = JSON.parse(await readFile(fp, 'utf-8')) as { assets?: { guid?: string }[] };
+      for (const asset of pack.assets ?? []) {
+        if (typeof asset.guid === 'string' && !guidMap.has(asset.guid)) {
+          guidMap.set(asset.guid, crypto.randomUUID());
+        }
+      }
+    } catch { /* skip malformed pack files */ }
+  }
+  if (guidMap.size === 0) return;
+  // Pass 2 — rewrite every reference to a locally-defined GUID across all game
+  // text files (packs, forge.json, main.ts/src). External refs miss the map and
+  // are preserved.
+  const textGlob = new Glob('**/*.{ts,tsx,js,jsx,mjs,cjs,json}');
+  for await (const fp of textGlob.scan({ cwd: gameDir, absolute: true, dot: true })) {
+    if (fp.includes('node_modules')) continue;
     try {
       const raw = await readFile(fp, 'utf-8');
-      const pack = JSON.parse(raw) as { assets?: { guid: string; refs: string[] }[] };
-      if (!Array.isArray(pack.assets)) continue;
-      for (const asset of pack.assets) {
-        asset.guid = fresh(asset.guid);
-        asset.refs = asset.refs.map((r) => fresh(r));
-      }
-      await writeFile(fp, JSON.stringify(pack, null, 2) + '\n', 'utf-8');
-    } catch { /* skip malformed pack files */ }
+      const next = raw.replace(GUID_RE, (g) => guidMap.get(g) ?? g);
+      if (next !== raw) await writeFile(fp, next, 'utf-8');
+    } catch { /* skip unreadable files */ }
   }
 }
 
@@ -523,10 +542,11 @@ export function createWorkbenchRouter(): Hono {
     }
     try {
       await cp(templateDir, gameDir, { recursive: true });
-      // Regenerate all GUIDs in .pack.json files so each game has unique
-      // identities (the template's GUIDs are shared across all scaffolded games).
-      await regeneratePackGuids(gameDir);
-      // Replace id in forge.json
+      // Give the new game unique identities for the assets it defines, remapping
+      // every reference (pack refs/payload, forge.json.defaultScene, main.ts
+      // literals) while preserving refs to shared/builtin assets.
+      await regenerateGameGuids(gameDir);
+      // Replace id in forge.json (defaultScene already remapped by the pass above).
       const manifestPath = join(gameDir, 'forge.json');
       if (existsSync(manifestPath)) {
         const raw = await readFile(manifestPath, 'utf-8');
