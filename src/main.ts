@@ -35,8 +35,14 @@ import { mp, interfaceDist as resolveInterfaceDist } from '@forgeax/platform-io'
 import { FsWatcher } from 'forgeax-cli/api/lib/watcher';
 import { WsHub, createWsHandler, type WsClientData } from 'forgeax-cli/ws';
 import { getSessionManager } from 'forgeax-cli/core/session-manager';
-import { getActiveGame } from 'forgeax-cli/api/lib/active-game';
+import { getActiveGame } from './game/active-game';
 import { GameSessionLayout } from './studio-session-layout';
+// 游戏业务路由(阶段A:从 forgeax-cli 搬入产品壳)—— 经 ctx.routers 注入编排层。
+import { createWorkbenchRouter } from './game/workbench';
+import { createCharacterRouter } from './game/wb-character';
+import { createBgmRouter } from './game/wb-bgm';
+import { createCeApiShimRouter } from './game/ce-api-shim';
+import { GameSystemPromptComposer } from './game/system-prompt-composer';
 // 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
 import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from './kernel/telemetry-file-sink';
@@ -182,17 +188,42 @@ if (process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core') {
 // session / plugins / cli-providers / brand)并挂载全部 /api 路由,返回已就绪的 Hono
 // app。产品壳(本文件)只在其上叠加:静态资源(SPA / 插件 dist)、引擎/界面反向代理、
 // WS、Bun.serve、文件 watcher。这是"产品层初始化并注入编排层"的落点;换产品 = 换这层注入。
+const shimEnv = process.env as Record<string, string | undefined>;
 const { app } = await createForgeaxApp({
   projectRoot,
   version: VERSION,
   broadcast: (msg) => hub.broadcast(msg as Parameters<typeof hub.broadcast>[0]),
   rebindWatcher: WATCH_FS ? (root) => watcher.rebind(root) : undefined,
-  uiAssetCleanup: { inspectUiAssetCanvas, normalizeStandaloneUiAsset },
+  // system-prompt charter/environment/note 由产品壳提供(阶段A §3.2)——编排层经
+  // 注入的 composer 取,cli 自身不再硬编码游戏宪章。ports 取自 env(与原 cli 顶层常量一致)。
+  systemPromptComposer: new GameSystemPromptComposer({
+    serverPort: process.env.FORGEAX_SERVER_PORT ?? '18900',
+    interfacePort: process.env.FORGEAX_INTERFACE_PORT ?? '18920',
+  }),
+  // 游戏业务路由由产品壳注入(阶段A:原 cli 静态 mount 搬到此)。路由表逐条不变。
+  routers: [
+    { path: '/api/workbench', router: createWorkbenchRouter() },
+    { path: '/api/wb/character', router: createCharacterRouter({ projectRoot, env: shimEnv }) },
+    { path: '/api/wb/bgm', router: createBgmRouter() },
+    {
+      path: '/__ce-api__',
+      router: createCeApiShimRouter({
+        projectRoot,
+        env: shimEnv,
+        // marketplace UI 资产清洗能力直接交给业务 router(不再经 cli ProductContext 中转)。
+        uiAssetCleanup: { inspectUiAssetCanvas, normalizeStandaloneUiAsset },
+      }),
+    },
+  ],
   // 方案B PR2:session 状态树落**绑定 game 下** <projectRoot>/.forgeax/games/<slug>/sessions/<sid>/
   //   ——新建时绑当前 active game(永久绑定,路径即 SSOT,无 defaultDir)。WAL 的 logsDir() 与
   //   telemetrySink(回落同一 PathManager 路径)同落该 game 的 <sid>/logs/ → trace/log 与 WAL
   //   同源同根,且整份记录随 game 目录可迁移/上传(#033)。slug→sid 缓存,切 game 不动既有 session。
-  sessionLayout: new GameSessionLayout(projectRoot, () => getActiveGame(projectRoot)),
+  // **工厂**(而非单实例):切 workspace/项目根时 workspaces 路由用新 root 重建 layout 再
+  //   initPathManager,否则会退回默认扁平布局、扫不到 games/<slug>/sessions/ → 列会话/查历史失灵。
+  //   内层闭包带可选 root(配合 SessionLayout.resolveScope(sessionId?, root?) —— workspaces 激活
+  //   时用 abs 查该工作区的 active game);无参时回落工厂 root。
+  sessionLayoutFactory: (root) => new GameSessionLayout(root, (r) => getActiveGame(r ?? root)),
 });
 
 app.get('/api/health', (c) =>
@@ -409,6 +440,16 @@ app.use('/plugins/wb-gen3d/*', serveStatic({
   root: wbGen3dDist,
   rewriteRequestPath: (p) => {
     const rest = p.replace(/^\/plugins\/wb-gen3d/, '') || '/';
+    return rest === '/' ? '/index.html' : rest;
+  },
+}));
+
+// wb-ai-asset — Meshy AI lowpoly prop generator (same embedded pattern as wb-gen3d).
+const wbAiAssetDist = mp('wb-ai-asset', 'dist');
+app.use('/plugins/wb-ai-asset/*', serveStatic({
+  root: wbAiAssetDist,
+  rewriteRequestPath: (p) => {
+    const rest = p.replace(/^\/plugins\/wb-ai-asset/, '') || '/';
     return rest === '/' ? '/index.html' : rest;
   },
 }));

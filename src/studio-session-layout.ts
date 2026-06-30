@@ -21,7 +21,7 @@
  *  game-agnostic — it only sees the SessionLayout contract). `getActiveGame` is
  *  injected so this file does not reach into game-CRUD internals. */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { listSessionDirs, type SessionLayout } from 'forgeax-cli/fs/session-layout';
 import { safeSegment } from 'forgeax-cli/fs/safe-segment';
@@ -39,7 +39,7 @@ export class GameSessionLayout implements SessionLayout {
 
   constructor(
     projectRoot: string,
-    private readonly getActiveGame: () => string | undefined,
+    private readonly getActiveGame: (root?: string) => string | undefined,
     opts?: { legacyRoots?: string[] },
   ) {
     this.gamesRoot = resolve(projectRoot, '.forgeax', 'games');
@@ -172,6 +172,25 @@ export class GameSessionLayout implements SessionLayout {
     return idx;
   }
 
+  // ── scope authority (Stage A §3.3) ────────────────────────────────────────
+
+  /** The single "current scope" authority cli reads through (replaces the
+   *  scattered `getActiveGame(projectRoot)` fallback — SSOT).
+   *    - no sid → the current active game (== the injected getActiveGame
+   *      closure), i.e. byte-for-byte the legacy fallback every consumer used;
+   *    - with sid → that session's permanently-bound game (path-as-SSOT, then
+   *      legacy index), else the active game.
+   *  Generic/flat layouts omit this → undefined (game-agnostic standalone). */
+  resolveScope(sessionId?: string, root?: string): string | undefined {
+    // explicit root (workspace activation) ⇒ active game under THAT root.
+    if (root) return this.getActiveGame(root);
+    if (sessionId) {
+      const bound = this.projectSlugOf(sessionId) ?? this.ensureLegacyIndex().get(sessionId)?.slug;
+      if (bound) return bound;
+    }
+    return this.getActiveGame();
+  }
+
   private gameExists(slug: string): boolean {
     try {
       return existsSync(join(this.gamesRoot, safeSegment(slug)));
@@ -180,11 +199,29 @@ export class GameSessionLayout implements SessionLayout {
     }
   }
 
+  /** Direct child "directories" of `root`, FOLLOWING symlinks. Shared games are
+   *  seeded into `.forgeax/games/<slug>` as symlinks → `packages/games/<slug>`
+   *  (run.sh / .app seed). A `withFileTypes` entry for a symlink reports
+   *  `isDirectory() === false` (it's `isSymbolicLink()`), so a plain isDirectory
+   *  filter silently DROPS every symlinked game — and with it every session under
+   *  it (→ /api/sessions returns an empty per-game list → UI loses history). We
+   *  therefore also admit symlinks whose resolved target is a directory. */
   private dirsUnder(root: string): string[] {
     try {
-      return readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+      return readdirSync(root, { withFileTypes: true })
+        .filter((e) => e.isDirectory() || (e.isSymbolicLink() && this.isDirTarget(join(root, e.name))))
+        .map((e) => e.name);
     } catch {
       return [];
+    }
+  }
+
+  /** statSync (follows symlinks) → is the resolved target a directory? */
+  private isDirTarget(p: string): boolean {
+    try {
+      return statSync(p).isDirectory();
+    } catch {
+      return false;
     }
   }
 }
