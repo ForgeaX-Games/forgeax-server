@@ -37,6 +37,8 @@ import {
   type KernelHealth,
   type TurnHandle,
   type TurnRequest,
+  type ForkExtractRequest,
+  type ForkExtractResult,
   getKernel,
   registerKernel,
 } from '@forgeax/agent-runtime';
@@ -65,7 +67,8 @@ function resolveCoreServeEntry(): string {
 }
 const CORE_SERVE_ENTRY = resolveCoreServeEntry();
 
-const CAPS: KernelCapabilities = { streaming: true, thinking: true, toolCalls: true, midTurnInject: false };
+// forkExtract:经复用 serve 会话发 forkExtract RPC,sidecar 内 facade 跑 cache-safe fork(已实现)。
+const CAPS: KernelCapabilities = { streaming: true, thinking: true, toolCalls: true, midTurnInject: false, forkExtract: true };
 
 /** idle 回收阈值:session 无在飞轮且静默超过此毫秒数 → reap serve 进程。默认 5min。
  *  use-time 读 env(便于运行期/测试调阈值);<=0 = 永不 idle 回收。 */
@@ -302,6 +305,30 @@ class ForgeaxCoreServeKernel implements AgentKernel {
     } finally {
       s.turns.delete(callId);
       this.callSession.delete(callId);
+      s.inflight = Math.max(0, s.inflight - 1);
+      if (s.inflight === 0 && !s.closing && this.sessions.get(key) === s) this.armIdle(key, s);
+    }
+  }
+
+  /**
+   * cache-safe fork 提取(编排层 turnEnd 驱动):**只复用已存在的 serve 会话**(刚跑完轮 → 会话活、
+   * 缓存热)发 forkExtract RPC;无会话/复用关 → 返回 ok:false,让编排层(soul)冷兜底(§9)。
+   * 不为提取 spawn 新会话(那既无缓存收益、又徒增进程)。
+   */
+  async forkExtract(req: ForkExtractRequest, _signal: AbortSignal): Promise<ForkExtractResult> {
+    const miss: ForkExtractResult = { ok: false, toolCalls: 0, writtenPaths: [] };
+    if (!serveReuseEnabled()) return miss;
+    const key = this.sessionKeyOf(req as unknown as TurnRequest);
+    const s = this.sessions.get(key);
+    if (!s || s.closing) return miss;
+    if (s.idleTimer) { clearTimeout(s.idleTimer); s.idleTimer = null; }
+    s.inflight++;
+    try {
+      const res = (await s.conn.request('forkExtract', req as unknown as Record<string, unknown>)) as ForkExtractResult;
+      return res ?? miss;
+    } catch {
+      return miss;
+    } finally {
       s.inflight = Math.max(0, s.inflight - 1);
       if (s.inflight === 0 && !s.closing && this.sessions.get(key) === s) this.armIdle(key, s);
     }
