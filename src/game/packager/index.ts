@@ -17,6 +17,7 @@ import type { IGamePackager, TargetPlatform, PackageOptions, PackageResult } fro
 import { GamePackagerProxy } from './GamePackagerProxy';
 import { WebPackager } from './platforms/WebPackager';
 import { WindowsPackager } from './platforms/WindowsPackager';
+import { AndroidPackager } from './platforms/AndroidPackager';
 
 class PackagerRegistry {
   private packagers = new Map<TargetPlatform, IGamePackager>();
@@ -51,5 +52,6 @@ class PackagerRegistry {
 const registry = new PackagerRegistry();
 registry.register(new WebPackager());
 registry.register(new WindowsPackager());
+registry.register(new AndroidPackager());
 
 export { registry };

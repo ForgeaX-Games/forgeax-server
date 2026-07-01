@@ -673,17 +673,39 @@ export function createWorkbenchRouter(): Hono {
     let rebuildEngine = false;
     let forceRebuild = false;
     let engineRoot: string | undefined;
+    let androidAppId: string | undefined;
+    let androidAppName: string | undefined;
+    let androidProjectName: string | undefined;
+    let androidIcon: { dataBase64: string; filename: string } | undefined;
+    let androidOrientation: 'portrait' | 'landscape' | undefined;
     try {
       const body = await c.req.json() as {
         targetPlatform?: string;
         rebuildEngine?: boolean;
         forceRebuild?: boolean;
         engineRoot?: string;
+        androidAppId?: string;
+        androidAppName?: string;
+        androidProjectName?: string;
+        androidIcon?: { dataBase64?: string; filename?: string };
+        androidOrientation?: string;
       } | null;
       if (body?.targetPlatform) targetPlatform = body.targetPlatform as TargetPlatform;
       if (body?.rebuildEngine) rebuildEngine = true;
       if (body?.forceRebuild) forceRebuild = true;
       if (body?.engineRoot) engineRoot = body.engineRoot;
+      if (body?.androidAppId) androidAppId = String(body.androidAppId);
+      if (body?.androidAppName) androidAppName = String(body.androidAppName);
+      if (body?.androidProjectName) androidProjectName = String(body.androidProjectName);
+      if (body?.androidIcon?.dataBase64) {
+        androidIcon = {
+          dataBase64: String(body.androidIcon.dataBase64),
+          filename: String(body.androidIcon.filename ?? 'icon.png'),
+        };
+      }
+      if (body?.androidOrientation === 'portrait' || body?.androidOrientation === 'landscape') {
+        androidOrientation = body.androidOrientation;
+      }
     } catch { /* default to 'web' */ }
 
     const projectRoot = defaultProjectRoot();
@@ -708,6 +730,11 @@ export function createWorkbenchRouter(): Hono {
             rebuildEngine,
             forceRebuild,
             engineRoot,
+            androidAppId,
+            androidAppName,
+            androidProjectName,
+            androidIcon,
+            androidOrientation,
             onProgress,
           });
           updateJob(job.id, {
