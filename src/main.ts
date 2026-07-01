@@ -235,6 +235,13 @@ app.get('/api/health', (c) =>
     pid: process.pid,
     uptime: process.uptime(),
     projectRoot: friendlyPath(projectRoot),
+    // Raw (un-abbreviated) absolute project root. edit-runtime's ▶ Play needs it
+    // to import the game via edit vite's `/editor/@fs<abspath>` so the game binds
+    // to edit-runtime's SINGLE engine instance (shared component registry) rather
+    // than play-runtime's separate `/preview` engine — otherwise the game's
+    // defineComponent and edit's resolveComponent hit different global Maps and
+    // assets.instantiate throws `component-not-defined`.
+    projectRootAbs: projectRoot,
     wsClients: hub.size(),
   }),
 );

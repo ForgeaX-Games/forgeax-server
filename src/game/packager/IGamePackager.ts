@@ -23,16 +23,6 @@ export interface PackageOptions {
   rebuildEngine?: boolean;
   /** Clear related caches and retry from scratch */
   forceRebuild?: boolean;
-  /** Android-only: applicationId (e.g. com.acme.mygame). Falls back to a slug-derived id. */
-  androidAppId?: string;
-  /** Android-only: launcher label (strings.xml app_name). Falls back to forge.json name / slug. */
-  androidAppName?: string;
-  /** Android-only: Gradle rootProject.name. Falls back to slug. */
-  androidProjectName?: string;
-  /** Android-only: launcher icon — base64 PNG (data-URL header stripped) + original filename. */
-  androidIcon?: { dataBase64: string; filename: string };
-  /** Android-only: locked screen orientation the exported app launches in. Defaults to landscape. */
-  androidOrientation?: 'portrait' | 'landscape';
   /** Progress callback — Strategy reports phases/lines, API layer feeds them to Job */
   onProgress?: (phase: string, line?: string) => void;
 }
