@@ -549,6 +549,57 @@ async function shimGeminiMultimodalImage(
   return { success: false, error: text || '模型未返回图片' };
 }
 
+function litellmProxyImageConfigured(env: Record<string, string | undefined>): boolean {
+  return !!(env.LITELLM_PROXY_BASE_URL && env.LITELLM_PROXY_KEY);
+}
+
+// LiteLLM proxy 多模态生图:走 forgeax proxy /v1/chat/completions (gemini-3-pro-image),
+// 支持参考图 (image_url) + aspectRatio (注入 prompt)。避免直连 Gemini API 需 GEMINI_API_KEY。
+async function shimLitellmProxyImage(
+  env: Record<string, string | undefined>,
+  body: GenerateImageBody,
+): Promise<{ success: boolean; imageBase64?: string; mimeType?: string; error?: string }> {
+  const baseUrl = (env.LITELLM_PROXY_BASE_URL ?? '').replace(/\/+$/, '');
+  const apiKey = env.LITELLM_PROXY_KEY ?? '';
+  const model = env.LITELLM_PROXY_IMAGE_MODEL ?? 'gemini-3-pro-image';
+  if (!baseUrl || !apiKey) return { success: false, error: 'LITELLM_PROXY_BASE_URL/KEY 未配置' };
+
+  const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+  if (body.inputImageBase64) {
+    content.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${cleanB64(body.inputImageBase64)}` } });
+  }
+  for (const img of body.inputImages ?? []) {
+    content.push({ type: 'image_url', image_url: { url: `data:${img.mimeType || 'image/png'};base64,${cleanB64(img.base64)}` } });
+  }
+  let prompt = body.prompt ?? '';
+  if (body.aspectRatio) prompt += `\n(aspect ratio: ${body.aspectRatio})`;
+  content.push({ type: 'text', text: prompt });
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error('timeout')), 90_000);
+  try {
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content }], modalities: ['image'] }),
+      signal: ctrl.signal,
+    });
+    const raw = await resp.text();
+    let parsed: { error?: { message?: string }; choices?: Array<{ message?: { images?: Array<{ image_url?: { url?: string } }> } }> };
+    try { parsed = JSON.parse(raw); } catch { return { success: false, error: `litellm proxy non-JSON (HTTP ${resp.status}): ${raw.slice(0, 200)}` }; }
+    if (!resp.ok) return { success: false, error: `litellm proxy: ${parsed.error?.message ?? `HTTP ${resp.status}`}` };
+    const imgUrl = parsed.choices?.[0]?.message?.images?.[0]?.image_url?.url;
+    if (!imgUrl) return { success: false, error: 'litellm proxy 未返回图片' };
+    const m = imgUrl.match(/^data:([^;]+);base64,(.*)$/);
+    if (!m) return { success: false, error: 'litellm proxy image_url 格式异常' };
+    return { success: true, imageBase64: m[2], mimeType: m[1] };
+  } catch (e) {
+    return { success: false, error: `litellm proxy 请求失败: ${(e as Error).message}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function needsGeminiImageRoute(body: GenerateImageBody): boolean {
   const model = body.model?.trim() ?? '';
   return model.startsWith('gemini')
@@ -585,8 +636,16 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
     const prompt = body.prompt?.trim();
     if (!prompt) return c.json({ success: false, error: '缺少 prompt' });
 
-    // Spine 拆件 / 多参考图 / 指定宽高比 → 直连 Gemini 多模态生图（与 wb-anim dev 插件一致）。
+    // Spine 拆件 / 多参考图 / 指定宽高比 → 多模态生图。
+    // 优先级:① 前端选了 LiteLLM,或 ② 没配 GEMINI_API_KEY 但配了 litellm proxy
+    //   → 走 forgeax proxy chat/completions (gemini-3-pro-image 支持参考图);
+    // 否则直连 Gemini generateContent API。
     if (needsGeminiImageRoute(body)) {
+      const wantsLitellm = body.model?.trim() === 'litellm-image';
+      const geminiUnavailable = !getGeminiKey(ctx.env);
+      if ((wantsLitellm || geminiUnavailable) && litellmProxyImageConfigured(ctx.env)) {
+        return c.json(await shimLitellmProxyImage(ctx.env, body));
+      }
       return c.json(await shimGeminiMultimodalImage(ctx.env, body));
     }
 
