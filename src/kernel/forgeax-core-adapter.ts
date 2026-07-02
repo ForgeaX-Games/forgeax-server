@@ -67,6 +67,11 @@ function resolveCoreServeEntry(): string {
 }
 const CORE_SERVE_ENTRY = resolveCoreServeEntry();
 
+/** bun 解释器:用**绝对路径**(运行本 server 的 bun 自身),而非裸名 `'bun'`。
+ *  spec 经 RPC 传给 agent-host,后者用 `child_process.spawn(cmd, args)`(无 shell)起进程;
+ *  Windows 下裸名不走 PATHEXT 解析 → `uv_spawn 'bun'` ENOENT。与 workbench/packager 同款。 */
+const BUN_BIN = process.execPath || 'bun';
+
 // forkExtract:经复用 serve 会话发 forkExtract RPC,sidecar 内 facade 跑 cache-safe fork(已实现)。
 const CAPS: KernelCapabilities = { streaming: true, thinking: true, toolCalls: true, midTurnInject: false, forkExtract: true };
 
@@ -364,7 +369,7 @@ class ForgeaxCoreServeKernel implements AgentKernel {
         kind: 'forgeax-core',
         credential: 'sidecar-managed',
         serveMode: true,
-        cmd: 'bun',
+        cmd: BUN_BIN,
         args: [CORE_SERVE_ENTRY, '--serve', '--sock', endpoint],
         cwd: projectRoot,
         env: stripModelKeys(materializeEnv()),
@@ -488,7 +493,7 @@ class ForgeaxCoreServeKernel implements AgentKernel {
       endpoint,
       kernel: {
         kind: 'forgeax-core', credential: 'sidecar-managed', serveMode: true,
-        cmd: 'bun', args: [CORE_SERVE_ENTRY, '--serve', '--sock', endpoint],
+        cmd: BUN_BIN, args: [CORE_SERVE_ENTRY, '--serve', '--sock', endpoint],
         cwd: projectRoot, env: stripModelKeys(materializeEnv()),
       },
     });
