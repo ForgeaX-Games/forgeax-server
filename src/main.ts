@@ -235,6 +235,7 @@ app.get('/api/health', (c) =>
     pid: process.pid,
     uptime: process.uptime(),
     projectRoot: friendlyPath(projectRoot),
+    projectRootAbs: projectRoot,
     wsClients: hub.size(),
   }),
 );
