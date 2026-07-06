@@ -557,12 +557,22 @@ app.all('/api/narrative/*', async (c) => {
   const narrativePort = process.env.NARRATIVE_PORT ?? '8900';
   const target = `http://127.0.0.1:${narrativePort}`;
   const url = new URL(c.req.url);
+  const method = c.req.method;
+  // Buffer the request body for non-GET/HEAD rather than forwarding the raw
+  // ReadableStream. Streaming a forwarded body (even with duplex:'half') while
+  // also relaying the client's content-length throws under bun/undici, which
+  // surfaced as a 503 for *every* narrative POST (start / ip-dna/* …) — the UI
+  // then reads narrativeOffline and shows "服务未启动". Buffering + dropping the
+  // hop-by-hop headers (host / content-length, recomputed by fetch) fixes it.
+  const headers = new Headers(c.req.raw.headers);
+  headers.delete('host');
+  headers.delete('content-length');
+  const body = method !== 'GET' && method !== 'HEAD' ? await c.req.arrayBuffer() : undefined;
   try {
     const resp = await fetch(`${target}${url.pathname}${url.search}`, {
-      method: c.req.method,
-      headers: c.req.raw.headers,
-      body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
-      duplex: 'half',
+      method,
+      headers,
+      body,
     });
     return new Response(resp.body, { status: resp.status, headers: resp.headers });
   } catch {
