@@ -4,6 +4,10 @@
     "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    // Resolve forgeax-cli's `bun` export condition → src/*.ts, matching the Bun
+    // runtime. Keeps server typecheck decoupled from cli/dist (no build needed
+    // for in-repo dev); external Node consumers skip `bun` and get dist types.
+    "customConditions": ["bun"],
     "strict": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,

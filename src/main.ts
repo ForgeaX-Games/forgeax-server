@@ -4,7 +4,7 @@
 // silently disappear when the server is started outside `bun run` from root.
 // existing process.env wins (so explicit shell exports still override file).
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 {
   const root = process.env.FORGEAX_PROJECT_ROOT ?? resolve(import.meta.dir, '../../..');
   if (!process.env.FORGEAX_PROJECT_ROOT) process.env.FORGEAX_PROJECT_ROOT = root;
@@ -225,6 +225,12 @@ const { app } = await createForgeaxApp({
   //   内层闭包带可选 root(配合 SessionLayout.resolveScope(sessionId?, root?) —— workspaces 激活
   //   时用 abs 查该工作区的 active game);无参时回落工厂 root。
   sessionLayoutFactory: (root) => new GameSessionLayout(root, (r) => getActiveGame(r ?? root)),
+  // 产品模式把 CLI 的可移动运行态(cache/checkpoints/SM debug.log)收进项目:
+  //   <root>/.forgeax/state —— 不用 .forgeax/user,那个前缀在 file API 白名单
+  //   (platform-io safe-path.ts),否则 cache/checkpoints 会经 /api/files 暴露。
+  //   keys / kits / user settings 不随此根走,留 ~/.forgeax(跨项目共享/机密)。
+  // 工厂,理由同上 sessionLayoutFactory:切 workspace 要对新根重建。
+  stateRootFactory: (root) => join(root, '.forgeax', 'state'),
 });
 
 app.get('/api/health', (c) =>
