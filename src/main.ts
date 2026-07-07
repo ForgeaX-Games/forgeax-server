@@ -41,6 +41,7 @@ import { GameSessionLayout } from './studio-session-layout';
 import { createWorkbenchRouter } from './game/workbench';
 import { createCharacterRouter } from './game/wb-character';
 import { createBgmRouter } from './game/wb-bgm';
+import { createDiffusionRendererRouter, getDiffusionRendererWsUpstreamUrl } from './game/wb-diffusion-renderer';
 import { createCeApiShimRouter } from './game/ce-api-shim';
 import { GameSystemPromptComposer } from './game/system-prompt-composer';
 import { gameHostTools } from './game/host-tools';
@@ -211,6 +212,7 @@ const { app } = await createForgeaxApp({
     { path: '/api/workbench', router: createWorkbenchRouter() },
     { path: '/api/wb/character', router: createCharacterRouter({ projectRoot, env: shimEnv }) },
     { path: '/api/wb/bgm', router: createBgmRouter() },
+    { path: '/api/wb/diffusion-renderer', router: createDiffusionRendererRouter() },
     {
       path: '/__ce-api__',
       router: createCeApiShimRouter({
@@ -500,6 +502,18 @@ app.use('/plugins/wb-agent-persona/*', serveStatic({
   },
 }));
 
+// wb-diffusion-renderer — realtime viewport diffusion renderer. The static
+// marketplace entry is a compatibility landing page; the production panel is
+// injected inline by Studio, and the backend proxy is /api/wb/diffusion-renderer/*.
+const wbDiffusionRendererDir = mp('wb-diffusion-renderer');
+app.use('/plugins/wb-diffusion-renderer/*', serveStatic({
+  root: wbDiffusionRendererDir,
+  rewriteRequestPath: (p) => {
+    const rest = p.replace(/^\/plugins\/wb-diffusion-renderer/, '') || '/';
+    return rest === '/' ? '/index.html' : rest;
+  },
+}));
+
 // wb-observatory — Vite/React app, mirrors wb-character's serve-from-dist
 // pattern. Source lives in `packages/marketplace/plugins/wb-observatory/`
 // and `bun run build` emits to `dist/` (vite `base: /plugins/wb-observatory/`
@@ -717,6 +731,19 @@ try {
     if (url.pathname === '/ws') {
       const sid = url.searchParams.get('sid') ?? undefined;
       const data: WsClientData = { id: crypto.randomUUID(), sid };
+      const upgraded = srv.upgrade(req, { data });
+      if (upgraded) return undefined;
+      return new Response('upgrade required', { status: 426 });
+    }
+    // wb-diffusion-renderer WS relay (Phase 2) — backend-agnostic (ADR 0004). Resolve the
+    // selected backend's upstream WS URL (key injected server-side) and reverse-
+    // proxy it via the shared wsHandler proxy branch. Raw key never reaches the
+    // browser; JPEG frames pass through zero-copy. Path is under /ws/* (not /api)
+    // so the dev vite proxy (which enables ws only on /ws) forwards the upgrade.
+    if (url.pathname === '/ws/diffusion-renderer') {
+      const upstreamUrl = getDiffusionRendererWsUpstreamUrl();
+      if (!upstreamUrl) return new Response('diffusion-renderer ws backend unavailable', { status: 503 });
+      const data: WsClientData = { id: crypto.randomUUID(), proxy: { url: upstreamUrl } };
       const upgraded = srv.upgrade(req, { data });
       if (upgraded) return undefined;
       return new Response('upgrade required', { status: 426 });
