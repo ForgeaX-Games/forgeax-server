@@ -49,6 +49,7 @@ import { materializeEnv, stripModelKeys } from 'forgeax-cli/kernel/sidecar-spawn
 import { tt, ttEnabled } from 'forgeax-cli/lib/turn-trace';
 import { getConsoleRouterSnapshot } from 'forgeax-cli/core/logger';
 import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -106,8 +107,41 @@ function deriveSock(sessionId: string): string {
   return join(tmpdir(), `fxcore-${h}.sock`);
 }
 
+/** base 名 + 短 nonce(`fxcore-<16hex>-<8hex>.sock`),每次 spawn 唯一。 */
+function freshSockVariant(base: string): string {
+  return base.replace(/\.sock$/, `-${randomUUID().slice(0, 8)}.sock`);
+}
+
+/**
+ * 为一次 serve spawn 挑 sock 路径 —— **恒用唯一 nonce 名**,从根上杜绝 `EADDRINUSE`。
+ *
+ * 关键观察:sock 路径**无跨进程重连语义**。session 只缓存在 adapter 内存(`sessions` map),
+ * server 一重启即空 → 下一轮必然重新 spawn;没有任何代码靠确定性路径去「重连既有 serve」。
+ * 早先按 sessionId 确定性派生纯属多余,反而埋雷:上一次 serve 若没被干净收掉(Windows 上无
+ * 进程组、优雅信号投递不到 → 僵尸残活),它仍 bind 着那个 AF_UNIX 地址 → 新 serve `listen` 撞
+ * `EADDRINUSE`(errno 10048)秒崩 → adapter 连不上报 "not reachable"。
+ *
+ * 「探活+换名」曾想救这个,但 Windows 上不可靠:僵尸握着 sock 文件时 RPC 探活会超时误判为「无人
+ * 监听」,随后 `unlinkSync` 又因文件被占而静默失败 → 仍返回 base → 照撞。故弃掉脆弱的探活,
+ * 直接每次 spawn 用全新地址:僵尸/陈旧文件再多也撞不上。旧僵尸交由 kill 侧 `taskkill /T /F` 收割,
+ * base litter 顺带 best-effort 清一下(纯为不攒 temp 垃圾,失败无妨)。
+ */
+async function reclaimSock(sessionId: string): Promise<string> {
+  const base = deriveSock(sessionId);
+  try { if (existsSync(base)) unlinkSync(base); } catch { /* 被僵尸占/锁 → 无妨,反正用唯一名 */ }
+  return freshSockVariant(base);
+}
+
+/** serve 冷启动连接死线。Windows 首次 spawn(bun 冷启 + 转译整棵 core 树 + OTEL 初始化 +
+ *  杀软实时扫描 + 全栈同时启动抢 IO)常远超旧的 8s 硬上限 → serve 其实仍在启动,adapter 却
+ *  提前放弃误报 "not reachable"。对齐 `ensureSidecar` 对 agent-host 冷启的 30s 处理;env 可覆盖。 */
+function serveConnectTimeoutMs(): number {
+  const v = Number(process.env.FORGEAX_CORE_SERVE_CONNECT_TIMEOUT_MS);
+  return Number.isFinite(v) && v > 0 ? v : 30000;
+}
+
 /** 连 serve endpoint;serve 刚 spawn 需片刻才 listen → 重试到 deadline。 */
-async function connectWithRetry(sock: string, signal: AbortSignal, deadlineMs = 8000): Promise<RpcConnection> {
+async function connectWithRetry(sock: string, signal: AbortSignal, deadlineMs = serveConnectTimeoutMs()): Promise<RpcConnection> {
   const end = Date.now() + deadlineMs;
   for (;;) {
     if (signal.aborted) throw new Error('aborted before forgeax-core serve ready');
@@ -118,6 +152,40 @@ async function connectWithRetry(sock: string, signal: AbortSignal, deadlineMs = 
     }
     if (Date.now() > end) throw new Error(`forgeax-core serve endpoint not reachable: ${sock}`);
     await sleep(150);
+  }
+}
+
+/**
+ * 连 serve 且把「启动期诊断」并进错误。旧行为:连不上只抛一句 `not reachable: <sock>`——看不到
+ * serve 子进程到底为何没 listen(冷启超时?spawn 崩?依赖缺?)。这里在 connect 期间旁挂
+ * sidecar.onData(缓冲 serve stdout/stderr)+ onExit(捕早退 code/reason),失败时把这些真实信号
+ * 拼进错误消息,一眼可诊断。serve 正常起来则零开销(订阅随即退订)。
+ */
+async function connectServeWithDiagnostics(
+  sidecar: Awaited<ReturnType<typeof ensureSidecar>>,
+  sessionId: string,
+  endpoint: string,
+  signal: AbortSignal,
+): Promise<RpcConnection> {
+  let startupOut = '';
+  const offData = sidecar.onData((d) => {
+    if (d.sessionId === sessionId) startupOut += `[${d.stream}] ${d.chunk}`;
+  });
+  let earlyExit: { code: number | null; reason: string } | null = null;
+  const offExit = sidecar.onExit((info) => {
+    if (info.sessionId === sessionId) earlyExit = { code: info.code, reason: info.reason };
+  });
+  try {
+    return await connectWithRetry(endpoint, signal);
+  } catch (e) {
+    const ee = earlyExit as { code: number | null; reason: string } | null;
+    const exitNote = ee ? ` serve exited early (code=${ee.code}, ${ee.reason}).` : '';
+    const tail = startupOut.trim().slice(-800);
+    const outNote = tail ? ` serve output: ${tail}` : ' serve produced no output (spawn/startup failure suspected).';
+    throw new Error(`${(e as Error).message}.${exitNote}${outNote}`);
+  } finally {
+    offData();
+    offExit();
   }
 }
 
@@ -353,7 +421,7 @@ class ForgeaxCoreServeKernel implements AgentKernel {
   /** spawn serve 子进程 + 连接 + 装一次性 notify/hostTool/onExit 处理器。 */
   private async spawnSession(key: string, req: TurnRequest, signal: AbortSignal): Promise<ServeSession> {
     const sessionId = serveSessionId(key);
-    const endpoint = deriveSock(sessionId);
+    const endpoint = await reclaimSock(sessionId);
     const projectRoot = process.env.FORGEAX_PROJECT_ROOT ?? process.cwd();
     const sidecar = await ensureSidecar();
 
@@ -376,7 +444,7 @@ class ForgeaxCoreServeKernel implements AgentKernel {
       },
     });
 
-    const conn = await connectWithRetry(grant.endpoint ?? endpoint, signal);
+    const conn = await connectServeWithDiagnostics(sidecar, sessionId, grant.endpoint ?? endpoint, signal);
     const s: ServeSession = { sessionId, conn, turns: new Map(), inflight: 0, idleTimer: null, closing: false };
 
     // 一次性 notify:按 callId 路由事件到对应轮的 sink;telemetry 走旁路(落盘+广播)。
@@ -481,7 +549,7 @@ class ForgeaxCoreServeKernel implements AgentKernel {
   private async *runTurnEphemeral(req: TurnRequest, signal: AbortSignal): AsyncIterable<KernelEvent> {
     const callId = req.callId ?? randomUUID();
     const sessionId = `${req.hostSessionId || req.session.threadId || req.session.agentId || 'forge'}::${callId}`;
-    const endpoint = deriveSock(sessionId);
+    const endpoint = await reclaimSock(sessionId);
     const projectRoot = process.env.FORGEAX_PROJECT_ROOT ?? process.cwd();
     const sidecar = await ensureSidecar();
     const grant = await sidecar.startSession({
@@ -497,7 +565,7 @@ class ForgeaxCoreServeKernel implements AgentKernel {
         cwd: projectRoot, env: stripModelKeys(materializeEnv()),
       },
     });
-    const conn = await connectWithRetry(grant.endpoint ?? endpoint, signal);
+    const conn = await connectServeWithDiagnostics(sidecar, sessionId, grant.endpoint ?? endpoint, signal);
     this.callSession.set(callId, { sessionId, conn, turns: new Map(), inflight: 1, idleTimer: null, closing: false });
     // serve 子进程 stdout/stderr → per-session logger(同复用路径;逃生闸亦保留可观测性)。
     const offData = this.attachServeLogRouting(sidecar, sessionId, req.hostSessionId, req.session.agentId || 'forge');

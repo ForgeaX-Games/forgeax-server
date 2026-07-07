@@ -335,7 +335,7 @@ export function createWorkbenchRouter(): Hono {
   const agentsCache = new Map<string, { ts: number; resp: AgentsResp }>();
   const AGENTS_TTL_MS = 2500;
   router.get('/agents', async (c) => {
-    const lang = (c.req.query('lang') ?? 'zh') as 'zh' | 'en';
+    const lang = (c.req.query('lang') ?? 'en') as 'zh' | 'en';
     const pinnedSlug = c.req.query('slug') ?? undefined;
     // `?include=files` opts into per-agent files[] resolution. Default skips
     // it: most callers (PreviewMode, FilesPanel, Composer, agent-role, etc.)
@@ -420,15 +420,15 @@ export function createWorkbenchRouter(): Hono {
       ): { naming: AgentNaming; personName?: string } => {
         // forge：legacy-only 编排者，没有 plugin card，合成英文名 Forge。
         if (id === 'forge') {
-          return {
-            naming: computeAgentNaming({
-              personName: 'Forge',
-              cnTitle: legacyProfession?.zh ?? '主线制作人',
-              enTitle: legacyProfession?.en ?? 'Lead Producer',
-              fallback: fallbackName,
-            }),
+        return {
+          naming: computeAgentNaming({
             personName: 'Forge',
-          };
+            cnTitle: legacyProfession?.zh ?? '主线制作人',
+            enTitle: legacyProfession?.en ?? 'Lead Producer',
+            fallback: fallbackName,
+          }, lang),
+          personName: 'Forge',
+        };
         }
         const card = cardById.get(id);
         const cn = card?.cnTitle;
@@ -439,7 +439,7 @@ export function createWorkbenchRouter(): Hono {
             cnTitle: cn,
             enTitle: card?.enTitle,
             fallback: fallbackName,
-          }),
+          }, lang),
           personName: pn,
         };
       };
@@ -819,7 +819,7 @@ export function createWorkbenchRouter(): Hono {
   const ledgerCache = new Map<string, { ts: number; events: LedgerEvent[] }>();
   const LEDGER_TTL_MS = 2500;
   router.get('/events/recent', async (c) => {
-    const lang = (c.req.query('lang') ?? 'zh') as 'zh' | 'en';
+    const lang = (c.req.query('lang') ?? 'en') as 'zh' | 'en';
     const limit = Math.min(Number(c.req.query('limit') ?? 30), 100);
     const now = Date.now();
     const cached = ledgerCache.get(lang);
