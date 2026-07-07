@@ -6,7 +6,7 @@
  * validation, logging, timing without touching platform-specific build logic.
  */
 
-export type TargetPlatform = 'web' | 'windows' | 'android' | 'ios';
+export type TargetPlatform = 'web' | 'windows' | 'macos' | 'android' | 'ios';
 
 export interface PackageOptions {
   slug: string;
@@ -33,6 +33,16 @@ export interface PackageOptions {
   androidIcon?: { dataBase64: string; filename: string };
   /** Android-only: locked screen orientation the exported app launches in. Defaults to landscape. */
   androidOrientation?: 'portrait' | 'landscape';
+  /** iOS-only: bundle identifier (e.g. com.acme.mygame). Falls back to a slug-derived id. */
+  iosBundleId?: string;
+  /** iOS-only: CFBundleDisplayName. Falls back to forge.json name / slug. */
+  iosAppName?: string;
+  /** iOS-only: Xcode project name (the .xcodeproj is renamed to this). Falls back to slug. */
+  iosProjectName?: string;
+  /** iOS-only: app icon — base64 PNG (data-URL header stripped) + original filename. */
+  iosIcon?: { dataBase64: string; filename: string };
+  /** iOS-only: locked screen orientation the exported app launches in. Defaults to landscape. */
+  iosOrientation?: 'portrait' | 'landscape';
   /** Progress callback — Strategy reports phases/lines, API layer feeds them to Job */
   onProgress?: (phase: string, line?: string) => void;
 }

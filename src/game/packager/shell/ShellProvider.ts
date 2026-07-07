@@ -1,15 +1,16 @@
 /**
- * ShellProvider — builds (or retrieves from cache) the universal Windows
- * game launcher exe via `bun build --compile`.
+ * ShellProvider — builds (or retrieves from cache) the universal game launcher
+ * binary via `bun build --compile`, per host/target platform.
  *
  * No Rust required. The launcher source lives at
- * `packages/build/player-launcher/player-launcher.ts`.
+ * `packages/build/player-launcher/player-launcher.ts` and is cross-platform at
+ * runtime (opens Edge/Chrome --app on Windows, the default browser on macOS).
  *
- * Cache location: `~/.forgeax/cache/player-shell/forgeax-player-v<V>.exe`
- *   + `shell-meta.json` (version, builtAt).
+ * Cache location: `~/.forgeax/cache/player-shell/forgeax-player-v<V>-<plat>[.exe]`
+ *   + `shell-meta-<plat>.json` (version, builtAt).
  */
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { assetRoot } from '@forgeax/platform-io';
 
@@ -19,8 +20,29 @@ function studioRoot(): string {
 }
 
 const SHELL_VERSION = '5';
-const EXE_NAME = `forgeax-player-v${SHELL_VERSION}.exe`;
-const META_NAME = 'shell-meta.json';
+const META_PREFIX = 'shell-meta';
+
+export type ShellPlatform = 'windows' | 'macos';
+
+interface ShellVariant {
+  /** bun --compile target triple; omitted → host target (mac→mac). */
+  target?: string;
+  extraFlags: string[];
+  exeName: string;
+}
+
+function variantFor(platform: ShellPlatform): ShellVariant {
+  if (platform === 'macos') {
+    // Build for the host arch — the mac export is primarily for playtesting on
+    // this machine. bun with no --target compiles for the current host.
+    return { extraFlags: [], exeName: `forgeax-player-v${SHELL_VERSION}-macos` };
+  }
+  return {
+    target: 'bun-windows-x64',
+    extraFlags: ['--windows-hide-console'],
+    exeName: `forgeax-player-v${SHELL_VERSION}.exe`,
+  };
+}
 
 interface ShellMeta {
   version: string;
@@ -34,23 +56,27 @@ export interface ShellResult {
   error?: string;
 }
 
-let buildPromise: Promise<ShellResult> | null = null;
+const buildPromises = new Map<ShellPlatform, Promise<ShellResult>>();
 
 export async function getOrBuildShell(
   cacheDir: string,
+  platform: ShellPlatform = 'windows',
   onProgress?: (phase: string, line?: string) => void,
   forceRebuild?: boolean,
 ): Promise<ShellResult> {
-  // Concurrency lock: if a build is already in flight, await it
-  if (buildPromise) return buildPromise;
+  // Concurrency lock per platform: if a build is already in flight, await it
+  const inFlight = buildPromises.get(platform);
+  if (inFlight) return inFlight;
 
+  const variant = variantFor(platform);
   const shellDir = join(cacheDir, 'player-shell');
-  const exePath = join(shellDir, EXE_NAME);
-  const metaPath = join(shellDir, META_NAME);
+  const exePath = join(shellDir, variant.exeName);
+  const metaPath = join(shellDir, `${META_PREFIX}-${platform}.json`);
 
   if (forceRebuild) {
     onProgress?.('shell-build', 'forceRebuild: clearing shell cache');
-    rmSync(shellDir, { recursive: true, force: true });
+    rmSync(exePath, { force: true });
+    rmSync(metaPath, { force: true });
   }
 
   // Cache hit
@@ -58,14 +84,14 @@ export async function getOrBuildShell(
     try {
       const meta = JSON.parse(readFileSync(metaPath, 'utf-8')) as ShellMeta;
       if (meta.version === SHELL_VERSION) {
-        onProgress?.('shell-build', `cache hit: ${EXE_NAME}`);
+        onProgress?.('shell-build', `cache hit: ${variant.exeName}`);
         return { ok: true, exePath, cached: true };
       }
     } catch { /* stale meta, rebuild */ }
   }
 
   // Cache miss — compile
-  buildPromise = (async (): Promise<ShellResult> => {
+  const promise = (async (): Promise<ShellResult> => {
     try {
       onProgress?.('shell-build', 'compiling launcher with bun --compile …');
       mkdirSync(shellDir, { recursive: true });
@@ -81,8 +107,8 @@ export async function getOrBuildShell(
         cmd: [
           bunBin, 'build', launcherSrc,
           '--compile',
-          '--target=bun-windows-x64',
-          '--windows-hide-console',
+          ...(variant.target ? [`--target=${variant.target}`] : []),
+          ...variant.extraFlags,
           `--outfile=${exePath}`,
         ],
         cwd: root,
@@ -106,17 +132,24 @@ export async function getOrBuildShell(
         };
       }
 
+      // Host-target compiles (macOS) emit a Unix executable — make sure it is
+      // marked runnable regardless of umask.
+      if (!variant.target) {
+        try { chmodSync(exePath, 0o755); } catch { /* best effort */ }
+      }
+
       const meta: ShellMeta = { version: SHELL_VERSION, builtAt: Date.now() };
       writeFileSync(metaPath, JSON.stringify(meta, null, 2));
-      onProgress?.('shell-build', `compiled → ${EXE_NAME}`);
+      onProgress?.('shell-build', `compiled → ${variant.exeName}`);
 
       return { ok: true, exePath, cached: false };
     } catch (e) {
       return { ok: false, cached: false, error: e instanceof Error ? e.message : String(e) };
     } finally {
-      buildPromise = null;
+      buildPromises.delete(platform);
     }
   })();
 
-  return buildPromise;
+  buildPromises.set(platform, promise);
+  return promise;
 }

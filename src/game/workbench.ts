@@ -34,6 +34,36 @@ import type { TargetPlatform } from './packager';
  */
 export const GAME_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
 
+/** Content types for the `/play/:slug/*` static route. Bun.file infers most
+ *  types, but the engine is strict about `.wasm` (must be `application/wasm`
+ *  for streaming instantiation) — so we pin the ones that matter and fall back
+ *  to Bun's inference otherwise. */
+function playMimeFor(p: string): string | undefined {
+  const ext = p.slice(p.lastIndexOf('.') + 1).toLowerCase();
+  const map: Record<string, string> = {
+    html: 'text/html; charset=utf-8',
+    js: 'text/javascript; charset=utf-8',
+    mjs: 'text/javascript; charset=utf-8',
+    css: 'text/css; charset=utf-8',
+    json: 'application/json; charset=utf-8',
+    wasm: 'application/wasm',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    gif: 'image/gif',
+    svg: 'image/svg+xml',
+    ktx2: 'image/ktx2',
+    wgsl: 'text/plain; charset=utf-8',
+    glb: 'model/gltf-binary',
+    gltf: 'model/gltf+json',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    ogg: 'audio/ogg',
+  };
+  return map[ext];
+}
+
 /**
  * Detect whether a game dir is an interactive film-game (wb-reel): its
  * `reel/scenarios.json` exists and has a non-empty `activeId` (the author has
@@ -661,8 +691,10 @@ export function createWorkbenchRouter(): Hono {
 
   // ── POST /games/:slug/package — cross-platform game packaging ──
   // Body: { targetPlatform?, rebuildEngine?, forceRebuild? }
-  // Web builds are synchronous. Windows (and future native) builds run
-  // asynchronously — response returns a jobId immediately for polling.
+  // ALL platforms (web included) run asynchronously — the response returns a
+  // jobId immediately so the client can show a live progress overlay while the
+  // build runs. (Web used to be synchronous, which made the UI look frozen for
+  // the whole Vite build with zero feedback — "点了没反应，半天才弹详情".)
   router.post('/games/:slug/package', async (c) => {
     const slug = c.req.param('slug');
     if (!GAME_SLUG_RE.test(slug ?? '')) {
@@ -678,6 +710,11 @@ export function createWorkbenchRouter(): Hono {
     let androidProjectName: string | undefined;
     let androidIcon: { dataBase64: string; filename: string } | undefined;
     let androidOrientation: 'portrait' | 'landscape' | undefined;
+    let iosBundleId: string | undefined;
+    let iosAppName: string | undefined;
+    let iosProjectName: string | undefined;
+    let iosIcon: { dataBase64: string; filename: string } | undefined;
+    let iosOrientation: 'portrait' | 'landscape' | undefined;
     try {
       const body = await c.req.json() as {
         targetPlatform?: string;
@@ -689,6 +726,11 @@ export function createWorkbenchRouter(): Hono {
         androidProjectName?: string;
         androidIcon?: { dataBase64?: string; filename?: string };
         androidOrientation?: string;
+        iosBundleId?: string;
+        iosAppName?: string;
+        iosProjectName?: string;
+        iosIcon?: { dataBase64?: string; filename?: string };
+        iosOrientation?: string;
       } | null;
       if (body?.targetPlatform) targetPlatform = body.targetPlatform as TargetPlatform;
       if (body?.rebuildEngine) rebuildEngine = true;
@@ -706,74 +748,74 @@ export function createWorkbenchRouter(): Hono {
       if (body?.androidOrientation === 'portrait' || body?.androidOrientation === 'landscape') {
         androidOrientation = body.androidOrientation;
       }
+      if (body?.iosBundleId) iosBundleId = String(body.iosBundleId);
+      if (body?.iosAppName) iosAppName = String(body.iosAppName);
+      if (body?.iosProjectName) iosProjectName = String(body.iosProjectName);
+      if (body?.iosIcon?.dataBase64) {
+        iosIcon = {
+          dataBase64: String(body.iosIcon.dataBase64),
+          filename: String(body.iosIcon.filename ?? 'icon.png'),
+        };
+      }
+      if (body?.iosOrientation === 'portrait' || body?.iosOrientation === 'landscape') {
+        iosOrientation = body.iosOrientation;
+      }
     } catch { /* default to 'web' */ }
 
     const projectRoot = defaultProjectRoot();
     const gameDir = resolve(projectRoot, '.forgeax/games', slug);
 
-    // Windows / native platforms: async job
-    if (targetPlatform !== 'web') {
-      const job = createJob(slug!, targetPlatform);
-      const outDir = resolve(projectRoot, '.forgeax/exports', `${slug}-${targetPlatform}`);
-      const onProgress = makeProgressFn(job.id);
+    const job = createJob(slug!, targetPlatform);
+    // Web ships to `.forgeax/exports/<slug>`; native platforms carry a suffix
+    // so they don't clobber the web build (and so `/play/<slug>` maps 1:1 to
+    // the web export dir).
+    const outDir = targetPlatform === 'web'
+      ? resolve(projectRoot, '.forgeax/exports', slug!)
+      : resolve(projectRoot, '.forgeax/exports', `${slug}-${targetPlatform}`);
+    const onProgress = makeProgressFn(job.id);
 
-      // Fire-and-forget — run in background
-      (async () => {
-        updateJob(job.id, { status: 'running', phase: 'starting' });
-        try {
-          const result = await registry.build({
-            slug: slug!,
-            gameDir,
-            projectRoot,
-            outDir,
-            platform: targetPlatform,
-            rebuildEngine,
-            forceRebuild,
-            engineRoot,
-            androidAppId,
-            androidAppName,
-            androidProjectName,
-            androidIcon,
-            androidOrientation,
-            onProgress,
-          });
-          updateJob(job.id, {
-            status: result.ok ? 'success' : 'failed',
-            phase: result.ok ? 'done' : 'failed',
-            finishedAt: Date.now(),
-            result: result as unknown as Record<string, unknown>,
-          });
-        } catch (e) {
-          updateJob(job.id, {
-            status: 'failed',
-            phase: 'error',
-            finishedAt: Date.now(),
-            result: { ok: false, error: e instanceof Error ? e.message : String(e) },
-          });
-        }
-      })();
+    // Fire-and-forget — run in background, client polls /package/jobs/:id.
+    (async () => {
+      updateJob(job.id, { status: 'running', phase: 'starting' });
+      try {
+        const result = await registry.build({
+          slug: slug!,
+          gameDir,
+          projectRoot,
+          outDir,
+          platform: targetPlatform,
+          rebuildEngine,
+          forceRebuild,
+          engineRoot,
+          androidAppId,
+          androidAppName,
+          androidProjectName,
+          androidIcon,
+          androidOrientation,
+          iosBundleId,
+          iosAppName,
+          iosProjectName,
+          iosIcon,
+          iosOrientation,
+          onProgress,
+        });
+        updateJob(job.id, {
+          status: result.ok ? 'success' : 'failed',
+          phase: result.ok ? 'done' : 'failed',
+          finishedAt: Date.now(),
+          result: result as unknown as Record<string, unknown>,
+        });
+      } catch (e) {
+        updateJob(job.id, {
+          status: 'failed',
+          phase: 'error',
+          finishedAt: Date.now(),
+          result: { ok: false, error: e instanceof Error ? e.message : String(e) },
+        });
+      }
+    })();
 
-      return c.json({ async: true, jobId: job.id, slug, platform: targetPlatform });
-    }
-
-    // Web: synchronous
-    const outDir = resolve(projectRoot, '.forgeax/exports', slug);
-    const result = await registry.build({
-      slug: slug!,
-      gameDir,
-      projectRoot,
-      outDir,
-      platform: targetPlatform,
-      rebuildEngine,
-      forceRebuild,
-      engineRoot,
-    });
-
-    if (!result.ok) {
-      const status = result.error?.includes('not found') ? 404 : 500;
-      return c.json(result, status);
-    }
-    return c.json(result);
+    return c.json({ async: true, jobId: job.id, slug, platform: targetPlatform });
   });
 
   // ── GET /package/jobs/:id — poll async job progress ──
@@ -806,6 +848,60 @@ export function createWorkbenchRouter(): Hono {
     const ok = deleteHistory(c.req.param('id'), clean);
     if (!ok) return c.json({ error: 'record not found' }, 404);
     return c.json({ ok: true });
+  });
+
+  // ── POST /package/reveal — open an export product folder in the OS file
+  // manager (Finder / Explorer / xdg). Body: { path }. The path must resolve
+  // inside .forgeax/exports so a rogue caller can't open arbitrary dirs. ──
+  router.post('/package/reveal', async (c) => {
+    let target = '';
+    try { target = String(((await c.req.json()) as { path?: unknown })?.path ?? ''); } catch { /* empty */ }
+    const exportsRoot = resolve(defaultProjectRoot(), '.forgeax/exports');
+    const abs = resolve(exportsRoot, target.replace(/^.*\.forgeax\/exports\/?/, ''));
+    if (!abs.startsWith(exportsRoot) || !existsSync(abs)) {
+      return c.json({ ok: false, error: 'path not found under exports' }, 400);
+    }
+    try {
+      const cmd = process.platform === 'win32'
+        ? ['explorer', abs]
+        : process.platform === 'darwin'
+          ? ['open', abs]
+          : ['xdg-open', abs];
+      Bun.spawn({ cmd, stdout: 'ignore', stderr: 'ignore' });
+      return c.json({ ok: true, path: abs });
+    } catch (e) {
+      return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  });
+
+  // ── GET /play/:slug/* — one-click local playtest for a Web export, served
+  // directly by the studio server. This replaces the old `/package/serve` that
+  // spawned `npx serve` — that had a slow, unpredictable first-run download
+  // (the package is fetched on demand) and we could only guess when it was
+  // ready before opening the tab, so the browser often hit a not-yet-bound
+  // server → blank/black tab. Serving from the already-running studio process
+  // is instant, same-origin (a secure context on localhost → WebGPU works),
+  // and lets us set the correct `.wasm` MIME the engine needs. The web export
+  // is base-relative (`base: './'`), so it runs fine under this `/play/<slug>/`
+  // subpath. Path is confined to `.forgeax/exports/<slug>` (no traversal).
+  router.get('/play/:slug/*', async (c) => {
+    const slug = c.req.param('slug');
+    if (!GAME_SLUG_RE.test(slug ?? '')) return c.text('bad slug', 400);
+    const exportsRoot = resolve(defaultProjectRoot(), '.forgeax/exports');
+    const base = resolve(exportsRoot, slug!);
+    if (!base.startsWith(exportsRoot) || !existsSync(base)) {
+      return c.text('export not found — package this game for Web first', 404);
+    }
+    const marker = `/play/${slug}/`;
+    const at = c.req.path.indexOf(marker);
+    let rel = at === -1 ? '' : c.req.path.slice(at + marker.length);
+    try { rel = decodeURIComponent(rel); } catch { /* keep raw */ }
+    if (rel === '' || rel.endsWith('/')) rel += 'index.html';
+    const abs = resolve(base, rel);
+    if (!abs.startsWith(base) || !existsSync(abs)) return c.text('not found', 404);
+    const file = Bun.file(abs);
+    const type = playMimeFor(abs) ?? (file.type || 'application/octet-stream');
+    return new Response(file, { headers: { 'content-type': type, 'cache-control': 'no-cache' } });
   });
 
   // ── GET /events/recent — recent file activity across .forgeax/games/, with agent attribution ──

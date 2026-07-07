@@ -36,7 +36,7 @@ export class WindowsPackager implements IGamePackager {
 
     // Step 1: acquire the launcher exe
     onProgress?.('shell', 'acquiring launcher shell …');
-    const shell = await getOrBuildShell(cacheDir, onProgress, forceRebuild);
+    const shell = await getOrBuildShell(cacheDir, 'windows', onProgress, forceRebuild);
     if (!shell.ok || !shell.exePath) {
       const rec = appendHistory({
         slug,
