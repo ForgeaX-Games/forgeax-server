@@ -405,6 +405,18 @@ app.use('/plugins/wb-character/*', serveStatic({
   },
 }));
 
+// wb-items — 道具 / 图标 workbench (items.json + 48px icon pipeline). Vite
+// build with base:'./' emits relative asset URLs that resolve under this mount.
+// Same embedded serve-from-dist pattern as wb-character / wb-gen3d.
+const wbItemsDist = mp('wb-items', 'dist');
+app.use('/plugins/wb-items/*', serveStatic({
+  root: wbItemsDist,
+  rewriteRequestPath: (p) => {
+    const rest = p.replace(/^\/plugins\/wb-items/, '') || '/';
+    return rest === '/' ? '/index.html' : rest;
+  },
+}));
+
 const wbNarrDist = mp('wb-narrative', 'viz', 'dist');
 app.use('/plugins/wb-narrative/*', serveStatic({
   root: wbNarrDist,
