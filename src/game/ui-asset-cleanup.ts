@@ -29,6 +29,11 @@ interface NormalizeStandaloneUiAssetOptions {
   fillRatio?: number
   mode?: UiAssetCleanupMode
   chromeEdgeRefine?: ChromeEdgeRefine
+  /**
+   * 像素风：保持硬边（不去溢色、不羽化）+ 最近邻缩放。
+   * 非像素风（默认 false）：去溢色 + 边缘羽化 + 高质量缩放，避免锯齿与色键残边。
+   */
+  pixelPerfect?: boolean
 }
 
 interface NormalizeUiAssetForCanvasOptions {
@@ -809,6 +814,74 @@ function keepLargestOpaqueComponent(rgba: Buffer, width: number, height: number,
   }
 }
 
+/**
+ * 去溢色（despill）：色键抠图后主体边缘常残留品红/绿幕色偏。
+ * 仅对**贴近透明区域**（边缘带）的不透明像素做温和中和，避免改动主体内部真实颜色。
+ * 非像素风专用；像素风保持原色以维持硬朗块面。
+ */
+function despillChromaEdges(rgba: Buffer, width: number, height: number, channels: number): void {
+  const src = Buffer.from(rgba)
+  const band = 2
+  const alphaAt = (x: number, y: number) => src[(y * width + x) * channels + 3]
+  const hasTransparentNear = (x: number, y: number): boolean => {
+    for (let dy = -band; dy <= band; dy++) {
+      for (let dx = -band; dx <= band; dx++) {
+        const nx = x + dx
+        const ny = y + dy
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
+        if (alphaAt(nx, ny) <= UI_ASSET_ALPHA_THRESHOLD) return true
+      }
+    }
+    return false
+  }
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * channels
+      if (src[i + 3] <= UI_ASSET_ALPHA_THRESHOLD) continue
+      if (!hasTransparentNear(x, y)) continue
+      const r = src[i]
+      const g = src[i + 1]
+      const b = src[i + 2]
+      if (r > g && b > g) {
+        rgba[i] = Math.round(g + (r - g) * 0.4)
+        rgba[i + 2] = Math.round(g + (b - g) * 0.4)
+      } else {
+        const m = Math.max(r, b)
+        if (g > m) rgba[i + 1] = Math.round(m + (g - m) * 0.4)
+      }
+    }
+  }
+}
+
+/**
+ * 边缘羽化：把硬二值 alpha 的锯齿边软化 1px，用 3x3 alpha 均值（只降不升）逼近抗锯齿。
+ * 非像素风专用；像素风需要清晰硬边，跳过。
+ */
+function featherAlphaEdges(rgba: Buffer, width: number, height: number, channels: number): void {
+  const src = Buffer.from(rgba)
+  const alphaAt = (x: number, y: number) => src[(y * width + x) * channels + 3]
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const i = (y * width + x) * channels
+      const a = src[i + 3]
+      if (a <= UI_ASSET_ALPHA_THRESHOLD) continue
+      const edge = (
+        alphaAt(x - 1, y) <= UI_ASSET_ALPHA_THRESHOLD
+        || alphaAt(x + 1, y) <= UI_ASSET_ALPHA_THRESHOLD
+        || alphaAt(x, y - 1) <= UI_ASSET_ALPHA_THRESHOLD
+        || alphaAt(x, y + 1) <= UI_ASSET_ALPHA_THRESHOLD
+      )
+      if (!edge) continue
+      let sum = 0
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) sum += alphaAt(x + dx, y + dy)
+      }
+      const avg = Math.round(sum / 9)
+      if (avg < a) rgba[i + 3] = avg
+    }
+  }
+}
+
 function zeroTransparentRgb(rgba: Buffer, channels: number): void {
   for (let idx = 0; idx < rgba.length; idx += channels) {
     if (rgba[idx + 3] > UI_ASSET_ALPHA_THRESHOLD) continue
@@ -1295,6 +1368,7 @@ export async function normalizeStandaloneUiAsset(
     const fillRatio = typeof options === 'number' ? options : (options.fillRatio ?? 0.72)
     const mode = typeof options === 'number' ? 'icon' : (options.mode ?? 'icon')
     const chromeEdgeRefine = typeof options === 'number' ? undefined : options.chromeEdgeRefine
+    const pixelPerfect = typeof options === 'number' ? false : (options.pixelPerfect ?? false)
     const buf = Buffer.from(parsed.base64, 'base64')
     const image = sharp(buf)
     const meta = await image.metadata()
@@ -1325,6 +1399,10 @@ export async function normalizeStandaloneUiAsset(
         scrubDarkNeutralEdgeBackdrop(rgba, W, H, channels)
         refineIconCutout(rgba, W, H, channels)
       }
+      if (!pixelPerfect) {
+        despillChromaEdges(rgba, W, H, channels)
+        featherAlphaEdges(rgba, W, H, channels)
+      }
     }
     if (mode === 'chrome') {
       const before = computeOpaqueComponentStats(originalRgba, W, H, channels)
@@ -1342,6 +1420,10 @@ export async function normalizeStandaloneUiAsset(
         if (chromeEdgeRefine === 'dark-ui') {
           refineChromeEdgesForDarkUi(rgba, W, H, channels)
         }
+      }
+      if (!pixelPerfect) {
+        despillChromaEdges(rgba, W, H, channels)
+        featherAlphaEdges(rgba, W, H, channels)
       }
     }
     zeroTransparentRgb(rgba, channels)
@@ -1367,7 +1449,10 @@ export async function normalizeStandaloneUiAsset(
     const left = Math.round((W - targetW) / 2)
     const top = Math.round((H - targetH) / 2)
 
-    const resized = await sharp(extracted).resize(targetW, targetH, { fit: 'contain' }).png().toBuffer()
+    const resized = await sharp(extracted)
+      .resize(targetW, targetH, { fit: 'contain', kernel: pixelPerfect ? 'nearest' : 'lanczos3' })
+      .png()
+      .toBuffer()
     const canvas = sharp({
       create: {
         width: W,

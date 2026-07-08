@@ -240,6 +240,28 @@ function dataUrlFromMcpResult(result: any): string | null {
   return null;
 }
 
+/**
+ * MCP 不可用时的兜底:直连 Gemini(有 GEMINI_API_KEY)或 LiteLLM 代理生图。
+ * Gemini 的 imageConfig.aspectRatio 只支持有限比例(1:1/4:3/3:4/16:9/9:16/21:9 等),
+ * 21:9 之类不受支持时先按原比例试、失败再不带比例重试,保证总能拿到图。
+ */
+async function directTextToImageFallback(prompt: string, aspectRatio?: string): Promise<string | null> {
+  const env = process.env as Record<string, string | undefined>;
+  const useLitellm = litellmProxyImageConfigured(env) && !getGeminiKey(env);
+  if (!useLitellm && !getGeminiKey(env)) return null;
+  const ratios: (string | undefined)[] = aspectRatio ? [aspectRatio, undefined] : [undefined];
+  for (const ar of ratios) {
+    const r = useLitellm
+      ? await shimLitellmProxyImage(env, { prompt, aspectRatio: ar })
+      : await shimGeminiMultimodalImage(env, { prompt, aspectRatio: ar });
+    if (r.success && r.imageBase64) {
+      return `data:${r.mimeType || 'image/png'};base64,${r.imageBase64}`;
+    }
+    console.warn('[ui-design/generate-assets] direct image fallback failed', ar ? `(ar=${ar})` : '(no-ar)', ':', r.error);
+  }
+  return null;
+}
+
 async function mcpTextToImage(prompt: string, outputPath: string, aspectRatio = '1:1'): Promise<string | null> {
   const host = getMcpHost();
   const providers = [
@@ -273,6 +295,11 @@ async function mcpTextToImage(prompt: string, outputPath: string, aspectRatio = 
       }
     }
   }
+
+  // MCP 沙箱不可达(本地开发常见:ECONNREFUSED 127.0.0.1:3100)时,回退到直连 Gemini / LiteLLM。
+  const fallback = await directTextToImageFallback(prompt, aspectRatio);
+  if (fallback) return fallback;
+
   if (lastError) throw new Error(lastError);
   return null;
 }
@@ -339,51 +366,77 @@ function buildUiAssetPrompt(kind: string, body: UiDesignGenerateAssetsBody, vari
   return `${common} Asset: standalone UI prop ${variant}, centered, no text.`;
 }
 
+/** 单张素材最多尝试次数(首次 + 失败/质检不合格后的重生)。 */
+const UI_ASSET_MAX_ATTEMPTS = 2;
+
+function isCutoutKind(kind: UiAssetKind): boolean {
+  return kind === 'icons' || kind === 'npc' || kind === 'shopItems' || kind === 'weapons';
+}
+
 async function generateUiDesignAsset(
   body: UiDesignGenerateAssetsBody,
   kind: UiAssetKind,
   variant = '',
 ): Promise<string | null> {
-  const prompt = buildUiAssetPrompt(kind, body, variant);
   const prefix = uiDesignOutputPrefix(body);
-  const fileName = `${kind}${variant ? '-' + variant.replace(/[^a-z0-9-]/gi, '-') : ''}.png`;
+  const safeVariant = variant ? '-' + variant.replace(/[^a-z0-9-]/gi, '-') : '';
   const aspectRatio = kind === 'background'
     ? '16:9'
     : kind === 'buttonPrimary' || kind === 'buttonNormal' || kind === 'titleDeco'
       ? '21:9'
       : '1:1';
-  const raw = await mcpTextToImage(prompt, `${prefix}/${fileName}`, aspectRatio);
-  if (!raw) return null;
-  if (kind === 'background') return raw;
-
-  // 资产清洗由产品壳注入(marketplace 后端);未注入 ⇒ 跳过清洗、直接返回原图(优雅降级)。
+  // 像素风保持硬边/最近邻;其余风格走去溢色 + 羽化 + 高质量缩放。
+  const pixelPerfect = (body.styleKey ?? '').trim() === 'pixel';
+  const isIconMode = isCutoutKind(kind);
   const cleanup = injectedUiAssetCleanup;
-  if (!cleanup) return raw;
 
-  const normalized = await cleanup.normalizeStandaloneUiAsset(raw, {
-    mode: kind === 'icons' || kind === 'npc' || kind === 'shopItems' || kind === 'weapons' ? 'icon' : 'chrome',
-    fillRatio: kind === 'icons' || kind === 'npc' || kind === 'shopItems' || kind === 'weapons' ? 0.62 : 0.9,
-    chromeEdgeRefine: body.styleKey === 'sci-fi' || body.styleKey === 'realistic-military' ? 'dark-ui' : undefined,
-  });
-  const report = await cleanup.inspectUiAssetCanvas(normalized);
-  const strictCutoutIssue = kind === 'icons' || kind === 'npc' || kind === 'shopItems' || kind === 'weapons'
-    ? report.opaqueEdgePixels > 6
-      || report.transparentCornerDirtyPixels > 24
-      || report.fragmentationRatio > 0.42
-      || report.largestComponentRatio < 0.58
-      || report.opaqueBoundsFillRatio > 0.88
-    : report.opaqueEdgePixels > 0
-      || report.transparentCornerDirtyPixels > 0
-      || report.fragmentationRatio > 0.42
-      || report.largestComponentRatio < 0.56;
+  let best: string | null = null;
+  for (let attempt = 0; attempt < UI_ASSET_MAX_ATTEMPTS; attempt += 1) {
+    const prompt = buildUiAssetPrompt(kind, body, variant)
+      + (attempt > 0
+        ? ` Regenerate a cleaner variation (attempt ${attempt + 1}); keep the single subject centered on one flat pure chroma-key background with wide empty margin on all four sides, no extra props.`
+        : '');
+    // 每次尝试用不同文件名,避免 MCP 侧按 outputPath 复用旧图。
+    const fileName = `${kind}${safeVariant}-a${attempt + 1}.png`;
 
-  // Gemini can produce valid chrome assets that fail strict cutout heuristics
-  // after cleanup. The UI must not stay in loading because a real generated
-  // asset was discarded by an over-strict quality gate.
-  if (strictCutoutIssue) {
-    console.warn(`[ui-design/generate-assets] ${kind} cutout inspection warning`, report);
+    let raw: string | null = null;
+    try {
+      raw = await mcpTextToImage(prompt, `${prefix}/${fileName}`, aspectRatio);
+    } catch (e) {
+      console.warn(`[ui-design/generate-assets] ${kind} attempt ${attempt + 1} failed:`, (e as Error).message);
+      continue;
+    }
+    if (!raw) continue;
+
+    // 背景不抠图;未注入清洗能力时也直接返回原图(优雅降级)。
+    if (kind === 'background' || !cleanup) return raw;
+
+    const normalized = await cleanup.normalizeStandaloneUiAsset(raw, {
+      mode: isIconMode ? 'icon' : 'chrome',
+      fillRatio: isIconMode ? 0.62 : 0.9,
+      chromeEdgeRefine: body.styleKey === 'sci-fi' || body.styleKey === 'realistic-military' ? 'dark-ui' : undefined,
+      pixelPerfect,
+    });
+    const report = await cleanup.inspectUiAssetCanvas(normalized);
+    const strictCutoutIssue = isIconMode
+      ? report.opaqueEdgePixels > 6
+        || report.transparentCornerDirtyPixels > 24
+        || report.fragmentationRatio > 0.42
+        || report.largestComponentRatio < 0.58
+        || report.opaqueBoundsFillRatio > 0.88
+      : report.opaqueEdgePixels > 0
+        || report.transparentCornerDirtyPixels > 0
+        || report.fragmentationRatio > 0.42
+        || report.largestComponentRatio < 0.56;
+
+    if (!strictCutoutIssue) return normalized;
+
+    // 质检不合格:留作兜底(rembg/ComfyUI 在 studio 不可用,只能靠 Gemini 重生+重抠),
+    // 若还有下一次尝试则重生一张更干净的;否则返回这张真实素材,绝不让 UI 卡在加载。
+    best = normalized;
+    console.warn(`[ui-design/generate-assets] ${kind} cutout QC warning (attempt ${attempt + 1})`, report);
   }
-  return normalized;
+  return best;
 }
 
 async function handleUiDesignGenerateAssetsReal(ctx: CeApiShimCtx, body: UiDesignGenerateAssetsBody): Promise<Record<string, unknown>> {
@@ -450,6 +503,8 @@ function resolveGeminiTextModel(requested?: string): string {
   return m;
 }
 
+const GEMINI_REQUEST_TIMEOUT_MS = 150_000;
+
 async function geminiGenerateContent(
   env: Record<string, string | undefined>,
   model: string,
@@ -460,11 +515,14 @@ async function geminiGenerateContent(
     return { ok: false, error: '未配置 GEMINI_API_KEY，请在 Studio .env 中设置后重启服务' };
   }
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error('Gemini 请求超时')), GEMINI_REQUEST_TIMEOUT_MS);
   try {
     const r = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: ctrl.signal,
     });
     const j = await r.json().catch(() => ({})) as { error?: { message?: string } };
     if (!r.ok) {
@@ -473,6 +531,8 @@ async function geminiGenerateContent(
     return { ok: true, data: j };
   } catch (e) {
     return { ok: false, error: (e as Error).message || 'Gemini 网络请求失败' };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
