@@ -135,12 +135,24 @@ export class IosPackager implements IGamePackager {
       replaceInFile(infoPlist, '__FORGEAX_ORIENTATIONS__', orientationsXml(orientation));
 
       // ── Step 4b: rename the .xcodeproj to the chosen project name ──
-      // Safe: the pbxproj never hardcodes its own containing folder name, and
-      // the shared scheme references the target by UUID + fixed BuildableName.
+      // The pbxproj never hardcodes its own containing folder name, but the
+      // shared scheme's `ReferencedContainer` DOES (container:ForgeaxPlayer.xcodeproj).
+      // Renaming the project without rewriting that reference leaves the scheme
+      // pointing at a container that no longer exists — Xcode then can't resolve
+      // the scheme's buildable and greys out Run/Build.
       if (projectName !== 'ForgeaxPlayer') {
         const from = join(iosOutDir, 'ForgeaxPlayer.xcodeproj');
         const to = join(iosOutDir, `${projectName}.xcodeproj`);
         if (existsSync(from) && !existsSync(to)) renameSync(from, to);
+        // Point the shared scheme at the renamed container (all 3 occurrences)
+        // and rename the scheme so Xcode surfaces it under the project name.
+        const schemesDir = join(iosOutDir, `${projectName}.xcodeproj`, 'xcshareddata', 'xcschemes');
+        const schemeFrom = join(schemesDir, 'ForgeaxPlayer.xcscheme');
+        if (existsSync(schemeFrom)) {
+          replaceInFile(schemeFrom, 'container:ForgeaxPlayer.xcodeproj', `container:${projectName}.xcodeproj`);
+          const schemeTo = join(schemesDir, `${projectName}.xcscheme`);
+          if (!existsSync(schemeTo)) renameSync(schemeFrom, schemeTo);
+        }
       }
 
       // ── Step 5: icon — write PNG into the AppIcon asset set ──
