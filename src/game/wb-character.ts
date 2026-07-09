@@ -221,7 +221,7 @@ function safeAssetPath(root: string, rel: string): string | null {
   // Whitelist: .forgeax/games/<slug>/<module>/... where <module> is a known
   // per-game asset root. Every workbench shares ONE validated write path.
   const ALLOWED_MODULES = new Set([
-    'characters', 'skills', 'reel', 'narrative', 'lowpoly-characters', 'public', 'wb-scene',
+    'characters', 'skills', 'reel', 'game-video', 'narrative', 'lowpoly-characters', 'public', 'wb-scene',
   ]);
   if (segs[0] !== '.forgeax' || segs[1] !== 'games' || !ALLOWED_MODULES.has(segs[3])) return null;
   return abs;

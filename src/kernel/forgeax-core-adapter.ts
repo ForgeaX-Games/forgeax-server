@@ -410,7 +410,13 @@ class ForgeaxCoreServeKernel implements AgentKernel {
   /** 取已有复用会话或新建(并发首轮去重)。 */
   private acquire(key: string, req: TurnRequest, signal: AbortSignal): Promise<ServeSession> {
     const existing = this.sessions.get(key);
-    if (existing && !existing.closing) return Promise.resolve(existing);
+    if (existing && !existing.closing) {
+      // 复用前探测直连存活:sidecar 被重启(设置页改凭据)或 serve 崩溃会让这条直连 socket 关闭,
+      //   但被动 close 无人主动驱逐 → 若照旧复用,本轮 runTurn 会立刻吃一个 'connection closed'
+      //   才被动自愈(用户白丢一轮)。这里连接已死就先驱逐、落到下面重新 spawn(带最新凭据/env)。
+      if (existing.conn.isOpen) return Promise.resolve(existing);
+      this.evict(key, existing, /*reap*/ false);
+    }
     const pending = this.starting.get(key);
     if (pending) return pending;
     const p = this.spawnSession(key, req, signal).finally(() => this.starting.delete(key));

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { readFile, writeFile, cp, stat, rm, unlink } from 'node:fs/promises';
 import { existsSync, lstatSync, mkdirSync, readdirSync, statSync, readFileSync, symlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve, basename, join, isAbsolute } from 'node:path';
+import { resolve, basename, join, isAbsolute, dirname } from 'node:path';
 // Why Bun.Glob and not node:fs/promises#glob: bun 1.3.x's shim of the node
 // glob silently won't enter dot-prefixed dirs (`.forgeax/`) regardless of
 // any option — patterns like `.forgeax/games/<slug>/**/*.ts` return zero
@@ -18,7 +18,8 @@ import { getActiveGame, setActiveGame, clearActiveGameIf } from './active-game';
 import { findMarketplaceManifest } from 'forgeax-cli/api/lib/marketplace-manifest';
 import { computeAgentNaming, pickPersonName, type AgentNaming } from 'forgeax-cli/api/lib/agent-naming';
 import { getPathManager } from 'forgeax-cli/fs/path-manager';
-import { listAgents } from 'forgeax-cli/agents/loader';
+import { listAgents, resolvePersonaForAgent } from 'forgeax-cli/agents/loader';
+import { reloadPlugins } from 'forgeax-cli/plugins/registry';
 import { getSessionManager } from 'forgeax-cli/core/session-manager';
 import { getTerminalManager } from 'forgeax-cli/terminal/manager';
 import { BLACKBOARD_KEYS } from 'forgeax-cli/defaults/blackboard-vars';
@@ -84,6 +85,59 @@ export function isReelGame(gameDir: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** The active reel scenario id of a game (reel/scenarios.json `activeId`), or
+ *  null when the game has no activated reel scenario. The studio preview needs
+ *  this to mount <ReelPlaySurface scenarioId=...>. */
+export function readReelScenarioId(gameDir: string): string | null {
+  try {
+    const p = join(gameDir, 'reel', 'scenarios.json');
+    if (!existsSync(p)) return null;
+    const db = JSON.parse(readFileSync(p, 'utf-8')) as { activeId?: unknown };
+    return typeof db.activeId === 'string' && db.activeId.length > 0 ? db.activeId : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The active video-game scenario id of a game (game-video/scenarios.json
+ *  `activeId`), or null when none is activated. Parallel to readReelScenarioId
+ *  for the wb-game-video fork; the studio preview mounts it via
+ *  <GameVideoPlaySurface scenarioId=...>. */
+export function readGameVideoScenarioId(gameDir: string): string | null {
+  try {
+    const p = join(gameDir, 'game-video', 'scenarios.json');
+    if (!existsSync(p)) return null;
+    const db = JSON.parse(readFileSync(p, 'utf-8')) as { activeId?: unknown };
+    return typeof db.activeId === 'string' && db.activeId.length > 0 ? db.activeId : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The declared project type of a game. Decision B: the type is declared in the
+ * game's `forge.json` (`projectType: "reel"` is stamped by the wb-reel
+ * scenario-save link). The studio preview routes on THIS, not on a
+ * reel/scenarios.json heuristic.
+ *
+ * Back-compat fallback: pre-existing reel games created before the forge.json
+ * stamp existed are still recognized via isReelGame() so their preview routes
+ * correctly; the next reel-save will backfill the explicit forge.json field.
+ */
+export function readProjectType(gameDir: string): 'reel' | 'engine' | 'game-video' {
+  try {
+    const m = JSON.parse(readFileSync(join(gameDir, 'forge.json'), 'utf-8')) as {
+      projectType?: unknown;
+    };
+    if (m.projectType === 'reel' || m.projectType === 'engine' || m.projectType === 'game-video') {
+      return m.projectType;
+    }
+  } catch {
+    /* no/invalid forge.json — fall through to heuristic backfill */
+  }
+  return isReelGame(gameDir) ? 'reel' : 'engine';
 }
 
 const GUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
@@ -261,12 +315,12 @@ async function resolveProduces(root: string, patterns: string[], slug?: string):
   return out;
 }
 
-async function listAllGames(root: string): Promise<Array<{ slug: string; name: string; mtime: number; fileCount: number }>> {
+async function listAllGames(root: string): Promise<Array<{ slug: string; name: string; mtime: number; fileCount: number; projectType: 'reel' | 'engine' | 'game-video'; reelScenarioId: string | null }>> {
   /* UI enumeration — reads all game dirs as a flat scan; resolves via projectRoot
    * directly rather than per-slug pm.user().gameDir for O(1) listing. */
   const gamesDir = resolve(root, '.forgeax/games');
   if (!existsSync(gamesDir)) return [];
-  const out: Array<{ slug: string; name: string; mtime: number; fileCount: number }> = [];
+  const out: Array<{ slug: string; name: string; mtime: number; fileCount: number; projectType: 'reel' | 'engine' | 'game-video'; reelScenarioId: string | null }> = [];
   try {
     for (const slug of readdirSync(gamesDir)) {
       if (slug.startsWith('.') || slug.startsWith('_')) continue;
@@ -294,7 +348,12 @@ async function listAllGames(root: string): Promise<Array<{ slug: string; name: s
         fileCount++;
         if (fileCount >= 5000) break;
       }
-      out.push({ slug, name, mtime: st.mtimeMs, fileCount });
+      // Decision B: declared project type from forge.json (reel / game-video
+      // preview routing). `reelScenarioId` carries the active scenario id for
+      // BOTH reel and the wb-game-video fork (the studio reads it generically).
+      const projectType = readProjectType(dir);
+      const reelScenarioId = projectType === 'game-video' ? readGameVideoScenarioId(dir) : null;
+      out.push({ slug, name, mtime: st.mtimeMs, fileCount, projectType, reelScenarioId });
     }
   } catch { /* ignore */ }
   out.sort((a, b) => b.mtime - a.mtime);
@@ -394,6 +453,52 @@ export function createWorkbenchRouter(): Hono {
   type AgentsResp = { agents: unknown[]; activeSlug: string | undefined };
   const agentsCache = new Map<string, { ts: number; resp: AgentsResp }>();
   const AGENTS_TTL_MS = 2500;
+  // Persona read/write BY AGENT ID — resolves the REAL persona file across
+  // L0/L1/L2 via the plugin snapshot (resolvePersonaForAgent), so roles created
+  // by role.create (living in L1 `~/.forgeax` or L2 `<project>/.forgeax`, NOT
+  // `packages/marketplace`) are viewable/editable in wb-agent-persona. The
+  // editor's old `/api/files?path=packages/marketplace/plugins/agent-<id>/…`
+  // assumed L0 → 404 for created roles (files whitelist also excludes
+  // `.forgeax/plugins/**` and can't reach `~/.forgeax` at all).
+  const resolvePersonaAny = async (raw: string) => {
+    const cands = [raw, raw.replace(/^@[^/]+\//, ''), raw.replace(/^@[^/]+\//, '').replace(/^agent-/, '')];
+    for (const cand of cands) {
+      const p = await resolvePersonaForAgent(cand);
+      if (p) return p;
+    }
+    return null;
+  };
+  router.get('/agents/:id/persona', async (c) => {
+    const id = c.req.param('id');
+    const lang = c.req.query('lang') === 'en' ? 'en' : 'zh';
+    const persona = await resolvePersonaAny(id);
+    if (!persona) return c.json({ error: `agent not found: ${id}` }, 404);
+    const target = join(dirname(persona.personaPath), `${lang}.md`);
+    const path = existsSync(target) ? target : persona.personaPath;
+    try {
+      const content = await readFile(path, 'utf-8');
+      return c.json({ content, lang, path });
+    } catch (e) {
+      return c.json({ error: `read failed: ${(e as Error).message}` }, 404);
+    }
+  });
+  router.put('/agents/:id/persona', async (c) => {
+    const id = c.req.param('id');
+    const body = (await c.req.json().catch(() => ({}))) as { lang?: string; content?: unknown };
+    const lang = body.lang === 'en' ? 'en' : 'zh';
+    if (typeof body.content !== 'string') return c.json({ error: 'content (string) required' }, 400);
+    const persona = await resolvePersonaAny(id);
+    if (!persona) return c.json({ error: `agent not found: ${id}` }, 404);
+    const target = join(dirname(persona.personaPath), `${lang}.md`);
+    try {
+      await writeFile(target, body.content, 'utf-8');
+      await reloadPlugins();
+      return c.json({ ok: true, path: target });
+    } catch (e) {
+      return c.json({ error: `write failed: ${(e as Error).message}` }, 500);
+    }
+  });
+
   router.get('/agents', async (c) => {
     const lang = (c.req.query('lang') ?? 'en') as 'zh' | 'en';
     const pinnedSlug = c.req.query('slug') ?? undefined;
@@ -480,15 +585,15 @@ export function createWorkbenchRouter(): Hono {
       ): { naming: AgentNaming; personName?: string } => {
         // forge：legacy-only 编排者，没有 plugin card，合成英文名 Forge。
         if (id === 'forge') {
-        return {
-          naming: computeAgentNaming({
+          return {
+            naming: computeAgentNaming({
+              personName: 'Forge',
+              cnTitle: legacyProfession?.zh ?? '主线制作人',
+              enTitle: legacyProfession?.en ?? 'Lead Producer',
+              fallback: fallbackName,
+            }, lang),
             personName: 'Forge',
-            cnTitle: legacyProfession?.zh ?? '主线制作人',
-            enTitle: legacyProfession?.en ?? 'Lead Producer',
-            fallback: fallbackName,
-          }, lang),
-          personName: 'Forge',
-        };
+          };
         }
         const card = cardById.get(id);
         const cn = card?.cnTitle;
