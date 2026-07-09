@@ -72,7 +72,7 @@ The static scene is the engine's NATIVE scene pack \`scene.pack.json\` (the edit
     "payload": { "kind": "scene", "nodes": [
       { "localId": 0, "components": {
         "Name": { "value": "RedBox" },                 // entity name (how you find it)
-        "Transform": { "posX": 3, "posY": 0.5, "posZ": -2, "scaleX": 1, "scaleY": 1, "scaleZ": 1 },
+        "Transform": { "pos": [3, 0.5, -2], "scale": [1, 1, 1] },
         "MeshFilter": { "assetHandle": 0 },             // index into refs[] → a mesh GUID
         "MeshRenderer": { "material": 6 }               // index into refs[] → a material GUID
       } },
@@ -88,7 +88,7 @@ The static scene is the engine's NATIVE scene pack \`scene.pack.json\` (the edit
 Built-in mesh GUIDs (put in \`refs[]\`, point \`MeshFilter.assetHandle\` at the index): cube \`cbe42beb-8975-5096-b3a1-3dda4cb4c077\`, sphere \`95730fd2-9846-5f84-8658-0b3c971eb263\`, cylinder \`c1111111-0000-5000-8000-000000000001\`. (No plane — a ground/cuboid is a non-uniformly-scaled cube.)
 
 ### How to make common edits
-- **Move / scale / rotate** an object → find its node by \`Name.value\` and edit \`Transform\` (\`posX/Y/Z\`, \`scaleX/Y/Z\`; rotation is \`quatX/Y/Z/W\`). A **cuboid** = a cube node with non-uniform \`scale\` (e.g. \`scaleX:2.4, scaleY:0.7, scaleZ:1\`).
+- **Move / scale / rotate** an object → find its node by \`Name.value\` and edit \`Transform\` (\`pos:[x,y,z]\`, \`scale:[x,y,z]\`; rotation is \`quat:[x,y,z,w]\`). A **cuboid** = a cube node with non-uniform \`scale\` (e.g. \`scale:[2.4, 0.7, 1]\`).
 - **Change shape** → ensure the target mesh GUID is in \`refs[]\`, then set \`MeshFilter.assetHandle\` to that index.
 - **Change colour / material** → follow \`MeshRenderer.material\` → \`refs[that index]\` → find the \`kind:"material"\` asset with that guid → edit \`payload.paramValues.baseColor\` (\`[r,g,b,a]\`, 0..1), \`metallic\`, \`roughness\`.
 - **The controllable avatar** is the node whose \`Name.value === "Player"\`.
@@ -107,7 +107,7 @@ import { Transform } from '@forgeax/engine-runtime';
 // 'loaded' = what the template's scene loader returned: { mapping, nodes }
 const playerNode = loaded.nodes.find((n) => n.components.Name?.value === 'Player');
 const player = playerNode && loaded.mapping.get(playerNode.localId);
-ctx.registerUpdate((dt) => { /* read input; world.set(player, Transform, { posX, posZ }) */ });
+ctx.registerUpdate((dt) => { /* read input; world.set(player, Transform, { pos: [x, y, z] }) */ });
 \`\`\`
 The default new-game template already follows this shape — EXTEND it, don't replace it with pure-code spawns.
 
@@ -140,7 +140,7 @@ You may ONLY create or modify files under \`.forgeax/games/<slug>/\`. The paths 
 
 ## Key APIs (from \`@forgeax/engine-runtime\`)
 
-- **Transform defaults**: \`data: {}\` = identity (pos 0, rot identity, scale 1). Only write non-default fields: \`data: { posZ: 5 }\`
+- **Transform defaults**: \`data: {}\` = identity (pos 0, rot identity, scale 1). Fields are arrays — \`pos:[x,y,z]\`, \`quat:[x,y,z,w]\`, \`scale:[x,y,z]\`. Only write the arrays you need: \`data: { pos: [0, 0, 5] }\` (each array is whole — supply every axis you set)
 - **Camera factory**: \`perspective({ fov, aspect, near?, far? })\` — standalone function returning CameraData POD. \`near\` defaults 0.1, \`far\` defaults 100.
 - **Material factories**: \`Materials.unlit([r,g,b,a])\` / \`Materials.standard({ baseColor, metallic?, roughness? })\` — returns asset payload for \`assets.register()\`
 - **Rotation helper**: \`quat.eulerY(radians)\` — returns quaternion for Y-axis rotation. No hand-rolled half-angle math.
@@ -153,15 +153,16 @@ You may ONLY create or modify files under \`.forgeax/games/<slug>/\`. The paths 
 \`\`\`ts
 import {
   Transform, MeshFilter, MeshRenderer, Camera,
-  perspective, Materials, HANDLE_CUBE,
+  perspective, Materials,
 } from '@forgeax/engine-runtime';
+import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import type { GameEntry } from '@forgeax/game-types';
 
 const start: GameEntry = (ctx) => {
   const { world, assets } = ctx;
   const mat = assets.register(Materials.unlit([0.2, 0.6, 0.9, 1])).unwrap();
   world.spawn(
-    { component: Transform, data: { posY: 0.6, posZ: 5 } },
+    { component: Transform, data: { pos: [0, 0.6, 5] } },
     { component: Camera, data: perspective({ fov: 60, aspect: 16 / 9 }) },
   );
   world.spawn(
@@ -178,15 +179,16 @@ export default start;
 \`\`\`ts
 import {
   Transform, MeshFilter, MeshRenderer, Camera,
-  perspective, Materials, quat, HANDLE_CUBE,
+  perspective, Materials, quat,
 } from '@forgeax/engine-runtime';
+import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import type { GameEntry } from '@forgeax/game-types';
 
 const start: GameEntry = (ctx) => {
   const { world, assets } = ctx;
   const mat = assets.register(Materials.unlit([0.9, 0.4, 0.2, 1])).unwrap();
   world.spawn(
-    { component: Transform, data: { posY: 0.6, posZ: 5 } },
+    { component: Transform, data: { pos: [0, 0.6, 5] } },
     { component: Camera, data: perspective({ fov: 60, aspect: 16 / 9 }) },
   );
   const cube = world.spawn(
@@ -197,7 +199,7 @@ const start: GameEntry = (ctx) => {
   let yaw = 0;
   ctx.registerUpdate((dt) => {
     yaw += dt;
-    world.set(cube, Transform, quat.eulerY(yaw));
+    world.set(cube, Transform, { quat: quat.eulerY(yaw) });
   });
 };
 export default start;
@@ -208,15 +210,16 @@ export default start;
 \`\`\`ts
 import {
   Transform, MeshFilter, MeshRenderer, Camera,
-  perspective, Materials, HANDLE_CUBE,
+  perspective, Materials,
 } from '@forgeax/engine-runtime';
+import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import type { GameEntry } from '@forgeax/game-types';
 
 const start: GameEntry = (ctx) => {
   const { world, assets } = ctx;
   const mat = assets.register(Materials.unlit([0.4, 0.85, 0.3, 1])).unwrap();
   world.spawn(
-    { component: Transform, data: { posY: 0.6, posZ: 5 } },
+    { component: Transform, data: { pos: [0, 0.6, 5] } },
     { component: Camera, data: perspective({ fov: 60, aspect: 16 / 9 }) },
   );
   const cube = world.spawn(
@@ -231,7 +234,8 @@ const start: GameEntry = (ctx) => {
   ctx.registerUpdate((dt) => {
     const t = world.get(cube, Transform);
     if (t.ok) {
-      world.set(cube, Transform, { posX: t.value.posX + (targetX - t.value.posX) * dt * 4 });
+      const p = t.value.pos; // [x, y, z] live view — copy the axes you keep
+      world.set(cube, Transform, { pos: [p[0] + (targetX - p[0]) * dt * 4, p[1], p[2]] });
     }
   });
 };
@@ -253,7 +257,7 @@ import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@fo
 
 // dynamic body — falls under gravity, gets pushed/knocked
 world.spawn(
-  { component: Transform, data: { posY: 4 } },
+  { component: Transform, data: { pos: [0, 4, 0] } },
   { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
   { component: MeshRenderer, data: { materials: [mat] } },
   { component: RigidBody, data: { type: RigidBodyTypeValue.dynamic, mass: 1 } },
