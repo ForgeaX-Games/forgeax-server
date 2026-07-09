@@ -136,6 +136,25 @@ const hub = new WsHub();
 const watcher = new FsWatcher();
 const projectRoot = defaultProjectRoot();
 
+// Realign the play-engine `.forgeax` junction to THIS server's active root on
+// every (re)start. The active root is in-memory (process.env.FORGEAX_PROJECT_ROOT,
+// mutated by POST /api/workspaces/activate) while the junction is on-disk — so a
+// `bun --watch` server restart reverts env to the run.ts default but leaves the
+// junction pinned to whatever the last activate set. That desync makes the play
+// engine (:15173) serve games from a DIFFERENT root than the one the server
+// writes new games into → runtime-created games' /preview/pack-index/<slug>.json
+// 404s → asset-not-imported. Repointing here re-establishes the invariant "play
+// engine serves from the server's active root". Best-effort: throws in packaged
+// mode (no engine-src dir) and when the link is a real dir — non-fatal.
+{
+  const { repointEngineForgeaXSymlink } = await import('forgeax-cli/api/lib/engine-symlink');
+  try {
+    repointEngineForgeaXSymlink(projectRoot);
+  } catch (e) {
+    console.warn(`[forgeax-server] engine .forgeax realign skipped — ${(e as Error).message}`);
+  }
+}
+
 // 全链路 trace 落盘 sink(项目本地 .forgeax/sessions/<sid>/logs/)——后端 adapter 与
 // 浏览器 span 上传路由 `/api/telemetry` 共用同一实例,后端 + 浏览器 span 同落一处、拼一棵树。
 // 方案B PR1 D1:不再各算各的 projectSessionLogsDir,省略 resolveLogsDir → sink 默认走
@@ -250,6 +269,11 @@ app.get('/api/health', (c) =>
     projectRoot: friendlyPath(projectRoot),
     projectRootAbs: projectRoot,
     wsClients: hub.size(),
+    // Live native-path model id (read from process.env, which /api/settings/env
+    // live-applies). The UI's useModelLabel() falls back to this instead of the
+    // stale hardcoded "Claude Opus 4.7" — that constant was the source of the
+    // "model stuck on 4.7" report whenever the per-agent model hadn't resolved.
+    model: process.env.FORGEAX_MODEL || undefined,
   }),
 );
 

@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { readFile, writeFile, cp, stat, rm, unlink } from 'node:fs/promises';
-import { existsSync, lstatSync, readdirSync, statSync, readFileSync } from 'node:fs';
-import { resolve, basename, join } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readdirSync, statSync, readFileSync, symlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { resolve, basename, join, isAbsolute } from 'node:path';
 // Why Bun.Glob and not node:fs/promises#glob: bun 1.3.x's shim of the node
 // glob silently won't enter dot-prefixed dirs (`.forgeax/`) regardless of
 // any option — patterns like `.forgeax/games/<slug>/**/*.ts` return zero
@@ -323,6 +324,35 @@ export function createWorkbenchRouter(): Hono {
     return c.json({ games, activeSlug });
   });
 
+  // ── GET /templates — list built-in games usable as first-run templates ──
+  // Source is the official examples under assetRoot()/games (dev: packages/games;
+  // packaged: Resources/games). Read-only: onboarding "从模板创建" copies one of
+  // these into a fresh workspace via POST /api/workspaces/activate {template}.
+  // Filters underscore/dot/scripts entries and anything without a forge.json.
+  router.get('/templates', (c) => {
+    const gamesRoot = resolve(assetRoot(), 'games');
+    const out: Array<{ slug: string; name: string }> = [];
+    try {
+      for (const entry of readdirSync(gamesRoot)) {
+        if (entry.startsWith('.') || entry.startsWith('_') || entry === 'scripts') continue;
+        const dir = resolve(gamesRoot, entry);
+        try {
+          if (!statSync(dir).isDirectory()) continue;
+          const forgeJson = join(dir, 'forge.json');
+          if (!existsSync(forgeJson)) continue;
+          let name = entry;
+          try {
+            const parsed = JSON.parse(readFileSync(forgeJson, 'utf-8')) as { name?: string };
+            if (typeof parsed.name === 'string' && parsed.name) name = parsed.name;
+          } catch { /* keep slug as name */ }
+          out.push({ slug: entry, name });
+        } catch { /* skip unreadable entry */ }
+      }
+    } catch { /* games root missing → empty list */ }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return c.json({ templates: out });
+  });
+
   // ── DELETE /games/:slug — remove a game's whole dir ──
   // Charter P3 (explicit contract): detect symlinks with lstatSync so that
   // DELETE of a symlinked game only removes the link node, never follows
@@ -549,8 +579,12 @@ export function createWorkbenchRouter(): Hono {
   });
 
   // ── POST /games — create a new game scaffold (mkdir + forge.json + main.ts) ──
+  // Optional `template` = a built-in game slug (GET /templates, sourced from
+  // assetRoot()/games) to copy from instead of the blank `_template`/game-default.
+  // Either way the copy gets fresh GUIDs (regenerateGameGuids) so a template
+  // copied into a workspace that already holds games can't collide in the catalog.
   router.post('/games', async (c) => {
-    let body: { slug?: string; name?: string; brief?: string };
+    let body: { slug?: string; name?: string; brief?: string; template?: string };
     try {
       body = (await c.req.json()) as typeof body;
     } catch {
@@ -566,12 +600,26 @@ export function createWorkbenchRouter(): Hono {
     if (existsSync(gameDir)) {
       return c.json({ error: `.forgeax/games/${slug} already exists`, slug }, 409);
     }
-    const templateDir = resolveGameTemplate(projectRoot);
+    let templateDir: string | null;
+    if (body.template) {
+      const tslug = String(body.template).trim();
+      if (!GAME_SLUG_RE.test(tslug)) return c.json({ error: 'invalid template slug' }, 400);
+      const cand = resolve(assetRoot(), 'games', tslug);
+      templateDir = existsSync(cand) ? cand : null;
+      if (!templateDir) return c.json({ error: `template not found: ${tslug}` }, 404);
+    } else {
+      templateDir = resolveGameTemplate(projectRoot);
+    }
     if (!templateDir) {
       return c.json({ error: 'game template not found — expected .forgeax/games/_template/ or packages/editor/packages/engine/templates/game-default/' }, 500);
     }
     try {
-      await cp(templateDir, gameDir, { recursive: true });
+      // Skip per-instance state when copying (built-in templates like spin-cube
+      // ship a sessions/ dir + may have node_modules — not part of the template).
+      await cp(templateDir, gameDir, {
+        recursive: true,
+        filter: (src) => { const b = basename(src); return b !== 'sessions' && b !== 'node_modules' && b !== '.git'; },
+      });
       // Give the new game unique identities for the assets it defines, remapping
       // every reference (pack refs/payload, forge.json.defaultScene, main.ts
       // literals) while preserving refs to shared/builtin assets.
@@ -596,6 +644,58 @@ export function createWorkbenchRouter(): Hono {
       // so the agent's shell stops resolving against the previous game.
       setActiveGame(projectRoot, slug);
       return c.json({ ok: true, slug, gameDir: friendlyPath(gameDir) });
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 500);
+    }
+  });
+
+  // ── POST /games/link — adopt an existing game dir at an arbitrary path ──
+  // The game keeps living at its own path; we just symlink it into this
+  // workspace's .forgeax/games/<slug> so it belongs to the workspace (same
+  // mechanism as the seeded shared games: .forgeax/games/<slug> -> /abs/path).
+  // Used by first-run onboarding "打开目录" and any "adopt existing game" flow.
+  router.post('/games/link', async (c) => {
+    let body: { path?: string; slug?: string };
+    try { body = (await c.req.json()) as typeof body; }
+    catch { return c.json({ error: 'invalid json' }, 400); }
+    const raw = String(body?.path ?? '').trim();
+    if (!raw) return c.json({ error: 'path required' }, 400);
+    if (raw.includes('\0')) return c.json({ error: 'invalid path (NUL byte)' }, 400);
+
+    let abs = raw === '~' ? homedir() : raw.startsWith('~/') ? join(homedir(), raw.slice(2)) : raw;
+    if (!isAbsolute(abs)) return c.json({ error: 'path must be absolute or start with ~' }, 400);
+    abs = resolve(abs);
+    if (!existsSync(abs)) return c.json({ error: `not found: ${friendlyPath(abs)}` }, 404);
+    if (!statSync(abs).isDirectory()) return c.json({ error: `not a directory: ${friendlyPath(abs)}` }, 400);
+
+    // Must look like a game — forge.json (canonical) or a bare main.ts entry.
+    const isGame = existsSync(join(abs, 'forge.json')) || existsSync(join(abs, 'main.ts'));
+    if (!isGame) return c.json({ error: 'not a game folder (expected forge.json or main.ts inside)' }, 400);
+
+    // Derive slug: explicit body.slug → forge.json.id → dir basename.
+    let slug = String(body?.slug ?? '').trim();
+    if (!slug) {
+      try {
+        const fj = JSON.parse(readFileSync(join(abs, 'forge.json'), 'utf-8')) as { id?: unknown };
+        if (typeof fj.id === 'string') slug = fj.id;
+      } catch { /* fall through to basename */ }
+    }
+    if (!slug) slug = basename(abs);
+    slug = slug.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '');
+    if (!GAME_SLUG_RE.test(slug)) return c.json({ error: 'could not derive a valid slug — pass one explicitly' }, 400);
+
+    const projectRoot = defaultProjectRoot();
+    const gamesRoot = resolve(projectRoot, '.forgeax/games');
+    const linkPath = resolve(gamesRoot, slug);
+    if (existsSync(linkPath) || (() => { try { return !!lstatSync(linkPath); } catch { return false; } })()) {
+      return c.json({ error: `.forgeax/games/${slug} already exists`, slug }, 409);
+    }
+    try {
+      mkdirSync(gamesRoot, { recursive: true });
+      // 'junction' on Windows: links a dir without admin rights (unlike 'dir').
+      symlinkSync(abs, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+      setActiveGame(projectRoot, slug);
+      return c.json({ ok: true, slug, gameDir: friendlyPath(linkPath), target: friendlyPath(abs) });
     } catch (e) {
       return c.json({ error: (e as Error).message }, 500);
     }
