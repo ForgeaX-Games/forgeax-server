@@ -259,6 +259,10 @@ const { app } = await createForgeaxApp({
   stateRootFactory: (root) => join(root, '.forgeax', 'state'),
 });
 
+// projectRoot 必须每请求实时读 defaultProjectRoot():POST /api/workspaces/activate
+// 热切换只改 process.env.FORGEAX_PROJECT_ROOT,启动时固化的 const projectRoot 不会跟。
+// edit-runtime 的 Play 模式用这里的 projectRootAbs 拼游戏入口的 /@fs 绝对 URL——上报
+// 旧根会让切换后的 workspace 游戏入口 404 → 世界无相机 → 每帧 RhiError。
 app.get('/api/health', (c) =>
   c.json({
     status: 'ok',
@@ -266,8 +270,8 @@ app.get('/api/health', (c) =>
     name: '@forgeax/server',
     pid: process.pid,
     uptime: process.uptime(),
-    projectRoot: friendlyPath(projectRoot),
-    projectRootAbs: projectRoot,
+    projectRoot: friendlyPath(defaultProjectRoot()),
+    projectRootAbs: defaultProjectRoot(),
     wsClients: hub.size(),
     // Live native-path model id (read from process.env, which /api/settings/env
     // live-applies). The UI's useModelLabel() falls back to this instead of the
