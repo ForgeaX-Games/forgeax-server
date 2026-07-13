@@ -35,6 +35,7 @@ import {
   type KernelCapabilities,
   type KernelEvent,
   type KernelHealth,
+  type KernelModelCatalog,
   type TurnHandle,
   type TurnRequest,
   type ForkExtractRequest,
@@ -44,6 +45,7 @@ import {
 } from '@forgeax/agent-runtime';
 import { connect, type RpcConnection } from '@forgeax/agent-host';
 import { ensureSidecar } from 'forgeax-cli/kernel/sidecar-singleton';
+import { loadGatewayCatalog, gatewayCatalogToKernelModels } from 'forgeax-cli/lib/llm-gateway/gateway-catalog';
 import { makeInProcessExecuteTool, type HostExecuteToolFn } from 'forgeax-cli/kernel/host-tool-bridge';
 import { materializeEnv, stripModelKeys } from 'forgeax-cli/kernel/sidecar-spawn';
 import { tt, ttEnabled } from 'forgeax-cli/lib/turn-trace';
@@ -241,7 +243,17 @@ function serveSessionId(key: string): string {
 /** 连接式 forgeax-core 内核(经 sidecar 托管 serve 子进程,**per-session 复用**)。 */
 class ForgeaxCoreServeKernel implements AgentKernel {
   readonly id = 'forgeax-core' as const;
+  readonly displayName = 'forgeax-core · native kernel · gateway metering';
   readonly capabilities = CAPS;
+
+  /** 模型目录 = LLM gateway 目录(disk models.json ∩ LiteLLM live)。原生内核
+   *  经 gateway 路由,能跑的模型集合就是 gateway 的集合——委托共享实现
+   *  (forgeax-cli/lib/llm-gateway/gateway-catalog,与无参 list_models 同一份,
+   *  SSOT)。这消掉了旧 models.ts「unknown providerId 巧合穿透 gateway」的隐契约。 */
+  async listModels(): Promise<KernelModelCatalog> {
+    return gatewayCatalogToKernelModels(await loadGatewayCatalog());
+  }
+
   private readonly hostBridge: HostExecuteToolFn;
   /** sessionKey → 复用中的 serve 会话。 */
   private readonly sessions = new Map<string, ServeSession>();

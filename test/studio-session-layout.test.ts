@@ -100,3 +100,42 @@ describe('GameSessionLayout — migrate on write', () => {
     expect(l.sessionRoot('old3')).toBe(join(proj, '.forgeax', 'games', 'moo-hell', 'sessions', 'old3'));
   });
 });
+
+describe('GameSessionLayout — project index (perf: no per-sid scan)', () => {
+  test('sid judged non-project by the index flips to project-local after allocate', () => {
+    makeGame('active-game');
+    const l = layout();
+    // force the index to be built while sid is unknown → recorded as "not project"
+    expect(l.listSessionIds()).not.toContain('later1');
+    expect(l.isLegacySession('later1')).toBe(false);
+    // allocate the same sid afterwards — resolution must flip immediately
+    const { sessionRoot } = l.allocate('later1');
+    expect(l.sessionRoot('later1')).toBe(sessionRoot);
+    expect(l.listSessionIds()).toContain('later1');
+  });
+
+  test('sid judged non-project flips after migrateLegacyIntoProject', () => {
+    makeGame('moo-hell');
+    const l = layout();
+    // build the index BEFORE the legacy session exists on disk
+    expect(l.listSessionIds()).toEqual([]);
+    makeLegacySession('later2', 'moo-hell');
+    // legacy index is built lazily per instance; a fresh instance sees it
+    const l2 = layout();
+    expect(l2.listSessionIds()).not.toContain('nonexistent');
+    l2.migrateLegacyIntoProject('later2');
+    const dest = join(proj, '.forgeax', 'games', 'moo-hell', 'sessions', 'later2');
+    expect(l2.sessionRoot('later2')).toBe(dest);
+    expect(l2.listSessionIds()).toContain('later2');
+  });
+
+  test('sessions created on disk between calls are picked up (listSessionIds refreshes the index)', () => {
+    makeGame('active-game');
+    const l = layout();
+    expect(l.listSessionIds()).toEqual([]);
+    // simulate a session dir appearing without going through allocate
+    mkdirSync(join(proj, '.forgeax', 'games', 'active-game', 'sessions', 'ext1'), { recursive: true });
+    expect(l.listSessionIds()).toContain('ext1');
+    expect(l.sessionRoot('ext1')).toBe(join(proj, '.forgeax', 'games', 'active-game', 'sessions', 'ext1'));
+  });
+});

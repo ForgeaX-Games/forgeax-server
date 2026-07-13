@@ -32,6 +32,14 @@ export class GameSessionLayout implements SessionLayout {
   private readonly legacyRoots: string[];
   /** sid → bound game slug (project-local). Never invalidated. */
   private readonly slugCache = new Map<string, string>();
+  /** Full sid→slug index of gamesRoot. Rebuilt on every listSessionIds() (one
+   *  readdir pass per game — cheap), incrementally updated by allocate/migrate.
+   *  This replaces the old per-sid `scanProjectSlug` (existsSync across EVERY
+   *  game for EVERY unknown sid, uncached on miss): with thousands of legacy
+   *  home sessions surfaced into list(), that scan amplified to ~10^5 existsSync
+   *  per /api/sessions call and blocked the event loop for >1s. After one index
+   *  build, "not in the index" IS the negative answer — no per-sid scan exists. */
+  private projectIndex: Map<string, string> | null = null;
   /** Lazily-built index of legacy sessions worth surfacing: sid → {root, slug}.
    *  Only includes sids whose session.json.defaultDir is an existing project game.
    *  Frozen for process lifetime except entries removed on migration. */
@@ -55,6 +63,7 @@ export class GameSessionLayout implements SessionLayout {
     const slug = safeSegment(this.getActiveGame() || 'default');
     safeSegment(sid);
     this.slugCache.set(sid, slug);
+    this.projectIndex?.set(sid, slug);
     const workDir = join(this.gamesRoot, slug);
     const sessionRoot = join(workDir, 'sessions', sid);
     mkdirSync(sessionRoot, { recursive: true });
@@ -76,20 +85,10 @@ export class GameSessionLayout implements SessionLayout {
 
   listSessionIds(): string[] {
     const out = new Set<string>();
-    if (existsSync(this.gamesRoot)) {
-      const seen = new Map<string, string>();
-      for (const slug of this.dirsUnder(this.gamesRoot)) {
-        for (const sid of listSessionDirs(join(this.gamesRoot, slug, 'sessions'))) {
-          const prev = seen.get(sid);
-          if (prev && prev !== slug) {
-            throw new Error(`GameSessionLayout: sid ${sid} bound to multiple games (${prev}, ${slug})`);
-          }
-          seen.set(sid, slug);
-          this.slugCache.set(sid, slug);
-          out.add(sid);
-        }
-      }
-    }
+    // Rebuild the project index each call — preserves the pre-index freshness
+    // semantics (deleted sessions drop out immediately; externally-appeared ones
+    // show up). The rebuild itself is one readdir per game, milliseconds.
+    for (const sid of this.refreshProjectIndex().keys()) out.add(sid);
     // read-compat: surface legacy sessions (whose game still exists) not yet migrated.
     for (const sid of this.ensureLegacyIndex().keys()) out.add(sid);
     return [...out];
@@ -109,6 +108,7 @@ export class GameSessionLayout implements SessionLayout {
     const destParent = join(this.gamesRoot, leg.slug, 'sessions');
     const dest = join(destParent, sid);
     this.slugCache.set(sid, leg.slug);
+    this.projectIndex?.set(sid, leg.slug);
     this.legacyIndex?.delete(sid);
     if (existsSync(dest)) return; // already there (idempotent)
     mkdirSync(destParent, { recursive: true });
@@ -123,11 +123,15 @@ export class GameSessionLayout implements SessionLayout {
 
   // ── internals ─────────────────────────────────────────────────────────────
 
-  /** Project-local slug for sid (cache, else scan each game's sessions dir), or null. */
+  /** Project-local slug for sid: slugCache → project index (built on demand,
+   *  refreshed by every listSessionIds), or null. Lookup order matters: the
+   *  append-only slugCache (fed by allocate/migrate/index) wins, so a sid that
+   *  becomes project-local after an index build is still resolved correctly. */
   private projectSlugOf(sid: string): string | null {
     const cached = this.slugCache.get(sid);
     if (cached) return cached;
-    const scanned = this.scanProjectSlug(sid);
+    const idx = this.projectIndex ?? this.refreshProjectIndex();
+    const scanned = idx.get(sid);
     if (scanned) {
       this.slugCache.set(sid, scanned);
       return scanned;
@@ -135,18 +139,24 @@ export class GameSessionLayout implements SessionLayout {
     return null;
   }
 
-  private scanProjectSlug(sid: string): string | undefined {
-    if (!existsSync(this.gamesRoot)) return undefined;
-    let found: string | undefined;
-    for (const slug of this.dirsUnder(this.gamesRoot)) {
-      if (existsSync(join(this.gamesRoot, slug, 'sessions', sid))) {
-        if (found && found !== slug) {
-          throw new Error(`GameSessionLayout: sid ${sid} bound to multiple games (${found}, ${slug})`);
+  /** One full readdir pass over gamesRoot → fresh sid→slug index (+ slugCache
+   *  backfill + duplicate-binding check, both formerly in listSessionIds). */
+  private refreshProjectIndex(): Map<string, string> {
+    const idx = new Map<string, string>();
+    if (existsSync(this.gamesRoot)) {
+      for (const slug of this.dirsUnder(this.gamesRoot)) {
+        for (const sid of listSessionDirs(join(this.gamesRoot, slug, 'sessions'))) {
+          const prev = idx.get(sid);
+          if (prev && prev !== slug) {
+            throw new Error(`GameSessionLayout: sid ${sid} bound to multiple games (${prev}, ${slug})`);
+          }
+          idx.set(sid, slug);
+          this.slugCache.set(sid, slug);
         }
-        found = slug;
       }
     }
-    return found;
+    this.projectIndex = idx;
+    return idx;
   }
 
   /** Build (once) the legacy index: legacy sids whose bound game exists here. */
