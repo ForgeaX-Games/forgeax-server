@@ -23,16 +23,16 @@ describe('GAME_SLUG_RE — accepts valid slugs', () => {
     expect(GAME_SLUG_RE.test('3d-pong')).toBe(true);
   });
 
-  test('boundary length (2 chars min, 41 chars max)', () => {
+  test('boundary length (1 char min, 41 chars max)', () => {
+    expect(GAME_SLUG_RE.test('a')).toBe(true); // 1 char
     expect(GAME_SLUG_RE.test('a' + 'b')).toBe(true); // 2 chars
     expect(GAME_SLUG_RE.test('a' + 'b'.repeat(40))).toBe(true); // 41 chars
   });
 });
 
 describe('GAME_SLUG_RE — rejects invalid slugs', () => {
-  test('empty / single-char (below 2-char floor)', () => {
+  test('empty (below 1-char floor)', () => {
     expect(GAME_SLUG_RE.test('')).toBe(false);
-    expect(GAME_SLUG_RE.test('a')).toBe(false);
   });
 
   test('uppercase (slugs are case-folded by convention)', () => {

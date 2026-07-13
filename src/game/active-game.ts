@@ -24,7 +24,7 @@ import { detectActiveSlug } from './active-slug';
 // Mirror of workbench.ts GAME_SLUG_RE. Duplicated (not imported) to avoid a
 // circular import: workbench.ts imports this module, and importing its slug
 // regex back would close the cycle. Keep the two in sync.
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 interface ActiveGameStore {
   version: 1;

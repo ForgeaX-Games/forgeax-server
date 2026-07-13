@@ -22,7 +22,7 @@ import { dirname, resolve } from 'node:path';
 
 // Mirror of GAME_SLUG_RE / character id grammar used elsewhere. Duplicated to
 // keep this module dependency-light (no circular imports).
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 const CHAR_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
 export type ActiveCharacterRole = 'hero' | 'npc' | 'monster' | 'vehicle';

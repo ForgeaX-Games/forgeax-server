@@ -19,7 +19,7 @@ export class GamePackagerProxy implements IGamePackager {
 
   async build(opts: PackageOptions): Promise<PackageResult> {
     // ── 1. param validation ──
-    if (!opts.slug || !/^[a-z0-9][a-z0-9-]{1,40}$/.test(opts.slug)) {
+    if (!opts.slug || !/^[a-z0-9][a-z0-9-]{0,40}$/.test(opts.slug)) {
       return { ok: false, slug: opts.slug, platform: opts.platform, error: 'invalid slug' };
     }
     if (!existsSync(opts.gameDir)) {

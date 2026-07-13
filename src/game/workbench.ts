@@ -28,13 +28,13 @@ import { registry, listHistory, deleteHistory, cleanPackagingEnv, createJob, get
 import type { TargetPlatform } from './packager';
 
 /**
- * Valid game slug: 2-41 chars, [a-z0-9] first then [a-z0-9-]*. No
+ * Valid game slug: 1-41 chars, [a-z0-9] first then [a-z0-9-]*. No
  * underscores (projects.ts allows them at the workspace level; games
  * intentionally stricter to keep URL/path/import-specifier ergonomics
  * uniform — e.g. /preview/?slug=<x> + .forgeax/games/<x>/). Exported
  * for tests (cc-game/20).
  */
-export const GAME_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,40}$/;
+export const GAME_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 /** Content types for the `/play/:slug/*` static route. Bun.file infers most
  *  types, but the engine is strict about `.wasm` (must be `application/wasm`
@@ -774,7 +774,56 @@ export function createWorkbenchRouter(): Hono {
     if (!statSync(abs).isDirectory()) return c.json({ error: `not a directory: ${friendlyPath(abs)}` }, 400);
 
     // Must look like a game — forge.json (canonical) or a bare main.ts entry.
-    const isGame = existsSync(join(abs, 'forge.json')) || existsSync(join(abs, 'main.ts'));
+    // Empty (or junk/dotfile-only) dirs get a default template scaffolded in place
+    // first so onboarding "打开目录" can mount a blank folder outside the workspace.
+    let isGame = existsSync(join(abs, 'forge.json')) || existsSync(join(abs, 'main.ts'));
+    let scaffolded = false;
+    if (!isGame) {
+      // Ignore macOS/Windows junk + any dot entry (.git, .DS_Store, .vscode, …).
+      // A folder with only those still counts as "empty" for auto-init.
+      const junk = new Set(['Thumbs.db', 'desktop.ini', '__MACOSX']);
+      const entries = readdirSync(abs).filter((n) => {
+        if (n === '.' || n === '..') return false;
+        if (n.startsWith('.')) return false;
+        if (junk.has(n)) return false;
+        return true;
+      });
+      if (entries.length === 0) {
+        const scaffoldRoot = defaultProjectRoot();
+        const templateDir = resolveGameTemplate(scaffoldRoot);
+        if (!templateDir) {
+          return c.json({ error: 'game template not found — cannot scaffold empty folder' }, 500);
+        }
+        try {
+          await cp(templateDir, abs, {
+            recursive: true,
+            filter: (src) => {
+              const b = basename(src);
+              return b !== 'sessions' && b !== 'node_modules' && b !== '.git';
+            },
+          });
+          await regenerateGameGuids(abs);
+          const slugGuess = basename(abs).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'untitled';
+          const manifestPath = join(abs, 'forge.json');
+          if (existsSync(manifestPath)) {
+            const parsed = JSON.parse(await readFile(manifestPath, 'utf-8')) as Record<string, unknown>;
+            parsed.id = slugGuess;
+            parsed.name = basename(abs) || slugGuess;
+            await writeFile(manifestPath, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
+          } else {
+            await writeFile(
+              manifestPath,
+              JSON.stringify({ id: slugGuess, name: basename(abs) || slugGuess, entry: 'main.ts' }, null, 2) + '\n',
+              'utf-8',
+            );
+          }
+          scaffolded = true;
+          isGame = true;
+        } catch (e) {
+          return c.json({ error: `failed to scaffold empty folder: ${(e as Error).message}` }, 500);
+        }
+      }
+    }
     if (!isGame) return c.json({ error: 'not a game folder (expected forge.json or main.ts inside)' }, 400);
 
     // Derive slug: explicit body.slug → forge.json.id → dir basename.
@@ -800,7 +849,13 @@ export function createWorkbenchRouter(): Hono {
       // 'junction' on Windows: links a dir without admin rights (unlike 'dir').
       symlinkSync(abs, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
       setActiveGame(projectRoot, slug);
-      return c.json({ ok: true, slug, gameDir: friendlyPath(linkPath), target: friendlyPath(abs) });
+      return c.json({
+        ok: true,
+        slug,
+        gameDir: friendlyPath(linkPath),
+        target: friendlyPath(abs),
+        ...(scaffolded ? { scaffolded: true } : {}),
+      });
     } catch (e) {
       return c.json({ error: (e as Error).message }, 500);
     }
