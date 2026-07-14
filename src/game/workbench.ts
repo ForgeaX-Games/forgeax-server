@@ -457,9 +457,9 @@ export function createWorkbenchRouter(): Hono {
   // L0/L1/L2 via the plugin snapshot (resolvePersonaForAgent), so roles created
   // by role.create (living in L1 `~/.forgeax` or L2 `<project>/.forgeax`, NOT
   // `packages/marketplace`) are viewable/editable in wb-agent-persona. The
-  // editor's old `/api/files?path=packages/marketplace/plugins/agent-<id>/…`
+  // editor's old `/api/files?path=packages/marketplace/extensions/agent-<id>/…`
   // assumed L0 → 404 for created roles (files whitelist also excludes
-  // `.forgeax/plugins/**` and can't reach `~/.forgeax` at all).
+  // `.forgeax/extensions/**` and can't reach `~/.forgeax` at all).
   const resolvePersonaAny = async (raw: string) => {
     const cands = [raw, raw.replace(/^@[^/]+\//, ''), raw.replace(/^@[^/]+\//, '').replace(/^agent-/, '')];
     for (const cand of cands) {
@@ -642,7 +642,7 @@ export function createWorkbenchRouter(): Hono {
         }),
       );
       // Merge plugin-provided agents (kind=agent in the plugin bus). These
-      // come from packages/marketplace/plugins/agent-* manifests, distinct
+      // come from packages/marketplace/extensions/agent-* manifests, distinct
       // from the legacy peers listed in marketplace/manifest.json above.
       // De-dupe by id so a plugin-defined agent doesn't double up with the
       // hand-curated manifest entry.

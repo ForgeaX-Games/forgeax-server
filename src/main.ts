@@ -317,14 +317,14 @@ console.log(`[forgeax-server] project root = ${projectRoot}`);
 //   bring those back via the agenteam-style commands transport (3 endpoints:
 //   list / query / execute) instead of one HTTP route per concern.
 // Plugin iframe assets — wb-character vite build lives in the marketplace
-// submodule and is served verbatim under /plugins/wb-character/*. Path is
+// submodule and is served verbatim under /extensions/wb-character/*. Path is
 // resolved from main.ts source location so it works regardless of process.cwd.
 
 // 插件 iframe 入口 html 禁用缓存:dist 资源文件名带内容 hash(可长缓存),但
 // index.html 入口必须每次重新拉取,否则 webview/iframe 命中旧 html → 引用旧
 // hash 的 JS,导致「改了代码、重新构建,APP 却刷不出新版本」。对 html 文档
 // (路径以 / 结尾或 .html 结尾、且非静态资源)统一加 no-store。
-app.use('/plugins/*', async (c, next) => {
+app.use('/extensions/*', async (c, next) => {
   await next();
   const p = new URL(c.req.url).pathname;
   const isHtmlDoc = p.endsWith('/') || p.endsWith('.html');
@@ -432,7 +432,7 @@ app.get('/api/gen3d-scratch/:slug/*', async (c) => {
 // distDirFor(): <dir>/dist → <dir>/viz/dist → <dir>/frontend/editor/dist →
 // <dir> (source-served scaffolds like wb-lowpoly-obj / wb-agent-persona /
 // wb-diffusion-renderer). '/' rewrites to /index.html; vite `base` contracts
-// ('./' relative or absolute '/plugins/<id>/') both resolve under this mount.
+// ('./' relative or absolute '/extensions/<id>/') both resolve under this mount.
 // Roots are cached per id (negative too) — adding a brand-new extension dir
 // still requires a server restart, same as the old hand-written blocks.
 const EXTENSION_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -453,14 +453,14 @@ function resolveExtensionStaticRoot(id: string): string | null {
   extensionStaticRoots.set(id, root);
   return root === '' ? null : root;
 }
-app.use('/plugins/:id/*', async (c, next) => {
+app.use('/extensions/:id/*', async (c, next) => {
   const id = c.req.param('id');
   const root = resolveExtensionStaticRoot(id);
   if (!root) return next();
   const handler = serveStatic({
     root,
     rewriteRequestPath: (p) => {
-      const rest = p.slice(`/plugins/${id}`.length) || '/';
+      const rest = p.slice(`/extensions/${id}`.length) || '/';
       return rest === '/' ? '/index.html' : rest;
     },
   });
@@ -530,7 +530,7 @@ app.all('/api/narrative/*', async (c) => {
     return c.json(
       {
         success: false,
-        error: 'narrative 服务未启动（需在 packages/marketplace/plugins/wb-narrative/.env 配置 GEMINI_API_KEY 或 LLM_PROXY_URL 后重启 app）',
+        error: 'narrative 服务未启动（需在 packages/marketplace/extensions/wb-narrative/.env 配置 GEMINI_API_KEY 或 LLM_PROXY_URL 后重启 app）',
         narrativeOffline: true,
       },
       503,
@@ -560,7 +560,7 @@ const SERVE_SPA = process.env.FORGEAX_SERVE_SPA !== '0' && existsSync(interfaceD
 if (SERVE_SPA) {
   // Backend/asset namespaces the SPA fallback must NEVER swallow. Without this
   // guard, an unmatched request under these prefixes (e.g. a plugin whose dist
-  // isn't built yet, like /plugins/wb-reel/*) would fall through to the
+  // isn't built yet, like /extensions/wb-reel/*) would fall through to the
   // index.html fallback below and load the *studio shell* inside the plugin
   // iframe — an infinite "booting shell…" loop. These must 404 instead so the
   // host can tell the plugin simply isn't available. Studio client routes live
@@ -583,7 +583,7 @@ if (SERVE_SPA) {
   console.log(`[forgeax-server] serving interface SPA from ${friendlyPath(interfaceDist)}`);
 }
 
-// wb-scene WS reverse-proxy —— editor (host:18900/plugins/wb-scene/) 走
+// wb-scene WS reverse-proxy —— editor (host:18900/extensions/wb-scene/) 走
 // `ws://${host}/ws/{render,editor,log}` 上来；这里把它桥接到 wb-scene backend
 // 9557。renderer (:9556) / assetstore (:9560) 自己的 vite dev server 已配
 // /ws proxy，不经此处。

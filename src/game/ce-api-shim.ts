@@ -1,10 +1,10 @@
 /**
  * /__ce-api__/* —— studio-host shim for the wb-character iframe plugin.
  *
- * Background: packages/marketplace/plugins/wb-character/src/* still hits the
+ * Background: packages/marketplace/extensions/wb-character/src/* still hits the
  * vite-dev plugin's `/__ce-api__/<endpoint>` (88 call sites) through plain
  * fetch — Bridge.ts STUDIO_HOST_MODE was defined but the call sites bypass it.
- * The submodule is built as static assets and served at /plugins/wb-character/*
+ * The submodule is built as static assets and served at /extensions/wb-character/*
  * by main.ts, so without this shim every "generate portrait / pixel / spine /
  * vfx" click would 404.
  *
@@ -1136,7 +1136,7 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
     try { await c.req.text(); } catch { /* tolerate */ }
     return c.json({
       success: false,
-      error: 'Monster pipeline (Python Flask) is not wired in studio host. Start it via packages/marketplace/plugins/wb-character/server/monster-pipeline/ if needed.',
+      error: 'Monster pipeline (Python Flask) is not wired in studio host. Start it via packages/marketplace/extensions/wb-character/server/monster-pipeline/ if needed.',
       deferred: true,
     });
   });

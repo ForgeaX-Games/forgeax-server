@@ -1,7 +1,7 @@
 /**
  * /api/wb/character —— ForgeaX 角色编辑器统一 API(编排层薄代理)。
  *
- * 2026-06 解耦后:character 业务 SSOT 已迁入 `packages/marketplace/plugins/
+ * 2026-06 解耦后:character 业务 SSOT 已迁入 `packages/marketplace/extensions/
  * wb-character/server/character-forge/`,编排层不再持有任何 character 业务。
  * 本路由对「角色操作」一律**薄代理**到 ToolRegistry 的 `callTool('character:*')`
  * —— 与 AI 路径(host_tool_bridge → callTool)走同一份插件后端 + 同一账本事件,
@@ -38,7 +38,7 @@ export interface CharacterRouterCtx {
 }
 
 // Surface id must match the React panel's registration id in
-// packages/marketplace/plugins/wb-character-host/panel.tsx — 'wb-character.host'.
+// packages/marketplace/extensions/wb-character-host/panel.tsx — 'wb-character.host'.
 const SURFACE_ID = 'wb-character.host';
 
 function notifySurface(action: string, payload: Record<string, unknown>): void {

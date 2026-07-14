@@ -5,7 +5,7 @@
 // plugin is served as static iframe assets, so its original Vite dev plugin (which
 // owns the same logic) does NOT run — the host must perform the cleanup itself.
 //
-// It lives IN the server package (not imported from marketplace/plugins/wb-ui/src)
+// It lives IN the server package (not imported from marketplace/extensions/wb-ui/src)
 // to keep the layering honest: the runtime core must not source-depend on a
 // marketplace plugin — same discipline as server/game/wb-character.ts keeping its
 // host concerns local. The boundary check (scripts/check-boundaries.ts) enforces it.
