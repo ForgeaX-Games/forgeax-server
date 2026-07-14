@@ -10,7 +10,7 @@
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { defaultProjectRoot } from '@forgeax/platform-io';
-import { getPluginSnapshot } from "forgeax-cli/plugins/registry";
+import { getExtensionSnapshot } from "forgeax-cli/extensions/registry";
 import { pickI18n } from "@forgeax/types";
 
 interface ForgeJson {
@@ -76,7 +76,7 @@ export function renderEnvironmentText(opts: RenderEnvironmentOpts): string {
   }
 
   // Workbench plugins + skills
-  const snap = getPluginSnapshot();
+  const snap = getExtensionSnapshot();
   const workbenches = snap.kinds.workbench;
   const skills = snap.kinds.skills;
 
@@ -110,7 +110,7 @@ export function renderEnvironmentText(opts: RenderEnvironmentOpts): string {
         const cmd = trigger && trigger.kind === "slash" ? `/${trigger.command}` : s.definition.id;
         const desc = pickI18n(s.definition.description, "zh") || pickI18n(s.definition.displayName, "zh") || "";
         const short = desc.length > 60 ? desc.slice(0, 57) + "..." : desc;
-        lines.push(`- \`${cmd}\` — ${short} (${s.pluginId.replace("@forgeax-plugin/", "")})`);
+        lines.push(`- \`${cmd}\` — ${short} (${s.pluginId.replace("@forgeax-extension/", "")})`);
       }
       lines.push("");
     }

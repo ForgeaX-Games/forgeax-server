@@ -7,9 +7,7 @@ import { Hono } from 'hono';
 interface FrameEnhancementCapabilities {
   streaming: boolean;
   supportsPrompt: boolean;
-  supportsLora: boolean;
   supportsInterp: boolean;
-  loraPresets: string[];
   outputResolution?: { width: number; height: number };
 }
 
@@ -19,7 +17,7 @@ interface PredictOnceRequest {
   seed?: number;
   steps?: number;
   interp?: number;
-  lora?: string;
+  reset_cache?: boolean;
 }
 
 interface PredictOnceResult {
@@ -30,7 +28,6 @@ interface PredictOnceResult {
 }
 
 const BACKEND_NAME = 'fluxrt';
-const FLUXRT_LORA_PRESETS = ['none', 'sim-to-real', 'anime-koni'];
 
 function baseUrl(): string {
   return (process.env.FLUXRT_BASE_URL ?? '').trim().replace(/\/+$/, '');
@@ -48,9 +45,7 @@ function capabilities(): FrameEnhancementCapabilities {
   return {
     streaming: true,
     supportsPrompt: true,
-    supportsLora: true,
     supportsInterp: true,
-    loraPresets: FLUXRT_LORA_PRESETS,
     outputResolution: { width: 576, height: 320 },
   };
 }
@@ -83,7 +78,7 @@ async function predictOnce(req: PredictOnceRequest): Promise<PredictOnceResult> 
         ...(req.seed !== undefined ? { seed: req.seed } : {}),
         ...(req.steps !== undefined ? { steps: req.steps } : {}),
         ...(req.interp !== undefined ? { interp: req.interp } : {}),
-        ...(req.lora ? { lora: req.lora } : {}),
+        ...(req.reset_cache !== undefined ? { reset_cache: req.reset_cache } : {}),
       }),
       signal: AbortSignal.timeout(60_000),
     });

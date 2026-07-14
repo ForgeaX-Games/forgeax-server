@@ -19,7 +19,7 @@ import { findMarketplaceManifest } from 'forgeax-cli/api/lib/marketplace-manifes
 import { computeAgentNaming, pickPersonName, type AgentNaming } from 'forgeax-cli/api/lib/agent-naming';
 import { getPathManager } from 'forgeax-cli/fs/path-manager';
 import { listAgents, resolvePersonaForAgent } from 'forgeax-cli/agents/loader';
-import { reloadPlugins } from 'forgeax-cli/plugins/registry';
+import { reloadExtensions } from 'forgeax-cli/extensions/registry';
 import { getSessionManager } from 'forgeax-cli/core/session-manager';
 import { getTerminalManager } from 'forgeax-cli/terminal/manager';
 import { BLACKBOARD_KEYS } from 'forgeax-cli/defaults/blackboard-vars';
@@ -492,7 +492,7 @@ export function createWorkbenchRouter(): Hono {
     const target = join(dirname(persona.personaPath), `${lang}.md`);
     try {
       await writeFile(target, body.content, 'utf-8');
-      await reloadPlugins();
+      await reloadExtensions();
       return c.json({ ok: true, path: target });
     } catch (e) {
       return c.json({ error: `write failed: ${(e as Error).message}` }, 500);

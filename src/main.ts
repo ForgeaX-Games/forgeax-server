@@ -424,177 +424,63 @@ app.get('/api/gen3d-scratch/:slug/*', async (c) => {
   return new Response(file);
 });
 
-const wbCharDist = mp('wb-character', 'dist');
-app.use('/plugins/wb-character/*', serveStatic({
-  root: wbCharDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-character/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-// wb-items — 道具 / 图标 workbench (items.json + 48px icon pipeline). Vite
-// build with base:'./' emits relative asset URLs that resolve under this mount.
-// Same embedded serve-from-dist pattern as wb-character / wb-gen3d.
-const wbItemsDist = mp('wb-items', 'dist');
-app.use('/plugins/wb-items/*', serveStatic({
-  root: wbItemsDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-items/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
+// ── Extension static hosting (ADR 0025 M3) ──────────────────────────────
+// One convention-driven mount replaces the former per-plugin serveStatic
+// blocks (wb-character / wb-items / … — see git history for each plugin's
+// original notes). Root resolution mirrors scripts/build-plugins.ts
+// distDirFor(): <dir>/dist → <dir>/viz/dist → <dir>/frontend/editor/dist →
+// <dir> (source-served scaffolds like wb-lowpoly-obj / wb-agent-persona /
+// wb-diffusion-renderer). '/' rewrites to /index.html; vite `base` contracts
+// ('./' relative or absolute '/plugins/<id>/') both resolve under this mount.
+// Roots are cached per id (negative too) — adding a brand-new extension dir
+// still requires a server restart, same as the old hand-written blocks.
+const EXTENSION_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
+const extensionStaticRoots = new Map<string, string>();
+function resolveExtensionStaticRoot(id: string): string | null {
+  if (!EXTENSION_ID_RE.test(id)) return null;
+  const cached = extensionStaticRoots.get(id);
+  if (cached !== undefined) return cached === '' ? null : cached;
+  let root = '';
+  for (const candidate of [
+    mp(id, 'dist'),
+    mp(id, 'viz', 'dist'),
+    mp(id, 'frontend', 'editor', 'dist'),
+    mp(id),
+  ]) {
+    if (existsSync(join(candidate, 'index.html'))) { root = candidate; break; }
+  }
+  extensionStaticRoots.set(id, root);
+  return root === '' ? null : root;
+}
+app.use('/plugins/:id/*', async (c, next) => {
+  const id = c.req.param('id');
+  const root = resolveExtensionStaticRoot(id);
+  if (!root) return next();
+  const handler = serveStatic({
+    root,
+    rewriteRequestPath: (p) => {
+      const rest = p.slice(`/plugins/${id}`.length) || '/';
+      return rest === '/' ? '/index.html' : rest;
+    },
+  });
+  return handler(c, next);
+});
 
-const wbNarrDist = mp('wb-narrative', 'viz', 'dist');
-app.use('/plugins/wb-narrative/*', serveStatic({
-  root: wbNarrDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-narrative/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-// wb-bgm — Music & BGM workbench plugin (audio/SFX library SPA). Audio LOGIC
-// lives in the marketplace plugin (registry tools) + the orchestration ce-api
-// gateway (/reel-tts, /reel-music); this just serves the vendored SPA. Restored
-// in Phase 2d alongside the audio-gateway port.
-const wbBgmDist = mp('wb-bgm', 'dist');
-app.use('/plugins/wb-bgm/*', serveStatic({
-  root: wbBgmDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-bgm/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-const wbSkillDist = mp('wb-skill', 'dist');
-app.use('/plugins/wb-skill/*', serveStatic({
-  root: wbSkillDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-skill/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-const wbAnimDist = mp('wb-anim', 'dist');
-app.use('/plugins/wb-anim/*', serveStatic({
-  root: wbAnimDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-anim/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-// wb-gen3d — production 3D generation UI. Embedded same-origin (manifest
-// entry.standalone.embeddedAlso:true) like every other workbench frontend,
-// instead of the fragile cross-origin standalone dev port (:15175). The plugin
-// builds with vite `base: './'` so emitted asset URLs are relative and resolve
-// under this mount. Pairs with the /api/gen3d-blobs/* route above.
-const wbGen3dDist = mp('wb-gen3d', 'dist');
-app.use('/plugins/wb-gen3d/*', serveStatic({
-  root: wbGen3dDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-gen3d/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-// wb-ai-asset — Meshy AI lowpoly prop generator (same embedded pattern as wb-gen3d).
-const wbAiAssetDist = mp('wb-ai-asset', 'dist');
-app.use('/plugins/wb-ai-asset/*', serveStatic({
-  root: wbAiAssetDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-ai-asset/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-// wb-ui - standard UI workshop Vite build served as a same-origin iframe.
-const wbUiDist = mp('wb-ui', 'dist');
-app.use('/plugins/wb-ui/*', serveStatic({
-  root: wbUiDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-ui/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-// wb-lowpoly-obj — v0.1.0 scaffold serves index.html directly from the
-// submodule source (no build step required for the form-only UI).
-const wbLowpolyDir = mp('wb-lowpoly-obj');
-app.use('/plugins/wb-lowpoly-obj/*', serveStatic({
-  root: wbLowpolyDir,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-lowpoly-obj/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-// wb-agent-persona — v0.1.0 single-file editor; same no-build pattern as
-// wb-lowpoly-obj. Loads /api/bus/plugins?kind=agent → reads/writes
-// `packages/marketplace/plugins/<short-id>/persona/zh.md` via /api/files.
-const wbAgentPersonaDir = mp('wb-agent-persona');
-app.use('/plugins/wb-agent-persona/*', serveStatic({
-  root: wbAgentPersonaDir,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-agent-persona/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-// wb-diffusion-renderer — realtime viewport diffusion renderer. The static
-// marketplace entry is a compatibility landing page; the production panel is
-// injected inline by Studio, and the backend proxy is /api/wb/diffusion-renderer/*.
-const wbDiffusionRendererDir = mp('wb-diffusion-renderer');
-app.use('/plugins/wb-diffusion-renderer/*', serveStatic({
-  root: wbDiffusionRendererDir,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-diffusion-renderer/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-// wb-observatory — Vite/React app, mirrors wb-character's serve-from-dist
-// pattern. Source lives in `packages/marketplace/plugins/wb-observatory/`
-// and `bun run build` emits to `dist/` (vite `base: /plugins/wb-observatory/`
-// so emitted asset URLs work behind this mount).
-const wbObservatoryDist = mp('wb-observatory', 'dist');
-app.use('/plugins/wb-observatory/*', serveStatic({
-  root: wbObservatoryDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-observatory/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-// wb-scene — node-pipeline editor (3-pane: editor + renderer + assetstore).
-// Editor is the iframe entry; built dist with vite `base: /plugins/wb-scene/`
-// is served here. Renderer (9556) + AssetStore (9560) remain separate dev
-// servers iframed by the editor at runtime; they are NOT served by host.
-const wbSceneDist = mp('wb-scene', 'frontend', 'editor', 'dist');
-app.use('/plugins/wb-scene/*', serveStatic({
-  root: wbSceneDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-scene/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
 
-// wb-reel — interactive FMV editor (Reel Studio). The plugin's full source
-// is the `forgeax-wb-reel` submodule mounted at
-// `packages/marketplace/plugins/wb-reel`; the marketplace entry's
-// `dist/` is a symlink to that submodule's built dist (built with
-// `WB_REEL_PLUGIN_BUILD=1 npx vite build`, which sets vite `base:
-// /plugins/wb-reel/` so emitted asset URLs work behind this mount). Same
-// serve-from-dist pattern as wb-character / wb-observatory.
-const wbReelDist = mp('wb-reel', 'dist');
-app.use('/plugins/wb-reel/*', serveStatic({
-  root: wbReelDist,
-  rewriteRequestPath: (p) => {
-    const rest = p.replace(/^\/plugins\/wb-reel/, '') || '/';
-    return rest === '/' ? '/index.html' : rest;
-  },
-}));
+
+
 
 // wb-scene backend API proxy. Plugin's Fastify backend listens on port
 // `WB_SCENE_API_PORT` (default 9557) and exposes /api/v1/* + /ws/*. The host

@@ -2,7 +2,7 @@
  * /api/wb/bgm —— residual host route for the Music & BGM plugin.
  *
  * wb-bgm's LOGIC (library search / attach / manifest / raw passthrough) has
- * MOVED into the marketplace plugin @forgeax-plugin/wb-bgm (server/tool-handlers.ts
+ * MOVED into the marketplace plugin @forgeax-extension/wb-bgm (server/tool-handlers.ts
  * + src/core.ts), reachable via the Host ToolRegistry (/api/tools/call) for both
  * humans (SPA, caller.kind='user') and AI (native kit forward + CLI MCP).
  *
