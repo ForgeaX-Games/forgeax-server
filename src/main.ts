@@ -656,7 +656,16 @@ try {
     const url = new URL(req.url);
     if (url.pathname === '/ws') {
       const sid = url.searchParams.get('sid') ?? undefined;
-      const data: WsClientData = { id: crypto.randomUUID(), sid };
+      // 断线续传参数(多 tab 同步 §3.3):since=<lastAppliedSeq>&sgen=<generation>。
+      const sinceRaw = url.searchParams.get('since');
+      const since = sinceRaw !== null && sinceRaw !== '' ? Number(sinceRaw) : undefined;
+      const sgen = url.searchParams.get('sgen') ?? undefined;
+      const data: WsClientData = {
+        id: crypto.randomUUID(),
+        sid,
+        ...(Number.isFinite(since) ? { since } : {}),
+        ...(sgen ? { sgen } : {}),
+      };
       const upgraded = srv.upgrade(req, { data });
       if (upgraded) return undefined;
       return new Response('upgrade required', { status: 426 });
