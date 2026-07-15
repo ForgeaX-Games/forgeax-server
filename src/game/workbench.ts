@@ -559,10 +559,10 @@ export function createWorkbenchRouter(): Hono {
       // plugin 自报 id (def.id, e.g. "arin"/"iori"). legacy "forge" 视觉上是 Arin
       // → 显式 alias. 其它 legacy id (iori/suzu/kotone/iro/tsumugi/cc-coder) 同名
       // 直接匹配上 plugin agent-iori/agent-suzu/... 因为它们的 def.id 就这么写的.
-      const pluginEntries = listAgents();
-      type AvatarRulesT = NonNullable<(typeof pluginEntries)[number]['definition']['avatarRules']>;
+      const extensionEntries = listAgents();
+      type AvatarRulesT = NonNullable<(typeof extensionEntries)[number]['definition']['avatarRules']>;
       const avatarRulesById = new Map<string, AvatarRulesT>();
-      for (const e of pluginEntries) {
+      for (const e of extensionEntries) {
         if (e.definition.avatarRules) {
           avatarRulesById.set(e.definition.id, e.definition.avatarRules);
         }
@@ -575,9 +575,9 @@ export function createWorkbenchRouter(): Hono {
 
       // 统一命名「中文职能·英文名」+ 灰字英文职能。card 是 SSOT（plugin 自带
       // cnTitle/enTitle/name）；legacy manifest agent 也按 id 借 plugin card 拼。
-      type CardT = (typeof pluginEntries)[number]['definition']['card'];
+      type CardT = (typeof extensionEntries)[number]['definition']['card'];
       const cardById = new Map<string, CardT>();
-      for (const e of pluginEntries) cardById.set(e.definition.id, e.definition.card);
+      for (const e of extensionEntries) cardById.set(e.definition.id, e.definition.card);
       const namingFor = (
         id: string,
         fallbackName: string,

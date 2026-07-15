@@ -83,13 +83,13 @@ export function renderEnvironmentText(opts: RenderEnvironmentOpts): string {
   if (workbenches.length > 0 || skills.length > 0) {
     // Workbench table
     if (workbenches.length > 0) {
-      lines.push("## Workbench plugins");
+      lines.push("## Workbench extensions");
       lines.push("| id | data dir | skills |");
       lines.push("| --- | --- | --- |");
       for (const wb of workbenches) {
         if (wb.hidden) continue;
         const wbSkills = skills
-          .filter((s) => s.pluginId === wb.pluginId)
+          .filter((s) => s.extensionId === wb.extensionId)
           .map((s) => {
             const trigger = s.definition.triggers?.[0];
             if (trigger && trigger.kind === "slash") return `/${trigger.command}`;
@@ -110,7 +110,7 @@ export function renderEnvironmentText(opts: RenderEnvironmentOpts): string {
         const cmd = trigger && trigger.kind === "slash" ? `/${trigger.command}` : s.definition.id;
         const desc = pickI18n(s.definition.description, "zh") || pickI18n(s.definition.displayName, "zh") || "";
         const short = desc.length > 60 ? desc.slice(0, 57) + "..." : desc;
-        lines.push(`- \`${cmd}\` — ${short} (${s.pluginId.replace("@forgeax-extension/", "")})`);
+        lines.push(`- \`${cmd}\` — ${short} (${s.extensionId.replace("@forgeax-extension/", "")})`);
       }
       lines.push("");
     }
