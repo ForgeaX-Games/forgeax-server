@@ -84,13 +84,17 @@ describe("POST /api/workbench/games remaps forge.json.defaultScene", () => {
 
     // References to SHARED/builtin assets (GUIDs the game does not define) must
     // be PRESERVED, not regenerated — regenerating them points at phantom GUIDs
-    // (asset-not-found / /__import 404 → blank scene). The builtin cylinder is
-    // referenced by both the scene pack (refs[]) and main.ts (CYLINDER_GUID).
-    const CYLINDER = "c1111111-0000-5000-8000-000000000001";
+    // (asset-not-found / /__import 404 → blank scene). The current template
+    // references the engine's builtin cube and sphere from the scene pack.
+    const BUILTIN_MESHES = [
+      "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+      "95730fd2-9846-5f84-8658-0b3c971eb263",
+    ];
     const definedGuids = new Set(scenePack.assets.map((a) => a.guid));
-    expect(definedGuids.has(CYLINDER)).toBe(false); // it's external, not defined here
     const sceneRaw = readFileSync(resolve(gameDir, "assets/scene.pack.json"), "utf-8");
-    expect(sceneRaw).toContain(CYLINDER); // ...so the ref to it must survive
-    expect(mainTs).toContain(CYLINDER); // ...and so must the literal in main.ts
+    for (const guid of BUILTIN_MESHES) {
+      expect(definedGuids.has(guid)).toBe(false);
+      expect(sceneRaw).toContain(guid);
+    }
   });
 });

@@ -551,7 +551,7 @@ app.all('/api/narrative/*', async (c) => {
 // app's relative `fetch('/api')` / `ws://…/ws` stay same-origin with zero
 // frontend changes.
 //
-// Registered LAST (after every /api, /plugins, /__ce-api__ route) so it only
+// Registered LAST (after every /api, /extensions, /__ce-api__ route) so it only
 // catches unmatched paths. Guarded by dist existence + FORGEAX_SERVE_SPA so it
 // is a complete no-op in the dev stack (no built dist → nothing mounted).
 // Set FORGEAX_SERVE_SPA=0 to force-disable even when a dist is present.
@@ -572,7 +572,7 @@ if (SERVE_SPA) {
   // it's included in RESERVED_PREFIX so this SPA fallback never swallows it
   // (which would return index.html for the preview iframe and recurse the whole
   // Studio SPA — Studio-in-Studio).
-  const RESERVED_PREFIX = /^\/(api|plugins|__ce-api__|preview|ws)(\/|$)/;
+  const RESERVED_PREFIX = /^\/(api|extensions|__ce-api__|preview|ws)(\/|$)/;
   const staticAssets = serveStatic({ root: interfaceDist });
   const spaIndex = serveStatic({ path: 'index.html', root: interfaceDist });
   // Static assets (hashed JS/CSS, /brand/*, favicon, etc.).
