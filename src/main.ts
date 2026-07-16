@@ -44,7 +44,7 @@ import { createBgmRouter } from './game/wb-bgm';
 import { createDiffusionRendererRouter, getDiffusionRendererWsUpstreamUrl } from './game/wb-diffusion-renderer';
 import { createCeApiShimRouter } from './game/ce-api-shim';
 import { GameSystemPromptComposer } from './game/system-prompt-composer';
-import { gameHostTools } from './game/host-tools';
+import { studioHostTools } from './game/host-tools';
 // 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
 import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from './kernel/telemetry-file-sink';
@@ -225,7 +225,7 @@ const { app } = await createForgeaxApp({
   // 游戏语义 host 工具由产品壳经 seam 注入(P1-7 落地阶段A §3 设计意图):
   // list_games / query_world / capture_frame 不再硬编码在 cli——声明 + 宿主侧执行体
   // 都在 src/game/host-tools.ts,cli 只提供通用感知往返(ctx.perception)与信任闸。
-  hostTools: gameHostTools(),
+  hostTools: studioHostTools(),
   // 游戏业务路由由产品壳注入(阶段A:原 cli 静态 mount 搬到此)。路由表逐条不变。
   routers: [
     { path: '/api/workbench', router: createWorkbenchRouter() },

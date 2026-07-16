@@ -15,6 +15,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HostToolSpec, HostToolRunCtx } from 'forgeax-cli/orchestration-seams';
+import { editorGatewayHostTools } from './editor-gateway-host-tools';
 
 /** 列出工作区里的游戏(`.forgeax/games/` + 兼容旧 `games/`),过滤 _template / 隐藏。 */
 function listGames(projectRoot: string): { count: number; games: string[] } {
@@ -70,4 +71,11 @@ export function gameHostTools(): HostToolSpec[] {
       },
     },
   ];
+}
+
+/** Product-shell registration point for host tools. Keeping this composition
+ * named and testable prevents a new editor capability from being implemented
+ * but accidentally omitted at `createForgeaxApp` boot. */
+export function studioHostTools(): HostToolSpec[] {
+  return [...gameHostTools(), ...editorGatewayHostTools()];
 }
