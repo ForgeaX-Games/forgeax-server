@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-
-// /api/wb/diffusion-renderer — realtime viewport diffusion renderer.
-// Keeps the current single FluxRT-backed implementation in one product-shell file:
-// HTTP readiness/capability routes plus the WS upstream URL used by main.ts.
+import {
+  createGenerativeVisualAccessPolicy,
+  type GenerativeVisualAccessPolicy,
+} from './access-policy';
 
 interface FrameEnhancementCapabilities {
   streaming: boolean;
@@ -34,7 +34,7 @@ function baseUrl(): string {
 }
 
 function serviceKey(): string {
-  return (process.env.FLUXRT_API_KEY || process.env.ANTHROPIC_API_KEY || '').trim();
+  return (process.env.FLUXRT_API_KEY ?? '').trim();
 }
 
 function isReady(): boolean {
@@ -57,8 +57,8 @@ async function health(): Promise<{ ok: boolean; status: number; data?: unknown; 
     const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(12_000) });
     const data = await res.json().catch(() => ({}));
     return { ok: res.ok, status: res.status, data };
-  } catch (e) {
-    return { ok: false, status: 502, error: e instanceof Error ? e.message : String(e) };
+  } catch (error) {
+    return { ok: false, status: 502, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -66,7 +66,7 @@ async function predictOnce(req: PredictOnceRequest): Promise<PredictOnceResult> 
   const base = baseUrl();
   const key = serviceKey();
   if (!base) return { ok: false, status: 503, error: 'FLUXRT_BASE_URL not set' };
-  if (!key) return { ok: false, status: 401, error: 'no service key (FLUXRT_API_KEY / ANTHROPIC_API_KEY)' };
+  if (!key) return { ok: false, status: 401, error: 'FLUXRT_API_KEY is not set' };
   if (!req.base64_image) return { ok: false, status: 400, error: 'base64_image required' };
   try {
     const res = await fetch(`${base}/predict`, {
@@ -84,28 +84,35 @@ async function predictOnce(req: PredictOnceRequest): Promise<PredictOnceResult> 
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const msg = (data as { error?: string }).error ?? `upstream HTTP ${res.status}`;
-      return { ok: false, status: res.status, error: msg };
+      const message = (data as { error?: string }).error ?? `upstream HTTP ${res.status}`;
+      return { ok: false, status: res.status, error: message };
     }
     return { ok: true, status: 200, data: data as Record<string, unknown> };
-  } catch (e) {
-    return { ok: false, status: 502, error: e instanceof Error ? e.message : String(e) };
+  } catch (error) {
+    return { ok: false, status: 502, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
-export function getDiffusionRendererWsUpstreamUrl(): string | null {
+/**
+ * FluxRT is intentionally the one provider that uses the ForgeaX WS relay:
+ * frames are JPEG binary payloads and the backend key stays server-side.
+ */
+export function getFluxRtWsUpstreamUrl(): string | null {
   const base = baseUrl();
   const key = serviceKey();
   if (!base || !key) return null;
-  const wsBase = base.replace(/^http/i, 'ws');
-  return `${wsBase}/ws?key=${encodeURIComponent(key)}`;
+  return `${base.replace(/^http/i, 'ws')}/ws?key=${encodeURIComponent(key)}`;
 }
 
-export function createDiffusionRendererRouter(): Hono {
-  const r = new Hono();
+export interface FluxRtRouterOptions {
+  readonly accessPolicy?: GenerativeVisualAccessPolicy;
+}
 
-  // Capability-driven UI feed + backend discovery.
-  r.get('/backends', (c) => c.json({
+export function createFluxRtRouter(options: FluxRtRouterOptions = {}): Hono {
+  const accessPolicy = options.accessPolicy ?? createGenerativeVisualAccessPolicy();
+  const router = new Hono();
+
+  router.get('/backends', (c) => c.json({
     backends: [{
       name: BACKEND_NAME,
       ready: isReady(),
@@ -113,21 +120,27 @@ export function createDiffusionRendererRouter(): Hono {
     }],
   }));
 
-  // Readiness gate — the inline panel polls this before enabling "Diffusion Renderer".
-  r.get('/health', async (c) => {
-    const h = await health();
-    return c.json({ backend: BACKEND_NAME, ready: isReady(), ...h }, (h.ok ? 200 : h.status) as 200);
+  router.get('/health', async (c) => {
+    const result = await health();
+    return c.json(
+      { backend: BACKEND_NAME, ready: isReady(), ...result },
+      (result.ok ? 200 : result.status) as 200,
+    );
   });
 
-  // Phase-1 single-frame edit → routed through the backend adapter.
-  r.post('/predict', async (c) => {
+  router.post('/predict', async (c) => {
+    const access = accessPolicy.authorize(c.req.raw);
+    if (!access.ok) return c.json({ error: access.error }, access.status);
     let body: PredictOnceRequest;
-    try { body = (await c.req.json()) as PredictOnceRequest; }
-    catch { return c.json({ error: 'invalid-json' }, 400); }
-    const res = await predictOnce(body);
-    if (res.ok) return c.json(res.data as Record<string, unknown>);
-    return c.json({ error: res.error, backend: BACKEND_NAME }, (res.status || 500) as 500);
+    try {
+      body = await c.req.json<PredictOnceRequest>();
+    } catch {
+      return c.json({ error: 'invalid-json' }, 400);
+    }
+    const result = await predictOnce(body);
+    if (result.ok) return c.json(result.data ?? {});
+    return c.json({ error: result.error, backend: BACKEND_NAME }, (result.status || 500) as 500);
   });
 
-  return r;
+  return router;
 }

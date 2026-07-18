@@ -41,7 +41,11 @@ import { GameSessionLayout } from './studio-session-layout';
 import { createWorkbenchRouter } from './game/workbench';
 import { createCharacterRouter } from './game/wb-character';
 import { createBgmRouter } from './game/wb-bgm';
-import { createDiffusionRendererRouter, getDiffusionRendererWsUpstreamUrl } from './game/wb-diffusion-renderer';
+import { createGenerativeVisualsRouter, getFluxRtWsUpstreamUrl } from './game/generative-visuals';
+import {
+  bindGenerativeVisualConnection,
+  createGenerativeVisualAccessPolicy,
+} from './game/generative-visuals/access-policy';
 import { createCeApiShimRouter } from './game/ce-api-shim';
 import { GameSystemPromptComposer } from './game/system-prompt-composer';
 import { studioHostTools } from './game/host-tools';
@@ -114,6 +118,7 @@ process.on('unhandledRejection', (reason) => {
 
 const PORT = Number(process.env.FORGEAX_SERVER_PORT ?? 18900);
 const HOST = process.env.FORGEAX_SERVER_HOST ?? '0.0.0.0';
+const generativeVisualAccessPolicy = createGenerativeVisualAccessPolicy();
 // Studio-wide version (v0.M.D.N). Sourced from scripts/version.sh via run.sh
 // (FORGEAX_VERSION env / dist/version.json), with live-git fallback for dev mode.
 const FORGEAX_VERSION = getVersion();
@@ -231,7 +236,10 @@ const { app } = await createForgeaxApp({
     { path: '/api/workbench', router: createWorkbenchRouter() },
     { path: '/api/wb/character', router: createCharacterRouter({ projectRoot, env: shimEnv }) },
     { path: '/api/wb/bgm', router: createBgmRouter() },
-    { path: '/api/wb/diffusion-renderer', router: createDiffusionRendererRouter() },
+    {
+      path: '/api/generative-visuals',
+      router: createGenerativeVisualsRouter({ accessPolicy: generativeVisualAccessPolicy }),
+    },
     {
       path: '/__ce-api__',
       router: createCeApiShimRouter({
@@ -478,10 +486,6 @@ app.use('/extensions/:id/*', async (c, next) => {
 
 
 
-
-
-
-
 // wb-scene backend API proxy. Plugin's Fastify backend listens on port
 // `WB_SCENE_API_PORT` (default 9557) and exposes /api/v1/* + /ws/*. The host
 // proxies same-origin so the iframe sees /api/v1/* without CORS.
@@ -589,20 +593,58 @@ if (SERVE_SPA) {
 // /ws proxy，不经此处。
 const WB_SCENE_WS_PATHS = new Set(['/ws/render', '/ws/editor', '/ws/log']);
 const baseWsHandler = createWsHandler(hub);
+const maxFluxRtRelaySessions = boundedPositiveEnv('FORGEAX_FLUXRT_MAX_RELAY_SESSIONS', 2, 8);
+const maxFluxRtMessageBytes = boundedPositiveEnv('FORGEAX_FLUXRT_MAX_MESSAGE_BYTES', 2 * 1024 * 1024, 8 * 1024 * 1024);
+const maxFluxRtMessagesPerSecond = boundedPositiveEnv('FORGEAX_FLUXRT_MAX_MESSAGES_PER_SECOND', 20, 60);
+let activeFluxRtRelaySessions = 0;
+
+interface GenerativeVisualsWsData extends WsClientData {
+  readonly accessDenied?: string;
+  readonly generativeVisuals?: {
+    readonly maxMessageBytes: number;
+    readonly maxMessagesPerSecond: number;
+  };
+}
+
+function boundedPositiveEnv(name: string, fallback: number, maximum: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(maximum, Math.floor(parsed))) : fallback;
+}
+
 const wsProxies = new WeakMap<import('bun').ServerWebSocket<WsClientData>, {
   upstream: WebSocket;
   pending: (string | ArrayBufferLike | Blob | ArrayBufferView)[];
+  fluxRt: boolean;
+  messageWindowStartedAt: number;
+  messagesInWindow: number;
 }>();
 const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
   open(ws) {
+    const generativeVisuals = ws.data as GenerativeVisualsWsData;
+    if (generativeVisuals.accessDenied) {
+      ws.close(1008, `visual-access-denied: ${generativeVisuals.accessDenied}`);
+      return;
+    }
     if (ws.data.proxy) {
+      const generativeVisuals = (ws.data as GenerativeVisualsWsData).generativeVisuals;
+      if (generativeVisuals && activeFluxRtRelaySessions >= maxFluxRtRelaySessions) {
+        ws.close(1013, 'FluxRT relay capacity reached');
+        return;
+      }
+      if (generativeVisuals) activeFluxRtRelaySessions += 1;
       // Forward the client's WS subprotocol (vite HMR requires "vite-hmr";
       // without it vite's ws server rejects the upgrade → "closed before
       // established" reconnect spam + dead hot-reload).
       const upstream = ws.data.proxy.protocol
         ? new WebSocket(ws.data.proxy.url, ws.data.proxy.protocol)
         : new WebSocket(ws.data.proxy.url);
-      const entry: { upstream: WebSocket; pending: any[] } = { upstream, pending: [] };
+      const entry = {
+        upstream,
+        pending: [],
+        fluxRt: Boolean(generativeVisuals),
+        messageWindowStartedAt: Date.now(),
+        messagesInWindow: 0,
+      };
       wsProxies.set(ws, entry);
       upstream.binaryType = 'arraybuffer';
       upstream.onopen = () => {
@@ -612,10 +654,24 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
       upstream.onmessage = (e) => {
         try { ws.send(e.data as any); } catch { /* client gone */ }
       };
-      upstream.onclose = () => { try { ws.close(); } catch { /* ignore */ } };
+      upstream.onclose = (event) => {
+        try {
+          const code = event.code >= 1000 && event.code <= 4999 ? event.code : 1011;
+          ws.close(code, event.reason || 'FluxRT upstream closed');
+        } catch { /* ignore */ }
+      };
       upstream.onerror = (e) => {
-        console.error('[ws-proxy] upstream error:', (e as ErrorEvent).message ?? e);
-        try { ws.close(1011, 'upstream error'); } catch { /* ignore */ }
+        const detail = (e as ErrorEvent).message ?? '';
+        console.error('[ws-proxy] upstream error:', detail || e);
+        const unauthorized = /401|unauthorized|forbidden/i.test(detail);
+        try {
+          ws.close(
+            unauthorized ? 1008 : 1011,
+            unauthorized
+              ? `visual-upstream-unauthorized: ${detail || 'FluxRT rejected the relay credential'}`
+              : 'upstream error',
+          );
+        } catch { /* ignore */ }
       };
       return;
     }
@@ -624,6 +680,24 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
   message(ws, message) {
     const entry = wsProxies.get(ws);
     if (entry) {
+      const generativeVisuals = (ws.data as GenerativeVisualsWsData).generativeVisuals;
+      if (generativeVisuals) {
+        const byteLength = typeof message === 'string' ? Buffer.byteLength(message) : message.byteLength;
+        if (byteLength > generativeVisuals.maxMessageBytes) {
+          ws.close(1009, 'FluxRT frame exceeds relay limit');
+          return;
+        }
+        const now = Date.now();
+        if (now - entry.messageWindowStartedAt >= 1_000) {
+          entry.messageWindowStartedAt = now;
+          entry.messagesInWindow = 0;
+        }
+        entry.messagesInWindow += 1;
+        if (entry.messagesInWindow > generativeVisuals.maxMessagesPerSecond) {
+          ws.close(1008, 'FluxRT frame rate exceeds relay limit');
+          return;
+        }
+      }
       if (entry.upstream.readyState === WebSocket.OPEN) {
         entry.upstream.send(message as any);
       } else {
@@ -638,6 +712,7 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
     if (entry) {
       try { entry.upstream.close(); } catch { /* ignore */ }
       wsProxies.delete(ws);
+      if (entry.fluxRt) activeFluxRtRelaySessions -= 1;
       return;
     }
     return baseWsHandler.close?.(ws, code, reason);
@@ -654,6 +729,7 @@ try {
   idleTimeout: 0,
   fetch(req, srv) {
     const url = new URL(req.url);
+    const connectionAddress = srv.requestIP(req)?.address;
     if (url.pathname === '/ws') {
       const sid = url.searchParams.get('sid') ?? undefined;
       // 断线续传参数(多 tab 同步 §3.3):since=<lastAppliedSeq>&sgen=<generation>。
@@ -670,15 +746,30 @@ try {
       if (upgraded) return undefined;
       return new Response('upgrade required', { status: 426 });
     }
-    // wb-diffusion-renderer WS relay (Phase 2) — backend-agnostic (ADR 0004). Resolve the
-    // selected backend's upstream WS URL (key injected server-side) and reverse-
-    // proxy it via the shared wsHandler proxy branch. Raw key never reaches the
-    // browser; JPEG frames pass through zero-copy. Path is under /ws/* (not /api)
-    // so the dev vite proxy (which enables ws only on /ws) forwards the upgrade.
-    if (url.pathname === '/ws/diffusion-renderer') {
-      const upstreamUrl = getDiffusionRendererWsUpstreamUrl();
-      if (!upstreamUrl) return new Response('diffusion-renderer ws backend unavailable', { status: 503 });
-      const data: WsClientData = { id: crypto.randomUUID(), proxy: { url: upstreamUrl } };
+    // FluxRT stays behind a server relay because its protocol carries JPEG
+    // frames and a provider key. Reactor intentionally does not pass here:
+    // its browser SDK connects directly over WebRTC using a short-lived JWT.
+    if (url.pathname === '/ws/generative-visuals/fluxrt') {
+      const access = generativeVisualAccessPolicy.authorize(req, connectionAddress);
+      if (!access.ok) {
+        const deniedData: GenerativeVisualsWsData = {
+          id: crypto.randomUUID(),
+          accessDenied: access.error,
+        };
+        const upgraded = srv.upgrade(req, { data: deniedData });
+        if (upgraded) return undefined;
+        return new Response(access.error, { status: access.status });
+      }
+      const upstreamUrl = getFluxRtWsUpstreamUrl();
+      if (!upstreamUrl) return new Response('FluxRT backend unavailable', { status: 503 });
+      const data: GenerativeVisualsWsData = {
+        id: crypto.randomUUID(),
+        proxy: { url: upstreamUrl },
+        generativeVisuals: {
+          maxMessageBytes: maxFluxRtMessageBytes,
+          maxMessagesPerSecond: maxFluxRtMessagesPerSecond,
+        },
+      };
       const upgraded = srv.upgrade(req, { data });
       if (upgraded) return undefined;
       return new Response('upgrade required', { status: 426 });
@@ -726,7 +817,7 @@ try {
         (e) => new Response(`engine preview unavailable: ${e}`, { status: 502 }),
       );
     }
-    return app.fetch(req);
+    return app.fetch(bindGenerativeVisualConnection(req, connectionAddress));
   },
   websocket: wsHandler,
   });
