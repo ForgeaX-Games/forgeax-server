@@ -19,10 +19,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { initPathManager, resetPathManager, getPathManager } from "forgeax-cli/fs/path-manager";
-import { initSessionManager, resetSessionManager } from "forgeax-cli/core/session-manager";
-import type { Session } from "forgeax-cli/core/session";
-import type { Event } from "forgeax-cli/core/types";
+import { initPathManager, resetPathManager, getPathManager } from "@forgeax/orchestrator/fs/path-manager";
+import { initSessionManager, resetSessionManager } from "@forgeax/orchestrator/core/session-manager";
+import type { Session } from "@forgeax/orchestrator/core/session";
+import type { Event } from "@forgeax/orchestrator/core/types";
 
 let projectRoot: string;
 let prevProjectRootEnv: string | undefined;
@@ -164,7 +164,7 @@ describe("file-activity ledger", () => {
     await root.agentContext.fs.writeText("hello.md", "# hi\n");
     await root.agentContext.fs.writeText("world.txt", "stuff");
 
-    const slotFactory = (await import("forgeax-cli/builtin/kits/agent_manage/slots/file_activity_recent")).default;
+    const slotFactory = (await import("@forgeax/orchestrator/builtin/kits/agent_manage/slots/file_activity_recent")).default;
     const slot = slotFactory(root.agentContext);
     expect(slot.name).toBe("file_activity_recent");
     const content = typeof slot.content === "function" ? slot.content() : slot.content;

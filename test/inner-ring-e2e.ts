@@ -7,12 +7,12 @@
  *   FORGEAX_KERNEL_IMPL=forgeax-core bun test/inner-ring-e2e.ts
  * 退出码 = 失败数。
  */
-import { createForgeaxApp } from 'forgeax-cli';
-import { runKernelTurn } from 'forgeax-cli/core/kernel-turn';
-import { resolveKernel } from 'forgeax-cli/kernel/resolve-kernel';
-import { getSessionManager } from 'forgeax-cli/core/session-manager';
+import { createForgeaxApp } from '@forgeax/orchestrator';
+import { runKernelTurn } from '@forgeax/orchestrator/core/kernel-turn';
+import { resolveKernel } from '@forgeax/orchestrator/kernel/resolve-kernel';
+import { getSessionManager } from '@forgeax/orchestrator/core/session-manager';
 import { defaultProjectRoot } from '@forgeax/platform-io';
-import { Hook } from 'forgeax-cli/hooks/types';
+import { Hook } from '@forgeax/orchestrator/hooks/types';
 import { registerForgeaxCoreKernel } from '../src/kernel/forgeax-core-adapter';
 
 if (!process.env.ANTHROPIC_API_KEY) {

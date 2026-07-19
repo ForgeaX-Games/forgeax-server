@@ -21,7 +21,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Hono } from "hono";
-import { initPathManager, resetPathManager } from "forgeax-cli/fs/path-manager";
+import { initPathManager, resetPathManager } from "@forgeax/orchestrator/fs/path-manager";
 import { createWorkbenchRouter } from "../src/game/workbench";
 
 let projectRoot: string;

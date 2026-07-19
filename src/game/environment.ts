@@ -10,7 +10,7 @@
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { defaultProjectRoot } from '@forgeax/platform-io';
-import { getExtensionSnapshot } from "forgeax-cli/extensions/registry";
+import { getExtensionSnapshot } from "@forgeax/orchestrator/extensions/registry";
 import { pickI18n } from "@forgeax/types";
 
 interface ForgeJson {

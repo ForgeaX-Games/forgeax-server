@@ -6,7 +6,7 @@
 
 `@forgeax/server` is the single runtime process behind ForgeaX Studio. It listens on
 **`:18900`** and is the UI's only entrypoint. It spawns and supervises the engine and interface
-subprocesses, loads the agent kernel (`forgeax-cli`) **in-process**, exposes the entire
+subprocesses, loads the agent kernel (`@forgeax/orchestrator`) **in-process**, exposes the entire
 Workbench API, and runs the filesystem/HMR bridge that turns the agent's code edits into a live
 preview. No Docker, no microservice sprawl — one process, started in seconds.
 

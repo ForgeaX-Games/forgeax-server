@@ -20,7 +20,7 @@ import {
   __resetTelemetryFileSinkState,
 } from '../src/kernel/telemetry-file-sink';
 import { createForgeaxCoreKernel } from '../src/kernel/forgeax-core-adapter';
-import { initPathManager } from 'forgeax-cli/fs/path-manager';
+import { initPathManager } from '@forgeax/orchestrator/fs/path-manager';
 
 beforeEach(() => __resetTelemetryFileSinkState());
 

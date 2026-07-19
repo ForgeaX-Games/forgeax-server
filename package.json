@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Product shell: spawn engine/interface, host the forgeax-cli orchestration layer in-process, serve SPA + vite proxy, HTTP+WS bridge for UI",
+  "description": "Product shell: spawn engine/interface, host the @forgeax/orchestrator orchestration layer in-process, serve SPA + vite proxy, HTTP+WS bridge for UI",
   "main": "src/main.ts",
   "bin": {
     "forgeax-server": "./bin/forgeax-server"
@@ -19,9 +19,9 @@
   "dependencies": {
     "@forgeax/agent-host": "workspace:*",
     "@forgeax/agent-runtime": "workspace:*",
-    "@forgeax/forgeax-core": "workspace:*",
+    "@forgeax/cli": "workspace:*",
     "@forgeax/platform-io": "workspace:*",
-    "forgeax-cli": "workspace:*",
+    "@forgeax/orchestrator": "workspace:*",
     "hono": "^4.6.0",
     "sharp": "^0.34.5"
   },

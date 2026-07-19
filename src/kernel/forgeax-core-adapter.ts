@@ -27,7 +27,7 @@
  *   - 逃生闸:`FORGEAX_CORE_SERVE_REUSE=off` → 回退旧 per-turn spawn→run→reap 路径。
  * 崩溃隔离:serve 崩不影响 server,sidecar reap 并回 ExitInfo。
  *
- * 依赖方向:server → (forgeax-cli + agent-host + agent-runtime 契约);**不再** import forgeax-core
+ * 依赖方向:server → (@forgeax/orchestrator + agent-host + agent-runtime 契约);**不再** import forgeax-core
  * 内核实现(它在 serve 子进程里),也不再 import agent-host/orchestration。
  */
 import {
@@ -44,12 +44,12 @@ import {
   registerKernel,
 } from '@forgeax/agent-runtime';
 import { connect, type RpcConnection } from '@forgeax/agent-host';
-import { ensureSidecar } from 'forgeax-cli/kernel/sidecar-singleton';
-import { loadGatewayCatalog, gatewayCatalogToKernelModels } from 'forgeax-cli/lib/llm-gateway/gateway-catalog';
-import { makeInProcessExecuteTool, type HostExecuteToolFn } from 'forgeax-cli/kernel/host-tool-bridge';
-import { materializeEnv, stripModelKeys } from 'forgeax-cli/kernel/sidecar-spawn';
-import { tt, ttEnabled } from 'forgeax-cli/lib/turn-trace';
-import { getConsoleRouterSnapshot } from 'forgeax-cli/core/logger';
+import { ensureSidecar } from '@forgeax/orchestrator/kernel/sidecar-singleton';
+import { loadGatewayCatalog, gatewayCatalogToKernelModels } from '@forgeax/orchestrator/lib/llm-gateway/gateway-catalog';
+import { makeInProcessExecuteTool, type HostExecuteToolFn } from '@forgeax/orchestrator/kernel/host-tool-bridge';
+import { materializeEnv, stripModelKeys } from '@forgeax/orchestrator/kernel/sidecar-spawn';
+import { tt, ttEnabled } from '@forgeax/orchestrator/lib/turn-trace';
+import { getConsoleRouterSnapshot } from '@forgeax/orchestrator/core/logger';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -58,14 +58,14 @@ import { fileURLToPath } from 'node:url';
 import type { TelemetryRecord } from '@forgeax/types';
 import { createTelemetryFileSink, type TelemetryFileSink } from './telemetry-file-sink';
 
-/** forgeax-core serve 入口:经**包解析**定位(`@forgeax/forgeax-core/cli` 导出 + server 包依赖,
+/** forgeax-core serve 入口:经**包解析**定位(`@forgeax/cli/serve` 导出 + server 包依赖,
  *  发布后跨包仍成立),monorepo 源码态回退相对路径(发包前过渡)。耦合从「硬编码兄弟路径」
  *  收敛到包依赖,与 sidecar(agent-host)同款。 */
 function resolveCoreServeEntry(): string {
   try {
-    return fileURLToPath(import.meta.resolve('@forgeax/forgeax-core/cli'));
+    return fileURLToPath(import.meta.resolve('@forgeax/cli/serve'));
   } catch {
-    return resolve(import.meta.dir, '../../../core/src/cli/main.ts');
+    return resolve(import.meta.dir, '../../../cli/src/cli/main.ts');
   }
 }
 const CORE_SERVE_ENTRY = resolveCoreServeEntry();
@@ -248,7 +248,7 @@ class ForgeaxCoreServeKernel implements AgentKernel {
 
   /** 模型目录 = LLM gateway 目录(disk models.json ∩ LiteLLM live)。原生内核
    *  经 gateway 路由,能跑的模型集合就是 gateway 的集合——委托共享实现
-   *  (forgeax-cli/lib/llm-gateway/gateway-catalog,与无参 list_models 同一份,
+   *  (@forgeax/orchestrator/lib/llm-gateway/gateway-catalog,与无参 list_models 同一份,
    *  SSOT)。这消掉了旧 models.ts「unknown providerId 巧合穿透 gateway」的隐契约。 */
   async listModels(): Promise<KernelModelCatalog> {
     return gatewayCatalogToKernelModels(await loadGatewayCatalog());

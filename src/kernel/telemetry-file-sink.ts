@@ -7,13 +7,13 @@
  *   - kind==='span' → `<userRoot>/sessions/<sid>/logs/trace.jsonl`
  *   - kind==='log'  → `<userRoot>/sessions/<sid>/logs/log.jsonl`
  *
- * 路径约定 **复用** forgeax-cli 的 PathManager(`getPathManager().session(sid).logsDir()`,
+ * 路径约定 **复用** @forgeax/orchestrator 的 PathManager(`getPathManager().session(sid).logsDir()`,
  * = `<userRoot>/sessions/<sid>/logs/`),与既有 per-session `debug.log` / `latest.log` /
  * `global-events.jsonl` 同目录、同 sid 命名空间——不另起一套路径语义(SSOT)。
  *
  * 大小轮转:append 字节累计达 MAX_FILE_SIZE(50MB)→ 把 `f` → `f.1` → … → `f.N`
  * 平移(最多 MAX_ROTATIONS 个历史档),与 cli/logger.ts 的 rotateLogFile 同策略,但**自带**
- * 一份极简实现(不 import packages/cli 的 logger,避免把 console-bridge 整套状态机拖进来)。
+ * 一份极简实现(不 import packages/orchestrator 的 logger,避免把 console-bridge 整套状态机拖进来)。
  *
  * 可观测性铁律:落盘绝不能反噬主流程——所有写盘 best-effort,内部 try/catch 吞掉并
  * 经注入的 `onError` 上报(adapter 把它接到 turn-trace),**永不**向 RPC 层抛。
@@ -26,7 +26,7 @@ import {
   statSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { getPathManager } from 'forgeax-cli/fs/path-manager';
+import { getPathManager } from '@forgeax/orchestrator/fs/path-manager';
 // 仅 type-only:契约形状来自 SSOT wire schema(编译期擦除,不引入运行期依赖)。
 import type { TelemetryRecord } from '@forgeax/types';
 
@@ -91,7 +91,7 @@ export interface TelemetryFileSink {
 export interface TelemetryFileSinkOpts {
   /** 落盘出错时上报(best-effort 诊断;adapter 接到 turn-trace)。 */
   onError?: (err: unknown) => void;
-  /** 测试注入:覆盖 logs 目录解析(默认走 forgeax-cli PathManager)。 */
+  /** 测试注入:覆盖 logs 目录解析(默认走 @forgeax/orchestrator PathManager)。 */
   resolveLogsDir?: (sid: string) => string;
 }
 

@@ -5,7 +5,7 @@
 > **运行时核心 —— 一个 Bun 进程,编排整个 studio、进程内托管 agent 内核,并通过 HTTP + WebSocket 把一切桥接到 UI。**
 
 `@forgeax/server` 是 ForgeaX Studio 背后唯一的运行时进程。它监听 **`:18900`**,是 UI 的唯一入口。
-它拉起并守护 engine 与 interface 子进程,**进程内**装载 agent 内核(`forgeax-cli`),暴露完整的
+它拉起并守护 engine 与 interface 子进程,**进程内**装载 agent 内核(`@forgeax/orchestrator`),暴露完整的
 Workbench API,并运行把 agent 的代码改动变成实时预览的文件系统 / HMR 桥。无需 Docker、没有微服务
 的繁杂——一个进程,几秒起完。
 

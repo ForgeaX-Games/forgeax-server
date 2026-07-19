@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createForgeaxCoreKernel } from '../src/kernel/forgeax-core-adapter';
-import { getPathManager } from 'forgeax-cli/fs/path-manager';
+import { getPathManager } from '@forgeax/orchestrator/fs/path-manager';
 import type { TurnRequest, KernelEvent } from '@forgeax/agent-runtime/contract';
 
 const MODEL = process.env.FORGEAX_E2E_MODEL || process.env.FORGEAX_MODEL || 'claude-opus-4-8';

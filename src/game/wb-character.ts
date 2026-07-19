@@ -21,9 +21,9 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import type { Context } from 'hono';
-import { callTool } from 'forgeax-cli/tools/registry';
+import { callTool } from '@forgeax/orchestrator/tools/registry';
 import type { ToolCall } from '@forgeax/types';
-import { dispatchToSurface } from 'forgeax-cli/api/bus';
+import { dispatchToSurface } from '@forgeax/orchestrator/api/bus';
 import {
   getActiveCharacter,
   setActiveCharacter,

@@ -3,7 +3,7 @@
  *
  * 跑:`bun packages/server/test/serve-reuse-e2e.ts`(需 ANTHROPIC_API_KEY,经 .env;可选 ANTHROPIC_BASE_URL)。
  *
- * 同时验证「包解析」耦合:adapter 经 `@forgeax/forgeax-core/cli`、sidecar 经 `@forgeax/agent-host/serve`
+ * 同时验证「包解析」耦合:adapter 经 `@forgeax/cli/serve`、sidecar 经 `@forgeax/agent-host/serve`
  * resolved 后再 spawn——若解析/导出/依赖任一处断,下面的真实 spawn 会连不上而失败。
  *
  * 验证 adapter 的 per-session 复用语义(forgeax-core-adapter.ts):
@@ -12,7 +12,7 @@
  *  R3 崩溃自愈:SIGKILL serve → 驱逐死 session → 下一轮自动重 spawn 并成功(pid 变化)。
  *  R4 软取消不杀进程:turn 中途 abort → 轮收口,但 serve 进程**存活**(pid 不变),后续轮仍可用。
  */
-import { ensureSidecar, resetSidecarSingleton } from 'forgeax-cli/kernel/sidecar-singleton';
+import { ensureSidecar, resetSidecarSingleton } from '@forgeax/orchestrator/kernel/sidecar-singleton';
 import { createForgeaxCoreKernel } from '../src/kernel/forgeax-core-adapter';
 import type { TurnRequest, KernelEvent } from '@forgeax/agent-runtime';
 

@@ -3,7 +3,7 @@
  *  charter (the prompt-cache prefix, §3.2) is byte-stable across calls.
  *
  *  Why this matters: the charter/environment/note used to be built inline in
- *  forgeax-cli (compose-turn-request + claude-code provider). Stage A moved the
+ *  @forgeax/orchestrator (compose-turn-request + claude-code provider). Stage A moved the
  *  builders into the shell behind the SystemPromptComposer seam. If the composer
  *  ever drifts from the builders, the system prompt changes silently — breaking
  *  both "zero behavior change" and (for the charter) prompt-cache hit rate, which

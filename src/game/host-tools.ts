@@ -14,7 +14,7 @@
  */
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { HostToolSpec, HostToolRunCtx } from 'forgeax-cli/orchestration-seams';
+import type { HostToolSpec, HostToolRunCtx } from '@forgeax/orchestrator/orchestration-seams';
 import { editorGatewayHostTools } from './editor-gateway-host-tools';
 
 /** 列出工作区里的游戏(`.forgeax/games/` + 兼容旧 `games/`),过滤 _template / 隐藏。 */

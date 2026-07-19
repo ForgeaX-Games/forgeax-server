@@ -25,30 +25,34 @@ import { resolve, join } from 'node:path';
 }
 
 import { serveStatic } from 'hono/bun';
-// 产品壳:初始化编排层(forgeax-cli)并注入产品相关内容,自己只负责进程/服务/代理。
-import { createForgeaxApp } from 'forgeax-cli';
+// 产品壳:初始化编排层(@forgeax/orchestrator)并注入产品相关内容,自己只负责进程/服务/代理。
+import { createForgeaxApp } from '@forgeax/orchestrator';
 import { getVersion } from '@forgeax/platform-io';
-import { loadBrand } from 'forgeax-cli/brand';
+import { loadBrand } from '@forgeax/orchestrator/brand';
 import { defaultProjectRoot } from '@forgeax/platform-io';
 import { friendlyPath } from '@forgeax/platform-io';
 import { mp, interfaceDist as resolveInterfaceDist } from '@forgeax/platform-io';
-import { FsWatcher } from 'forgeax-cli/api/lib/watcher';
-import { WsHub, createWsHandler, type WsClientData } from 'forgeax-cli/ws';
-import { getSessionManager } from 'forgeax-cli/core/session-manager';
+import { FsWatcher } from '@forgeax/orchestrator/api/lib/watcher';
+import { WsHub, createWsHandler, type WsClientData } from '@forgeax/orchestrator/ws';
+import { getSessionManager } from '@forgeax/orchestrator/core/session-manager';
 import { getActiveGame } from './game/active-game';
 import { GameSessionLayout } from './studio-session-layout';
-// 游戏业务路由(阶段A:从 forgeax-cli 搬入产品壳)—— 经 ctx.routers 注入编排层。
+// 游戏业务路由(阶段A:从 @forgeax/orchestrator 搬入产品壳)—— 经 ctx.routers 注入编排层。
 import { createWorkbenchRouter } from './game/workbench';
 import { createCharacterRouter } from './game/wb-character';
 import { createBgmRouter } from './game/wb-bgm';
-import { createDiffusionRendererRouter, getDiffusionRendererWsUpstreamUrl } from './game/wb-diffusion-renderer';
+import { createGenerativeVisualsRouter, getFluxRtWsUpstreamUrl } from './game/generative-visuals';
+import {
+  bindGenerativeVisualConnection,
+  createGenerativeVisualAccessPolicy,
+} from './game/generative-visuals/access-policy';
 import { createCeApiShimRouter } from './game/ce-api-shim';
 import { GameSystemPromptComposer } from './game/system-prompt-composer';
 import { studioHostTools } from './game/host-tools';
 // 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
 import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from './kernel/telemetry-file-sink';
-import { setHostTelemetry } from 'forgeax-cli/kernel/host-telemetry';
+import { setHostTelemetry } from '@forgeax/orchestrator/kernel/host-telemetry';
 import type { TelemetryRecord } from '@forgeax/types';
 // UI 资产清洗作为 host 能力由 server 自身实现(game/ui-asset-cleanup.ts)，经
 // UiAssetCleanup seam 注入给 ce-api-shim —— 编排层不 source-import marketplace plugin。
@@ -114,6 +118,7 @@ process.on('unhandledRejection', (reason) => {
 
 const PORT = Number(process.env.FORGEAX_SERVER_PORT ?? 18900);
 const HOST = process.env.FORGEAX_SERVER_HOST ?? '0.0.0.0';
+const generativeVisualAccessPolicy = createGenerativeVisualAccessPolicy();
 // Studio-wide version (v0.M.D.N). Sourced from scripts/version.sh via run.sh
 // (FORGEAX_VERSION env / dist/version.json), with live-git fallback for dev mode.
 const FORGEAX_VERSION = getVersion();
@@ -147,7 +152,7 @@ const projectRoot = defaultProjectRoot();
 // engine serves from the server's active root". Best-effort: throws in packaged
 // mode (no engine-src dir) and when the link is a real dir — non-fatal.
 {
-  const { repointEngineForgeaXSymlink } = await import('forgeax-cli/api/lib/engine-symlink');
+  const { repointEngineForgeaXSymlink } = await import('@forgeax/orchestrator/api/lib/engine-symlink');
   try {
     repointEngineForgeaXSymlink(projectRoot);
   } catch (e) {
@@ -198,15 +203,15 @@ if (process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core') {
   // spawn + 重试)。
   if (process.env.FORGEAX_KERNEL_ONLY !== '1') {
     void (async (): Promise<void> => {
-      const { sidecarEnabled } = await import('forgeax-cli/kernel/kernel-mode');
+      const { sidecarEnabled } = await import('@forgeax/orchestrator/kernel/kernel-mode');
       if (!sidecarEnabled()) return;
-      const { ensureSidecar } = await import('forgeax-cli/kernel/sidecar-singleton');
+      const { ensureSidecar } = await import('@forgeax/orchestrator/kernel/sidecar-singleton');
       await ensureSidecar();
     })().catch(() => { /* 预热失败不阻塞 boot;首轮 chat 会自行 spawn+重试 */ });
   }
 }
 
-// 初始化编排层 + 注入产品上下文。createForgeaxApp(forgeax-cli)负责 boot(path /
+// 初始化编排层 + 注入产品上下文。createForgeaxApp(@forgeax/orchestrator)负责 boot(path /
 // session / plugins / cli-providers / brand)并挂载全部 /api 路由,返回已就绪的 Hono
 // app。产品壳(本文件)只在其上叠加:静态资源(SPA / 插件 dist)、引擎/界面反向代理、
 // WS、Bun.serve、文件 watcher。这是"产品层初始化并注入编排层"的落点;换产品 = 换这层注入。
@@ -231,7 +236,10 @@ const { app } = await createForgeaxApp({
     { path: '/api/workbench', router: createWorkbenchRouter() },
     { path: '/api/wb/character', router: createCharacterRouter({ projectRoot, env: shimEnv }) },
     { path: '/api/wb/bgm', router: createBgmRouter() },
-    { path: '/api/wb/diffusion-renderer', router: createDiffusionRendererRouter() },
+    {
+      path: '/api/generative-visuals',
+      router: createGenerativeVisualsRouter({ accessPolicy: generativeVisualAccessPolicy }),
+    },
     {
       path: '/__ce-api__',
       router: createCeApiShimRouter({
@@ -478,10 +486,6 @@ app.use('/extensions/:id/*', async (c, next) => {
 
 
 
-
-
-
-
 // wb-scene backend API proxy. Plugin's Fastify backend listens on port
 // `WB_SCENE_API_PORT` (default 9557) and exposes /api/v1/* + /ws/*. The host
 // proxies same-origin so the iframe sees /api/v1/* without CORS.
@@ -589,20 +593,58 @@ if (SERVE_SPA) {
 // /ws proxy，不经此处。
 const WB_SCENE_WS_PATHS = new Set(['/ws/render', '/ws/editor', '/ws/log']);
 const baseWsHandler = createWsHandler(hub);
+const maxFluxRtRelaySessions = boundedPositiveEnv('FORGEAX_FLUXRT_MAX_RELAY_SESSIONS', 2, 8);
+const maxFluxRtMessageBytes = boundedPositiveEnv('FORGEAX_FLUXRT_MAX_MESSAGE_BYTES', 2 * 1024 * 1024, 8 * 1024 * 1024);
+const maxFluxRtMessagesPerSecond = boundedPositiveEnv('FORGEAX_FLUXRT_MAX_MESSAGES_PER_SECOND', 20, 60);
+let activeFluxRtRelaySessions = 0;
+
+interface GenerativeVisualsWsData extends WsClientData {
+  readonly accessDenied?: string;
+  readonly generativeVisuals?: {
+    readonly maxMessageBytes: number;
+    readonly maxMessagesPerSecond: number;
+  };
+}
+
+function boundedPositiveEnv(name: string, fallback: number, maximum: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(maximum, Math.floor(parsed))) : fallback;
+}
+
 const wsProxies = new WeakMap<import('bun').ServerWebSocket<WsClientData>, {
   upstream: WebSocket;
   pending: (string | ArrayBufferLike | Blob | ArrayBufferView)[];
+  fluxRt: boolean;
+  messageWindowStartedAt: number;
+  messagesInWindow: number;
 }>();
 const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
   open(ws) {
+    const generativeVisuals = ws.data as GenerativeVisualsWsData;
+    if (generativeVisuals.accessDenied) {
+      ws.close(1008, `visual-access-denied: ${generativeVisuals.accessDenied}`);
+      return;
+    }
     if (ws.data.proxy) {
+      const generativeVisuals = (ws.data as GenerativeVisualsWsData).generativeVisuals;
+      if (generativeVisuals && activeFluxRtRelaySessions >= maxFluxRtRelaySessions) {
+        ws.close(1013, 'FluxRT relay capacity reached');
+        return;
+      }
+      if (generativeVisuals) activeFluxRtRelaySessions += 1;
       // Forward the client's WS subprotocol (vite HMR requires "vite-hmr";
       // without it vite's ws server rejects the upgrade → "closed before
       // established" reconnect spam + dead hot-reload).
       const upstream = ws.data.proxy.protocol
         ? new WebSocket(ws.data.proxy.url, ws.data.proxy.protocol)
         : new WebSocket(ws.data.proxy.url);
-      const entry: { upstream: WebSocket; pending: any[] } = { upstream, pending: [] };
+      const entry = {
+        upstream,
+        pending: [],
+        fluxRt: Boolean(generativeVisuals),
+        messageWindowStartedAt: Date.now(),
+        messagesInWindow: 0,
+      };
       wsProxies.set(ws, entry);
       upstream.binaryType = 'arraybuffer';
       upstream.onopen = () => {
@@ -612,10 +654,24 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
       upstream.onmessage = (e) => {
         try { ws.send(e.data as any); } catch { /* client gone */ }
       };
-      upstream.onclose = () => { try { ws.close(); } catch { /* ignore */ } };
+      upstream.onclose = (event) => {
+        try {
+          const code = event.code >= 1000 && event.code <= 4999 ? event.code : 1011;
+          ws.close(code, event.reason || 'FluxRT upstream closed');
+        } catch { /* ignore */ }
+      };
       upstream.onerror = (e) => {
-        console.error('[ws-proxy] upstream error:', (e as ErrorEvent).message ?? e);
-        try { ws.close(1011, 'upstream error'); } catch { /* ignore */ }
+        const detail = (e as ErrorEvent).message ?? '';
+        console.error('[ws-proxy] upstream error:', detail || e);
+        const unauthorized = /401|unauthorized|forbidden/i.test(detail);
+        try {
+          ws.close(
+            unauthorized ? 1008 : 1011,
+            unauthorized
+              ? `visual-upstream-unauthorized: ${detail || 'FluxRT rejected the relay credential'}`
+              : 'upstream error',
+          );
+        } catch { /* ignore */ }
       };
       return;
     }
@@ -624,6 +680,24 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
   message(ws, message) {
     const entry = wsProxies.get(ws);
     if (entry) {
+      const generativeVisuals = (ws.data as GenerativeVisualsWsData).generativeVisuals;
+      if (generativeVisuals) {
+        const byteLength = typeof message === 'string' ? Buffer.byteLength(message) : message.byteLength;
+        if (byteLength > generativeVisuals.maxMessageBytes) {
+          ws.close(1009, 'FluxRT frame exceeds relay limit');
+          return;
+        }
+        const now = Date.now();
+        if (now - entry.messageWindowStartedAt >= 1_000) {
+          entry.messageWindowStartedAt = now;
+          entry.messagesInWindow = 0;
+        }
+        entry.messagesInWindow += 1;
+        if (entry.messagesInWindow > generativeVisuals.maxMessagesPerSecond) {
+          ws.close(1008, 'FluxRT frame rate exceeds relay limit');
+          return;
+        }
+      }
       if (entry.upstream.readyState === WebSocket.OPEN) {
         entry.upstream.send(message as any);
       } else {
@@ -638,6 +712,7 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
     if (entry) {
       try { entry.upstream.close(); } catch { /* ignore */ }
       wsProxies.delete(ws);
+      if (entry.fluxRt) activeFluxRtRelaySessions -= 1;
       return;
     }
     return baseWsHandler.close?.(ws, code, reason);
@@ -654,6 +729,7 @@ try {
   idleTimeout: 0,
   fetch(req, srv) {
     const url = new URL(req.url);
+    const connectionAddress = srv.requestIP(req)?.address;
     if (url.pathname === '/ws') {
       const sid = url.searchParams.get('sid') ?? undefined;
       // 断线续传参数(多 tab 同步 §3.3):since=<lastAppliedSeq>&sgen=<generation>。
@@ -670,15 +746,30 @@ try {
       if (upgraded) return undefined;
       return new Response('upgrade required', { status: 426 });
     }
-    // wb-diffusion-renderer WS relay (Phase 2) — backend-agnostic (ADR 0004). Resolve the
-    // selected backend's upstream WS URL (key injected server-side) and reverse-
-    // proxy it via the shared wsHandler proxy branch. Raw key never reaches the
-    // browser; JPEG frames pass through zero-copy. Path is under /ws/* (not /api)
-    // so the dev vite proxy (which enables ws only on /ws) forwards the upgrade.
-    if (url.pathname === '/ws/diffusion-renderer') {
-      const upstreamUrl = getDiffusionRendererWsUpstreamUrl();
-      if (!upstreamUrl) return new Response('diffusion-renderer ws backend unavailable', { status: 503 });
-      const data: WsClientData = { id: crypto.randomUUID(), proxy: { url: upstreamUrl } };
+    // FluxRT stays behind a server relay because its protocol carries JPEG
+    // frames and a provider key. Reactor intentionally does not pass here:
+    // its browser SDK connects directly over WebRTC using a short-lived JWT.
+    if (url.pathname === '/ws/generative-visuals/fluxrt') {
+      const access = generativeVisualAccessPolicy.authorize(req, connectionAddress);
+      if (!access.ok) {
+        const deniedData: GenerativeVisualsWsData = {
+          id: crypto.randomUUID(),
+          accessDenied: access.error,
+        };
+        const upgraded = srv.upgrade(req, { data: deniedData });
+        if (upgraded) return undefined;
+        return new Response(access.error, { status: access.status });
+      }
+      const upstreamUrl = getFluxRtWsUpstreamUrl();
+      if (!upstreamUrl) return new Response('FluxRT backend unavailable', { status: 503 });
+      const data: GenerativeVisualsWsData = {
+        id: crypto.randomUUID(),
+        proxy: { url: upstreamUrl },
+        generativeVisuals: {
+          maxMessageBytes: maxFluxRtMessageBytes,
+          maxMessagesPerSecond: maxFluxRtMessagesPerSecond,
+        },
+      };
       const upgraded = srv.upgrade(req, { data });
       if (upgraded) return undefined;
       return new Response('upgrade required', { status: 426 });
@@ -726,7 +817,7 @@ try {
         (e) => new Response(`engine preview unavailable: ${e}`, { status: 502 }),
       );
     }
-    return app.fetch(req);
+    return app.fetch(bindGenerativeVisualConnection(req, connectionAddress));
   },
   websocket: wsHandler,
   });
@@ -762,7 +853,7 @@ console.log(`[forgeax-server] websocket on ws://${server.hostname}:${server.port
 try {
   const importedDir = `${process.env.FORGEAX_PROJECT_ROOT ?? process.cwd()}/.forgeax/souls-imported`;
   const { existsSync, readdirSync } = await import('node:fs');
-  const { kernelEnabled, sidecarEnabled } = await import('forgeax-cli/kernel/kernel-mode');
+  const { kernelEnabled, sidecarEnabled } = await import('@forgeax/orchestrator/kernel/kernel-mode');
   const guarded = kernelEnabled() && sidecarEnabled();
   if (!guarded && existsSync(importedDir) && readdirSync(importedDir).length > 0) {
     console.warn('[forgeax-server] ⚠️  user-imported soul-pack 存在但内核/sidecar 被关 —— 不可信 pack 缺凭据保险箱/进程监督。移除 FORGEAX_KERNEL=cli / FORGEAX_SIDECAR=off / .forgeax/use-cli 以恢复保护。');
@@ -775,11 +866,11 @@ try {
 // 路径)时才擦。擦前先确保 sidecar 起来且拿到 key;sidecar 起不来则**不擦**(否则无可用路径)。
 if (process.env.FORGEAX_KERNEL_ONLY === '1') {
   try {
-    const { kernelEnabled, sidecarEnabled } = await import('forgeax-cli/kernel/kernel-mode');
+    const { kernelEnabled, sidecarEnabled } = await import('@forgeax/orchestrator/kernel/kernel-mode');
     if (!kernelEnabled() || !sidecarEnabled()) {
       console.warn('[forgeax-server] FORGEAX_KERNEL_ONLY=1 但内核/sidecar 未启用 —— 跳过擦 key(否则无可用模型路径)。');
     } else {
-      const { ensureSidecar } = await import('forgeax-cli/kernel/sidecar-singleton');
+      const { ensureSidecar } = await import('@forgeax/orchestrator/kernel/sidecar-singleton');
       await ensureSidecar(); // boot 即起 sidecar,真 key 随 spawn env 交给它(cred-vault 持有)
       const before = Boolean(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY);
       delete process.env.ANTHROPIC_API_KEY;
@@ -803,7 +894,7 @@ const shutdown = async (sig: string) => {
   // close SM 单例 logger，确保 `<userRoot>/debug.log` 尾部 buffer 落盘。
   try { await getSessionManager().shutdown(); } catch { /* SM 可能未 init */ }
   // Spawned children (incl. the agent-host sidecar) are supervised by the
-  // sidecar/forgeax-cli runtime now, not by the thin server shell — they tear
+  // sidecar/@forgeax/orchestrator runtime now, not by the thin server shell — they tear
   // themselves down on the SM shutdown above / their own exit handlers.
   process.exit(0);
 };

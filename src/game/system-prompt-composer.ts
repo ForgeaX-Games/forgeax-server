@@ -14,7 +14,7 @@
  *  memoized — ports are fixed at construction, so it is byte-stable across turns
  *  (the prompt-cache anchor). */
 
-import type { SystemPromptComposer } from 'forgeax-cli/orchestration-seams';
+import type { SystemPromptComposer } from '@forgeax/orchestrator/orchestration-seams';
 import { buildGameCharter, buildActiveGameNote } from './game-charter';
 import { renderEnvironmentText } from './environment';
 

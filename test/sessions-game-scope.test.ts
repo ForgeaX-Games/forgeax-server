@@ -12,10 +12,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Hono } from "hono";
-import { initPathManager, getPathManager, resetPathManager } from "forgeax-cli/fs/path-manager";
-import { initSessionManager, resetSessionManager } from "forgeax-cli/core/session-manager";
-import { createSessionsRouter } from "forgeax-cli/api/sessions";
-import type { SessionLayout } from "forgeax-cli/fs/session-layout";
+import { initPathManager, getPathManager, resetPathManager } from "@forgeax/orchestrator/fs/path-manager";
+import { initSessionManager, resetSessionManager } from "@forgeax/orchestrator/core/session-manager";
+import { createSessionsRouter } from "@forgeax/orchestrator/api/sessions";
+import type { SessionLayout } from "@forgeax/orchestrator/fs/session-layout";
 import { getActiveGame } from "../src/game/active-game";
 
 let tmp: string;

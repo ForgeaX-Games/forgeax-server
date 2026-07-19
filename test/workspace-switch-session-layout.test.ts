@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initPathManager, getPathManager, resetPathManager } from 'forgeax-cli/fs/path-manager';
+import { initPathManager, getPathManager, resetPathManager } from '@forgeax/orchestrator/fs/path-manager';
 import { GameSessionLayout } from '../src/studio-session-layout';
 
 // Regression: a workspace/project-root switch must NOT drop the studio

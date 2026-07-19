@@ -4,12 +4,12 @@
     "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    // In-repo, resolve `forgeax-cli/*` to cli's SOURCE (see the paths block below),
+    // In-repo, resolve `@forgeax/orchestrator/*` to orchestrator's SOURCE (see the paths block below),
     // not its package.json `exports`. cli sealed its exports to a dist barrel for
     // the self-contained npm tarball (`.` + `./kernel/forgeax-core-kernel` only),
     // so the deep subpaths server consumes are no longer package-exported; the
     // explicit paths keep server typecheck+runtime decoupled from cli/dist (no
-    // build needed for dev) and immune to future cli export churn. bun honors
+    // build needed for dev) and immune to future orchestrator export churn. bun honors
     // tsconfig paths over node_modules, so this holds at runtime too. `customConditions`
     // is retained for any remaining condition-gated deps.
     "customConditions": ["bun"],
@@ -34,20 +34,20 @@
       "@forgeax/types/*": ["../../contracts/types/src/*"],
       "@forgeax/agent-runtime": ["../../contracts/agent-runtime/src/index.ts"],
       "@forgeax/agent-runtime/*": ["../../contracts/agent-runtime/src/*"],
-      "@forgeax/forgeax-core": ["../../core/src/index.ts"],
-      "@forgeax/forgeax-core/*": ["../../core/src/*"],
-      // cli SOURCE (pulled in via the forgeax-cli/* paths below) imports these two
+      "@forgeax/cli": ["../../cli/src/index.ts"],
+      "@forgeax/cli/*": ["../../cli/src/*"],
+      // orchestrator SOURCE (pulled in via the @forgeax/orchestrator/* paths below) imports these two
       // workspace deps; map them to src like the @forgeax/* above so tsc resolves
-      // them when typechecking cli through server. create-role added the cli→
-      // platform-io dep (writeAgentPack); agent-host is cli's host-protocol dep.
+      // them when typechecking orchestrator through server. create-role added the
+      // orchestrator→platform-io dep (writeAgentPack); agent-host is host-protocol dep.
       "@forgeax/platform-io": ["../../platform-io/src/index.ts"],
       "@forgeax/platform-io/*": ["../../platform-io/src/*"],
       "@forgeax/agent-host": ["../../agent-host/src/index.ts"],
-      "@server-lib/character-forge": ["../../cli/src/lib/character-forge/index.ts"],
-      "@server-lib/character-forge/*": ["../../cli/src/lib/character-forge/*"],
-      "forgeax-cli": ["../../cli/src/index.ts"],
-      "forgeax-cli/builtin/*": ["../../cli/builtin/*.ts"],
-      "forgeax-cli/*": ["../../cli/src/*.ts", "../../cli/src/*/index.ts"]
+      "@server-lib/character-forge": ["../../orchestrator/src/lib/character-forge/index.ts"],
+      "@server-lib/character-forge/*": ["../../orchestrator/src/lib/character-forge/*"],
+      "@forgeax/orchestrator": ["../../orchestrator/src/index.ts"],
+      "@forgeax/orchestrator/builtin/*": ["../../orchestrator/builtin/*.ts"],
+      "@forgeax/orchestrator/*": ["../../orchestrator/src/*.ts", "../../orchestrator/src/*/index.ts"]
     }
   },
   "include": ["src", "bin", "test", "builtin"]

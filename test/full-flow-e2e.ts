@@ -6,9 +6,9 @@
  * 断言落在 agent bus 事件(WS 桥接的就是它)。非 .test.ts(真 API + 全栈 boot);手动跑:
  *   set -a; source <repo>/.env; set +a && bun run e2e:full
  */
-import { createForgeaxApp } from 'forgeax-cli';
-import { getSessionManager } from 'forgeax-cli/core/session-manager';
-import { resolveKernel } from 'forgeax-cli/kernel/resolve-kernel';
+import { createForgeaxApp } from '@forgeax/orchestrator';
+import { getSessionManager } from '@forgeax/orchestrator/core/session-manager';
+import { resolveKernel } from '@forgeax/orchestrator/kernel/resolve-kernel';
 import { defaultProjectRoot } from '@forgeax/platform-io';
 import { registerForgeaxCoreKernel } from '../src/kernel/forgeax-core-adapter';
 

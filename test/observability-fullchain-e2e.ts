@@ -15,8 +15,8 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createForgeaxCoreKernel } from '../src/kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from '../src/kernel/telemetry-file-sink';
-import { initPathManager, getPathManager } from 'forgeax-cli/fs/path-manager';
-import { FlatSessionLayout } from 'forgeax-cli/fs/session-layout';
+import { initPathManager, getPathManager } from '@forgeax/orchestrator/fs/path-manager';
+import { FlatSessionLayout } from '@forgeax/orchestrator/fs/session-layout';
 import type { TurnRequest, KernelEvent } from '@forgeax/agent-runtime/contract';
 
 const MODEL = process.env.FORGEAX_E2E_MODEL || process.env.FORGEAX_MODEL || 'claude-opus-4-8';

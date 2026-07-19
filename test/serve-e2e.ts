@@ -14,11 +14,11 @@
  */
 import { resolve } from 'node:path';
 import { connect, type RpcConnection } from '@forgeax/agent-host';
-import { ensureSidecar, resetSidecarSingleton } from 'forgeax-cli/kernel/sidecar-singleton';
+import { ensureSidecar, resetSidecarSingleton } from '@forgeax/orchestrator/kernel/sidecar-singleton';
 import { createForgeaxCoreKernel } from '../src/kernel/forgeax-core-adapter';
 import type { TurnRequest, KernelEvent } from '@forgeax/agent-runtime';
 
-const CORE_SERVE = resolve(import.meta.dir, '../../core/src/cli/main.ts');
+const CORE_SERVE = resolve(import.meta.dir, '../../cli/src/cli/main.ts');
 // 默认用 forgeax llm-proxy 已支持的模型;FORGEAX_E2E_MODEL 可覆盖(proxy 须支持该 id)。
 const MODEL = process.env.FORGEAX_E2E_MODEL || 'claude-opus-4-8';
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));

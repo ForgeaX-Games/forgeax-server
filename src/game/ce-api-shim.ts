@@ -32,30 +32,30 @@ import { request as httpRequest } from 'node:http';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { complete, type ChatMessage } from 'forgeax-cli/lib/llm-gateway';
-import { ImageDispatcher } from 'forgeax-cli/lib/image-gateway/clients/dispatcher';
-import { vendorForModel } from 'forgeax-cli/lib/image-gateway';
-import { createLitellmSpeech, litellmTtsConfigured } from 'forgeax-cli/lib/audio-gateway/litellm-tts';
-import { createDoubaoSpeech, doubaoTtsConfigured } from 'forgeax-cli/lib/audio-gateway/doubao-tts';
-import { createMinimaxSpeech, minimaxTtsConfigured } from 'forgeax-cli/lib/audio-gateway/minimax-tts';
-import { createMinimaxMusic, minimaxMusicConfigured } from 'forgeax-cli/lib/audio-gateway/minimax-music';
+import { complete, type ChatMessage } from '@forgeax/orchestrator/lib/llm-gateway';
+import { ImageDispatcher } from '@forgeax/orchestrator/lib/image-gateway/clients/dispatcher';
+import { vendorForModel } from '@forgeax/orchestrator/lib/image-gateway';
+import { createLitellmSpeech, litellmTtsConfigured } from '@forgeax/orchestrator/lib/audio-gateway/litellm-tts';
+import { createDoubaoSpeech, doubaoTtsConfigured } from '@forgeax/orchestrator/lib/audio-gateway/doubao-tts';
+import { createMinimaxSpeech, minimaxTtsConfigured } from '@forgeax/orchestrator/lib/audio-gateway/minimax-tts';
+import { createMinimaxMusic, minimaxMusicConfigured } from '@forgeax/orchestrator/lib/audio-gateway/minimax-music';
 import {
   createLitellmVideoTask,
   getLitellmVideoStatus,
   downloadLitellmVideoContent,
   litellmVideoConfigured,
-} from 'forgeax-cli/lib/video-gateway/litellm-video';
+} from '@forgeax/orchestrator/lib/video-gateway/litellm-video';
 import {
   arkVideoConfigured,
   createArkVideoTask,
   getArkVideoStatus,
   downloadArkVideoContent,
   isArkTaskId,
-} from 'forgeax-cli/lib/video-gateway/ark-video';
+} from '@forgeax/orchestrator/lib/video-gateway/ark-video';
 import { defaultProjectRoot } from '@forgeax/platform-io';
 // UI asset-cleanup contract type now lives on the orchestration seam (cli);
 // ProductContext references it while this business consumes it (shell).
-import type { UiAssetCleanup } from 'forgeax-cli/orchestration-seams';
+import type { UiAssetCleanup } from '@forgeax/orchestrator/orchestration-seams';
 
 export interface CeApiShimCtx {
   projectRoot: string;
