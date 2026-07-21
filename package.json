@@ -5,6 +5,10 @@
   "type": "module",
   "description": "Product shell: spawn engine/interface, host the @forgeax/orchestrator orchestration layer in-process, serve SPA + vite proxy, HTTP+WS bridge for UI",
   "main": "src/main.ts",
+  "exports": {
+    ".": "./src/main.ts",
+    "./composition": "./src/composition.ts"
+  },
   "bin": {
     "forgeax-server": "./bin/forgeax-server"
   },

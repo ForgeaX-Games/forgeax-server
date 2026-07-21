@@ -60,6 +60,7 @@ import {
   inspectUiAssetCanvas,
   normalizeStandaloneUiAsset,
 } from './game/ui-asset-cleanup';
+import { activateServerModules } from './composition-host';
 
 // ──────────────────────────────────────────────────────────────────────────
 // FaultBoundary — top-level process-wide exception backstop (perf-analysis-2
@@ -266,6 +267,8 @@ const { app } = await createForgeaxApp({
   // 工厂,理由同上 sessionLayoutFactory:切 workspace 要对新根重建。
   stateRootFactory: (root) => join(root, '.forgeax', 'state'),
 });
+
+await activateServerModules({ app });
 
 // projectRoot 必须每请求实时读 defaultProjectRoot():POST /api/workspaces/activate
 // 热切换只改 process.env.FORGEAX_PROJECT_ROOT,启动时固化的 const projectRoot 不会跟。
