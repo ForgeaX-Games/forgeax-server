@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "id": "narr-open",
+      "kind": "video",
+      "filename": "blobs/narr-open.mp4",
+      "mimeType": "video/mp4",
+      "bytes": 128,
+      "createdAt": 1751500000000,
+      "meta": {
+        "mediaId": "m-narr-open",
+        "scenarioId": "nodia-main",
+        "source": "local-import"
+      }
+    },
+    {
+      "id": "narr-door",
+      "kind": "video",
+      "filename": "blobs/narr-door.mp4",
+      "mimeType": "video/mp4",
+      "bytes": 256,
+      "createdAt": 1751500000000,
+      "meta": {
+        "mediaId": "m-narr-door",
+        "scenarioId": "nodia-main",
+        "source": "local-import"
+      }
+    }
+  ]
+}

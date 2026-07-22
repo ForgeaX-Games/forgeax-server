@@ -2,11 +2,35 @@ import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Hono } from 'hono';
-import type { ServerCompositionContext, ServerModule } from '../src/composition';
+import type { ServerCompositionContext, ServerModule, VideoAssetProvider } from '../src/composition';
 import { ServerModuleRegistry } from '../src/composition-host';
+import { VideoAssetProviderRegistry } from '../src/video-assets/provider-registry';
+
+function provider(kind: VideoAssetProvider['kind']): VideoAssetProvider {
+  return {
+    kind,
+    prepareUpload: async () => {
+      throw new Error('not used');
+    },
+    inspectUpload: async () => {
+      throw new Error('not used');
+    },
+    finalizeResource: async () => {
+      throw new Error('not used');
+    },
+    getPlayback: async () => {
+      throw new Error('not used');
+    },
+    delete: async () => {},
+  };
+}
 
 function context(): ServerCompositionContext {
-  return { app: new Hono() };
+  const registry = new VideoAssetProviderRegistry(provider('local'));
+  return {
+    app: new Hono(),
+    services: { videoAssets: registry.control },
+  };
 }
 
 test('empty registry activation is a no-op', async () => {
@@ -165,17 +189,26 @@ test('main activates modules after app creation and before product routes', () =
   const hostImport = source.match(
     /import \{ activateServerModules \} from '\.\/composition-host';/g,
   );
+  const runtimeImport = source.includes("from './video-assets/index'");
   const createStart = source.indexOf('const { app } = await createForgeaxApp({');
   const createEnd = source.indexOf('\n});', createStart);
-  const activation = source.indexOf('await activateServerModules({ app });');
+  const activation = source.indexOf('await activateServerModules({');
   const healthRoute = source.indexOf("app.get('/api/health'");
+  const kinoRouter = source.indexOf("{ path: '/api/v1/kino', router: videoAssets.router }");
+  const wbSceneProxy = source.indexOf("app.all('/api/v1/*'");
 
   expect(hostImport).toHaveLength(1);
+  expect(runtimeImport).toBe(true);
   expect(createStart).toBeGreaterThanOrEqual(0);
   expect(createEnd).toBeGreaterThan(createStart);
   expect(activation).toBeGreaterThan(createEnd);
   expect(healthRoute).toBeGreaterThan(activation);
-  expect(source.match(/await activateServerModules\(\{ app \}\);/g)).toHaveLength(1);
+  expect(source).toContain('videoAssets: videoAssets.providerControl');
+  expect(source.match(/await activateServerModules\(\{/g)).toHaveLength(1);
+  expect(kinoRouter).toBeGreaterThan(createStart);
+  expect(kinoRouter).toBeLessThan(createEnd);
+  expect(wbSceneProxy).toBeGreaterThan(createEnd);
+  expect(kinoRouter).toBeLessThan(wbSceneProxy);
 });
 
 test('public composition wrapper registers a module without exposing host APIs', async () => {
@@ -184,17 +217,29 @@ test('public composition wrapper registers a module without exposing host APIs',
     import * as composition from '@forgeax/server/composition';
     import { Hono } from 'hono';
     import { activateServerModules } from './src/composition-host.ts';
+    import { VideoAssetProviderRegistry } from './src/video-assets/provider-registry.ts';
 
     const exported = Object.keys(composition);
     if (exported.length !== 1 || exported[0] !== 'registerServerModule') {
       throw new Error('unexpected public exports: ' + exported.join(','));
     }
 
+    const registry = new VideoAssetProviderRegistry({
+      kind: 'local',
+      prepareUpload: async () => { throw new Error('not used'); },
+      inspectUpload: async () => { throw new Error('not used'); },
+      finalizeResource: async () => { throw new Error('not used'); },
+      getPlayback: async () => { throw new Error('not used'); },
+      delete: async () => {},
+    });
     composition.registerServerModule({
       activate: ({ app }) => app.get('/module-level-seam', (c) => c.text('active')),
     });
     const app = new Hono();
-    await activateServerModules({ app });
+    await activateServerModules({
+      app,
+      services: { videoAssets: registry.control },
+    });
     const response = await app.request('/module-level-seam');
     if (response.status !== 200 || await response.text() !== 'active') {
       throw new Error('registered module did not activate');
