@@ -61,6 +61,7 @@ import {
   normalizeStandaloneUiAsset,
 } from './game/ui-asset-cleanup';
 import { activateServerModules } from './composition-host';
+import { createVideoAssetRuntime } from './video-assets/index';
 
 // ──────────────────────────────────────────────────────────────────────────
 // FaultBoundary — top-level process-wide exception backstop (perf-analysis-2
@@ -217,6 +218,7 @@ if (process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core') {
 // app。产品壳(本文件)只在其上叠加:静态资源(SPA / 插件 dist)、引擎/界面反向代理、
 // WS、Bun.serve、文件 watcher。这是"产品层初始化并注入编排层"的落点;换产品 = 换这层注入。
 const shimEnv = process.env as Record<string, string | undefined>;
+const videoAssets = createVideoAssetRuntime({ getProjectRoot: defaultProjectRoot });
 const { app } = await createForgeaxApp({
   projectRoot,
   version: VERSION,
@@ -234,6 +236,7 @@ const { app } = await createForgeaxApp({
   hostTools: studioHostTools(),
   // 游戏业务路由由产品壳注入(阶段A:原 cli 静态 mount 搬到此)。路由表逐条不变。
   routers: [
+    { path: '/api/v1/kino', router: videoAssets.router },
     { path: '/api/workbench', router: createWorkbenchRouter() },
     { path: '/api/wb/character', router: createCharacterRouter({ projectRoot, env: shimEnv }) },
     { path: '/api/wb/bgm', router: createBgmRouter() },
@@ -268,7 +271,12 @@ const { app } = await createForgeaxApp({
   stateRootFactory: (root) => join(root, '.forgeax', 'state'),
 });
 
-await activateServerModules({ app });
+await activateServerModules({
+  app,
+  services: {
+    videoAssets: videoAssets.providerControl,
+  },
+});
 
 // projectRoot 必须每请求实时读 defaultProjectRoot():POST /api/workspaces/activate
 // 热切换只改 process.env.FORGEAX_PROJECT_ROOT,启动时固化的 const projectRoot 不会跟。
