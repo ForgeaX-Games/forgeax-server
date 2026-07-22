@@ -50,5 +50,5 @@
       "@forgeax/orchestrator/*": ["../../orchestrator/src/*.ts", "../../orchestrator/src/*/index.ts"]
     }
   },
-  "include": ["src", "bin", "test", "builtin", "scripts"]
+  "include": ["src", "bin", "test", "builtin"]
 }
