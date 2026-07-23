@@ -49,6 +49,7 @@ import {
 import { createCeApiShimRouter } from './game/ce-api-shim';
 import { GameSystemPromptComposer } from './game/system-prompt-composer';
 import { studioHostTools } from './game/host-tools';
+import { gameHostBeforeVersion } from './game/game-host-hooks';
 // 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
 import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from './kernel/telemetry-file-sink';
@@ -269,6 +270,9 @@ const { app } = await createForgeaxApp({
   //   keys / kits / user settings 不随此根走,留 ~/.forgeax(跨项目共享/机密)。
   // 工厂,理由同上 sessionLayoutFactory:切 workspace 要对新根重建。
   stateRootFactory: (root) => join(root, '.forgeax', 'state'),
+  // game-host 打版本前置钩子:wb-game-video 游戏把平台组件集同步进游戏仓(随版本携带)。
+  // 通用 game-host(platform-io) 只调钩子,具体拷贝知识留产品壳(见 game/game-host-hooks.ts)。
+  gameHostBeforeVersion,
 });
 
 await activateServerModules({
