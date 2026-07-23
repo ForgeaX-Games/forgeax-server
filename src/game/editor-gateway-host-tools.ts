@@ -2,8 +2,10 @@
  *
  * Studio owns the editor-specific transport: the CLI only sees HostToolSpec
  * registrations and continues to apply its existing persona allow-list and
- * trust gate. The relay is DEV-only and loopback-only; this module deliberately
- * exposes two fixed gateway calls rather than a generic eval capability.
+ * trust gate. The relay is DEV-only and loopback-only. The AI-facing surface
+ * deliberately exposes the editor's generic eval capability as one explicit
+ * tool: the gateway skill owns the code contract, while this host tool owns
+ * the transport and session trust boundary.
  */
 import type { HostToolSpec } from '@forgeax/orchestrator/orchestration-seams';
 
@@ -68,34 +70,29 @@ async function relayEval(code: string, deps: EditorGatewayHostToolsDeps): Promis
   return gatewayFailure('RELAY_INVALID_RESPONSE', 'editor gateway relay returned an invalid response');
 }
 
-/** Register the narrow, auditable CLI surface for a live editor gateway. */
+/** Register the direct code-execution surface for a live editor gateway. */
 export function editorGatewayHostTools(deps: EditorGatewayHostToolsDeps = {}): HostToolSpec[] {
   return [
     {
-      name: 'editor_gateway_list_ops',
-      description: 'List the operations currently exposed by the live ForgeaX editor gateway, including their argument schemas and domains.',
-      inputSchema: { type: 'object', properties: {} },
-      run: () => relayEval('gateway.listOps()', deps),
-    },
-    {
-      name: 'editor_gateway_dispatch',
-      description: 'Dispatch one listed ForgeaX editor operation as the AI actor. Use editor_gateway_list_ops first to discover the operation schema.',
+      name: 'editor_gateway_eval',
+      description:
+        'Execute JavaScript directly in the already-connected ForgeaX editor gateway page and return its value. This is the primary editor integration: pass the code to run as the `code` argument. Use this tool instead of Bash, gateway-live.mjs, or manually probing localhost. For discovery, call `gateway.listOps()` inside the code; for editor reads/writes, use the gateway API available in the page.',
       inputSchema: {
         type: 'object',
-        properties: { kind: { type: 'string' } },
-        required: ['kind'],
-        additionalProperties: true,
+        properties: {
+          code: {
+            type: 'string',
+            description: 'JavaScript expression or program evaluated in the live editor gateway page.',
+          },
+        },
+        required: ['code'],
+        additionalProperties: false,
       },
-      run: (args) => {
-        if (typeof args.kind !== 'string' || !args.kind) {
-          return { ok: false, error: { code: 'INVALID_ARGS', hint: 'editor_gateway_dispatch requires a non-empty string "kind"' } };
+      run: async (args) => {
+        if (typeof args.code !== 'string' || !args.code.trim()) {
+          return { ok: false, error: { code: 'INVALID_ARGS', hint: 'editor_gateway_eval requires a non-empty string "code"' } };
         }
-        try {
-          return relayEval(`gateway.dispatch(${JSON.stringify(args)}, 'ai')`, deps);
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          return { ok: false, error: { code: 'INVALID_ARGS', hint: `operation arguments are not serializable: ${reason}` } };
-        }
+        return await relayEval(args.code, deps);
       },
     },
   ];

@@ -24,50 +24,46 @@ describe('editorGatewayHostTools', () => {
       'list_games',
       'query_world',
       'capture_frame',
-      'editor_gateway_list_ops',
-      'editor_gateway_dispatch',
+      'editor_gateway_eval',
     ]);
   });
 
-  test('registers the live manifest and AI-origin dispatch tools', () => {
+  test('registers one direct code-evaluation tool', () => {
     const { tools } = toolsFor({ ok: true, value: [] });
 
-    expect(tools.map((tool) => tool.name)).toEqual(['editor_gateway_list_ops', 'editor_gateway_dispatch']);
-    expect(tools[0]?.inputSchema).toEqual({ type: 'object', properties: {} });
-    expect(tools[1]?.inputSchema).toEqual({
+    expect(tools.map((tool) => tool.name)).toEqual(['editor_gateway_eval']);
+    expect(tools[0]?.inputSchema).toEqual({
       type: 'object',
-      properties: { kind: { type: 'string' } },
-      required: ['kind'],
-      additionalProperties: true,
+      properties: {
+        code: {
+          type: 'string',
+          description: 'JavaScript expression or program evaluated in the live editor gateway page.',
+        },
+      },
+      required: ['code'],
+      additionalProperties: false,
     });
   });
 
-  test('lists operations through the relay without exposing raw eval', async () => {
+  test('passes direct code through the relay', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
-    const { tools } = toolsFor({ ok: true, value: [{ id: 'setSelection' }] }, calls);
+    const { tools } = toolsFor({ ok: true, value: 51 }, calls);
 
-    await expect(tools[0]!.run!({}, ctx)).resolves.toEqual([{ id: 'setSelection' }]);
+    await expect(tools[0]!.run!({ code: 'gateway.listOps().length' }, ctx)).resolves.toEqual(51);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe(`${relay}/eval`);
-    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ code: 'gateway.listOps()' });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ code: 'gateway.listOps().length' });
   });
 
-  test('dispatches the supplied operation through the gateway as AI', async () => {
+  test('rejects an empty code payload before reaching the relay', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
-    const result = { ok: true, result: { created: [] } };
-    const { tools } = toolsFor({ ok: true, value: result }, calls);
+    const { tools } = toolsFor({ ok: true, value: 51 }, calls);
 
-    await expect(tools[1]!.run!({ kind: 'setSelection', id: null }, ctx)).resolves.toEqual(result);
-    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
-      code: "gateway.dispatch({\"kind\":\"setSelection\",\"id\":null}, 'ai')",
+    await expect(tools[0]!.run!({ code: '  ' }, ctx)).resolves.toEqual({
+      ok: false,
+      error: { code: 'INVALID_ARGS', hint: 'editor_gateway_eval requires a non-empty string "code"' },
     });
-  });
-
-  test('passes through a structured dispatch error from the relay', async () => {
-    const failure = { ok: false, error: { code: 'INVALID_ARGS', hint: 'asset is required' } };
-    const { tools } = toolsFor(failure);
-
-    await expect(tools[1]!.run!({ kind: 'instantiateSceneAsset' }, ctx)).resolves.toEqual(failure);
+    expect(calls).toHaveLength(0);
   });
 
   test('normalizes a relay HTTP error', async () => {
@@ -76,7 +72,7 @@ describe('editorGatewayHostTools', () => {
       fetch: async () => new Response('', { status: 503 }),
     });
 
-    await expect(tools[0]!.run!({}, ctx)).resolves.toEqual({
+    await expect(tools[0]!.run!({ code: 'gateway.listOps()' }, ctx)).resolves.toEqual({
       ok: false,
       error: { code: 'RELAY_HTTP_ERROR', hint: 'editor gateway relay returned HTTP 503' },
     });
@@ -85,7 +81,7 @@ describe('editorGatewayHostTools', () => {
   test('normalizes an invalid relay envelope', async () => {
     const { tools } = toolsFor({ value: 'missing ok' });
 
-    await expect(tools[0]!.run!({}, ctx)).resolves.toEqual({
+    await expect(tools[0]!.run!({ code: 'gateway.listOps()' }, ctx)).resolves.toEqual({
       ok: false,
       error: { code: 'RELAY_INVALID_RESPONSE', hint: 'editor gateway relay returned an invalid response' },
     });
@@ -97,7 +93,7 @@ describe('editorGatewayHostTools', () => {
       fetch: async () => { throw new Error('connect ECONNREFUSED'); },
     });
 
-    await expect(tools[0]!.run!({}, ctx)).resolves.toEqual({
+    await expect(tools[0]!.run!({ code: 'gateway.listOps()' }, ctx)).resolves.toEqual({
       ok: false,
       error: { code: 'RELAY_UNAVAILABLE', hint: 'editor gateway relay unavailable: connect ECONNREFUSED' },
     });
