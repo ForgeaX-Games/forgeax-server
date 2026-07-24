@@ -29,6 +29,10 @@ describe('GameSystemPromptComposer — byte-equivalence + cache-stability (Stage
     expect(source).not.toContain('You are running inside forgeax-studio');
     expect(charter).toContain('http://127.0.0.1:18900');
     expect(charter).toContain('http://127.0.0.1:18920');
+    expect(charter).toContain('Asset graph');
+    expect(charter).toContain('editor_gateway_eval');
+    expect(charter).toContain('Continuous maturity');
+    expect(charter).toContain('Do not assume `src/`, `main.ts`, `scene.pack.json`');
     expect(charter).not.toContain('{{serverPort}}');
     expect(charter).not.toContain('{{interfacePort}}');
   });
