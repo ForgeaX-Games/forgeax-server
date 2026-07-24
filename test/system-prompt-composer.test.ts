@@ -11,12 +11,28 @@
  *  cross-turn stability property). */
 
 import { describe, test, expect } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { GameSystemPromptComposer } from '../src/game/system-prompt-composer';
 import { buildGameCharter, buildActiveGameNote } from '../src/game/game-charter';
 
 const PORTS = { serverPort: '18900', interfacePort: '18920' };
 
 describe('GameSystemPromptComposer — byte-equivalence + cache-stability (Stage A §7)', () => {
+  test('loads the game-authoring contract from the Markdown SSOT and binds live ports', () => {
+    const markdown = readFileSync(new URL('../src/game/game-charter.md', import.meta.url), 'utf8');
+    const source = readFileSync(new URL('../src/game/game-charter.ts', import.meta.url), 'utf8');
+    const charter = buildGameCharter(PORTS);
+
+    expect(markdown).toContain('{{serverPort}}');
+    expect(markdown).toContain('{{interfacePort}}');
+    expect(markdown).toContain('You are running inside forgeax-studio');
+    expect(source).not.toContain('You are running inside forgeax-studio');
+    expect(charter).toContain('http://127.0.0.1:18900');
+    expect(charter).toContain('http://127.0.0.1:18920');
+    expect(charter).not.toContain('{{serverPort}}');
+    expect(charter).not.toContain('{{interfacePort}}');
+  });
+
   test('charter() === buildGameCharter(ports) — composer does not drift from the builder', () => {
     const composer = new GameSystemPromptComposer(PORTS);
     expect(composer.charter()).toBe(buildGameCharter(PORTS));
