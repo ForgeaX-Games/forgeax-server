@@ -13,7 +13,7 @@ import {
   VideoAssetManifestSchemaError,
 } from './manifest-schema';
 
-const MANIFEST_RELATIVE = join('game-video', 'assets', 'manifest.json');
+const MANIFEST_RELATIVE = join('assets', 'manifest.json');
 
 interface ManifestFileOperations {
   readText(path: string): string;
@@ -21,6 +21,12 @@ interface ManifestFileOperations {
   writeText(path: string, contents: string): void;
   rename(source: string, destination: string): void;
   remove(path: string): void;
+}
+
+interface RootAssetManifest {
+  version: 2;
+  assets: unknown[];
+  [key: string]: unknown;
 }
 
 const DEFAULT_FILE_OPERATIONS: ManifestFileOperations = {
@@ -36,10 +42,10 @@ function manifestPathFor(gameDir: string): string {
 }
 
 function assetsDirFor(gameDir: string): string {
-  return resolve(gameDir, 'game-video', 'assets');
+  return resolve(gameDir, 'assets');
 }
 
-function emptyManifest(): VideoAssetManifest {
+function emptyRootManifest(): RootAssetManifest {
   return { version: 2, assets: [] };
 }
 
@@ -57,16 +63,47 @@ function mapLegacyManifestError(error: unknown): never {
   throw error;
 }
 
-function readManifestFile(
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isManagedVideoAsset(value: unknown): boolean {
+  return isRecord(value) && value.kind === 'video' && Object.hasOwn(value, 'provider');
+}
+
+function isLegacyVideoAsset(value: unknown): boolean {
+  return isRecord(value) && value.kind === 'video' && typeof value.filename === 'string';
+}
+
+function assertRootAssetIds(assets: unknown[]): void {
+  const ids = new Set<string>();
+  for (const asset of assets) {
+    if (
+      !isRecord(asset) ||
+      typeof asset.id !== 'string' ||
+      asset.id.length === 0 ||
+      typeof asset.kind !== 'string' ||
+      asset.kind.length === 0
+    ) {
+      throw new KinoApiError('Invalid asset', 400, 'invalid_asset');
+    }
+    if (ids.has(asset.id)) {
+      throw new KinoApiError(`Duplicate asset id: ${asset.id}`, 400, 'duplicate_asset_id');
+    }
+    ids.add(asset.id);
+  }
+}
+
+function parseManifestFile(
   manifestPath: string,
   files: ManifestFileOperations,
-): VideoAssetManifest {
+): { root: RootAssetManifest; videos: VideoAssetManifest } {
   let raw: string;
   try {
     raw = files.readText(manifestPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return emptyManifest();
+      return { root: emptyRootManifest(), videos: { version: 2, assets: [] } };
     }
     throw new KinoApiError('Failed to read manifest', 500, 'manifest_storage_error');
   }
@@ -79,15 +116,40 @@ function readManifestFile(
   }
   const version = (parsed as { version?: unknown }).version;
   if (version === 2) {
+    if (!isRecord(parsed) || !Array.isArray(parsed.assets)) {
+      throw new KinoApiError('Invalid manifest assets', 400, 'invalid_manifest');
+    }
+    assertRootAssetIds(parsed.assets);
+    const videos = { version: 2, assets: parsed.assets.filter(isManagedVideoAsset) };
     try {
-      return validateAndCloneVideoAssetManifest(parsed);
+      return {
+        root: { ...parsed, version: 2, assets: [...parsed.assets] },
+        videos: validateAndCloneVideoAssetManifest(videos),
+      };
     } catch (error) {
       mapSchemaError(error);
     }
   }
   if (version === 1) {
+    if (!isRecord(parsed) || !Array.isArray(parsed.assets)) {
+      throw new KinoApiError('Invalid manifest assets', 400, 'invalid_manifest');
+    }
     try {
-      return convertVideoManifestV1(parsed as Record<string, unknown>);
+      assertRootAssetIds(parsed.assets);
+    } catch {
+      throw new KinoApiError('Invalid v1 manifest schema', 400, 'invalid_manifest_schema');
+    }
+    const legacyAssets = parsed.assets.filter(isLegacyVideoAsset);
+    try {
+      const videos = convertVideoManifestV1({ version: 1, assets: legacyAssets });
+      const foreignAssets = parsed.assets.filter((asset) => !isLegacyVideoAsset(asset));
+      const root: RootAssetManifest = {
+        ...parsed,
+        version: 2,
+        assets: [...foreignAssets, ...videos.assets],
+      };
+      assertRootAssetIds(root.assets);
+      return { root, videos };
     } catch (error) {
       mapLegacyManifestError(error);
     }
@@ -97,14 +159,10 @@ function readManifestFile(
 
 function writeManifestAtomic(
   gameDir: string,
-  manifest: VideoAssetManifest,
+  manifest: RootAssetManifest,
   files: ManifestFileOperations,
 ): void {
-  try {
-    validateVideoAssetManifest(manifest);
-  } catch (error) {
-    mapSchemaError(error);
-  }
+  assertRootAssetIds(manifest.assets);
   let contents: string;
   try {
     contents = `${JSON.stringify(manifest, null, 2)}\n`;
@@ -166,7 +224,7 @@ export class VideoAssetManifestRepository {
   }
 
   async read(gameDir: string): Promise<VideoAssetManifest> {
-    return readManifestFile(manifestPathFor(gameDir), this.#files);
+    return parseManifestFile(manifestPathFor(gameDir), this.#files).videos;
   }
 
   async get(gameDir: string, id: string): Promise<VideoAsset | null> {
@@ -179,9 +237,37 @@ export class VideoAssetManifestRepository {
     mutation: (manifest: VideoAssetManifest) => T | Promise<T>,
   ): Promise<T> {
     return this.#enqueue(gameDir, async () => {
-      const manifest = readManifestFile(manifestPathFor(gameDir), this.#files);
-      const result = await mutation(manifest);
-      writeManifestAtomic(gameDir, manifest, this.#files);
+      const { root, videos } = parseManifestFile(manifestPathFor(gameDir), this.#files);
+      const result = await mutation(videos);
+      try {
+        validateVideoAssetManifest(videos);
+      } catch (error) {
+        mapSchemaError(error);
+      }
+
+      const managedIds = new Set(
+        root.assets.filter(isManagedVideoAsset).map((asset) => (asset as Record<string, unknown>).id),
+      );
+      const nextVideos = new Map(videos.assets.map((asset) => [asset.id, asset]));
+      const mergedAssets: unknown[] = [];
+      for (const asset of root.assets) {
+        const id = (asset as Record<string, unknown>).id as string;
+        if (!managedIds.has(id)) {
+          if (nextVideos.has(id)) {
+            throw new KinoApiError(`Duplicate asset id: ${id}`, 400, 'duplicate_asset_id');
+          }
+          mergedAssets.push(asset);
+          continue;
+        }
+        const replacement = nextVideos.get(id);
+        if (replacement) {
+          mergedAssets.push(replacement);
+          nextVideos.delete(id);
+        }
+      }
+      mergedAssets.push(...nextVideos.values());
+      const nextRoot = { ...root, version: 2 as const, assets: mergedAssets };
+      writeManifestAtomic(gameDir, nextRoot, this.#files);
       return result;
     });
   }

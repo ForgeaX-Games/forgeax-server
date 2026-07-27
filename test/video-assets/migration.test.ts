@@ -71,7 +71,7 @@ function writeScenario(refs: string[]): void {
 
 beforeEach(() => {
   gameDir = mkdtempSync(join(tmpdir(), 'video-asset-migration-'));
-  assetsDir = join(gameDir, 'game-video', 'assets');
+  assetsDir = join(gameDir, 'assets');
   blobsDir = join(assetsDir, 'blobs');
   mkdirSync(blobsDir, { recursive: true });
   writeScenario(['m-narr-open', 'm-narr-door']);
@@ -277,6 +277,33 @@ describe('migrateVideoAssetDirectory', () => {
     expect(report.converted.version).toBe(2);
     expect(report.wroteManifest).toBe(false);
     expect(report.missingBlobs?.length).toBe(2);
+  });
+
+  test('dry-run ignores foreign records in a shared v2 manifest', () => {
+    const converted = convertVideoManifestV1(manifestV1Fixture);
+    writeFileSync(
+      manifestPath(),
+      JSON.stringify({
+        version: 2,
+        styleAxes: { artMedia: 'ink' },
+        assets: [
+          {
+            id: 'generated-image',
+            kind: 'image',
+            productionType: 'shot_image',
+            status: 'ready',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          ...converted.assets,
+        ],
+      }),
+      'utf-8',
+    );
+
+    const report = migrateVideoAssetDirectory({ gameDir, dryRun: true });
+    expect(report.converted.assets).toEqual(converted.assets);
+    expect(report.missingBlobs).toHaveLength(2);
   });
 
   test('real migration backs up v1, writes v2 atomically, and is idempotent', () => {

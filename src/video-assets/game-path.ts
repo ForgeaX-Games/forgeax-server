@@ -37,5 +37,5 @@ export function resolveVideoAssetsDir(
   getProjectRoot: ProjectRootResolver,
 ): string {
   const gameDir = resolveGameDir(slug, getProjectRoot);
-  return join(gameDir, 'game-video', 'assets');
+  return join(gameDir, 'assets');
 }

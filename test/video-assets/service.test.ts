@@ -217,7 +217,7 @@ function deferred(): {
 function makeGame(slug = 'demo'): void {
   gameId = slug;
   gameDir = resolve(projectRoot, '.forgeax/games', slug);
-  assetsDir = resolve(gameDir, 'game-video', 'assets');
+  assetsDir = resolve(gameDir, 'assets');
   mkdirSync(assetsDir, { recursive: true });
 }
 

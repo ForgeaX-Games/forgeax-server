@@ -57,7 +57,7 @@ let app: Hono;
 
 function makeGame(slug = 'demo'): void {
   gameId = slug;
-  assetsDir = resolve(projectRoot, '.forgeax/games', slug, 'game-video', 'assets');
+  assetsDir = resolve(projectRoot, '.forgeax/games', slug, 'assets');
   mkdirSync(assetsDir, { recursive: true });
 }
 

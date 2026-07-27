@@ -166,7 +166,7 @@ function detectLegacyGraphSnapshots(gameDir: string): LegacyIgnoredReport {
 }
 
 function manifestPathFor(gameDir: string): string {
-  return resolve(gameDir, 'game-video', 'assets', 'manifest.json');
+  return resolve(gameDir, 'assets', 'manifest.json');
 }
 
 function backupPathFor(gameDir: string): string {
@@ -201,7 +201,7 @@ function validateLocalBlobs(
   gameDir: string,
   manifest: VideoAssetManifest,
 ): MissingBlobReport[] {
-  const assetsDir = resolve(gameDir, 'game-video', 'assets');
+  const assetsDir = resolve(gameDir, 'assets');
   const missing: MissingBlobReport[] = [];
 
   for (const asset of manifest.assets) {
@@ -231,7 +231,7 @@ function validateLocalBlobs(
 
 function writeManifestAtomic(gameDir: string, manifest: VideoAssetManifest): void {
   const manifestPath = manifestPathFor(gameDir);
-  const assetsDir = resolve(gameDir, 'game-video', 'assets');
+  const assetsDir = resolve(gameDir, 'assets');
   const tempPath = `${manifestPath}.tmp-${randomUUID()}`;
   mkdirSync(assetsDir, { recursive: true });
   writeFileSync(tempPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8');
@@ -272,7 +272,25 @@ export function migrateVideoAssetDirectory(
   const dryRun = options.dryRun ?? false;
   const { raw, parsed } = readRawManifest(gameDir);
   const sourceVersion = (parsed as { version?: unknown }).version;
-  const converted = convertVideoManifestV1(parsed as VideoAssetManifestInput);
+  const conversionInput =
+    sourceVersion === 2 &&
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    Array.isArray((parsed as { assets?: unknown }).assets)
+      ? {
+          version: 2 as const,
+          assets: (parsed as { assets: unknown[] }).assets.filter(
+            (asset) =>
+              asset !== null &&
+              typeof asset === 'object' &&
+              !Array.isArray(asset) &&
+              (asset as { kind?: unknown }).kind === 'video' &&
+              Object.hasOwn(asset, 'provider'),
+          ),
+        }
+      : parsed;
+  const converted = convertVideoManifestV1(conversionInput as VideoAssetManifestInput);
   const scenario = readScenarioFromGameDir(gameDir);
   const scenarioReferences = validateScenarioReferences(converted, scenario);
   const legacyIgnored = detectLegacyGraphSnapshots(gameDir);

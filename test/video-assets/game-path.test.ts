@@ -113,11 +113,11 @@ describe('resolveGameDir', () => {
 });
 
 describe('resolveVideoAssetsDir', () => {
-  test('resolves game-video/assets under the game directory', () => {
+  test('resolves assets under the game directory', () => {
     const slug = 'demo';
     const gameDir = makeGameDir(slug);
     expect(resolveVideoAssetsDir(slug, () => projectRoot)).toBe(
-      resolve(gameDir, 'game-video', 'assets'),
+      resolve(gameDir, 'assets'),
     );
   });
 });

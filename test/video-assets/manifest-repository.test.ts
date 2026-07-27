@@ -11,7 +11,7 @@ let gameDir: string;
 const repo = new VideoAssetManifestRepository();
 
 function manifestPath(): string {
-  return resolve(gameDir, 'game-video/assets/manifest.json');
+  return resolve(gameDir, 'assets/manifest.json');
 }
 
 function sampleAsset(id: string): VideoAsset {
@@ -52,7 +52,7 @@ afterEach(() => {
 });
 
 function writeV1Fixture(): void {
-  mkdirSync(resolve(gameDir, 'game-video/assets'), { recursive: true });
+  mkdirSync(resolve(gameDir, 'assets'), { recursive: true });
   writeFileSync(manifestPath(), `${JSON.stringify(manifestV1Fixture, null, 2)}\n`, 'utf-8');
 }
 
@@ -79,8 +79,37 @@ describe('VideoAssetManifestRepository.read', () => {
     expect(JSON.parse(readFileSync(manifestPath(), 'utf-8')).version).toBe(1);
   });
 
+  test('reads only provider-backed videos from a shared v2 asset manifest', async () => {
+    mkdirSync(resolve(gameDir, 'assets'), { recursive: true });
+    writeFileSync(
+      manifestPath(),
+      JSON.stringify({
+        version: 2,
+        styleAxes: { artMedia: 'ink' },
+        assets: [
+          {
+            id: 'generated-image',
+            kind: 'image',
+            productionType: 'shot_image',
+            status: 'ready',
+            file: 'media/generated-image.png',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          sampleAsset('video'),
+        ],
+      }),
+      'utf-8',
+    );
+
+    await expect(repo.read(gameDir)).resolves.toEqual({
+      version: 2,
+      assets: [sampleAsset('video')],
+    });
+  });
+
   test('rejects unsupported manifest versions', async () => {
-    mkdirSync(resolve(gameDir, 'game-video/assets'), { recursive: true });
+    mkdirSync(resolve(gameDir, 'assets'), { recursive: true });
     writeFileSync(
       manifestPath(),
       JSON.stringify({ version: 3, assets: [] }),
@@ -90,7 +119,7 @@ describe('VideoAssetManifestRepository.read', () => {
   });
 
   test('rejects malformed v1 manifests with typed errors', async () => {
-    mkdirSync(resolve(gameDir, 'game-video/assets'), { recursive: true });
+    mkdirSync(resolve(gameDir, 'assets'), { recursive: true });
     writeFileSync(
       manifestPath(),
       JSON.stringify({ version: 1, assets: [null] }),
@@ -100,7 +129,7 @@ describe('VideoAssetManifestRepository.read', () => {
   });
 
   test('rejects unsafe v1 local blob paths', async () => {
-    mkdirSync(resolve(gameDir, 'game-video/assets'), { recursive: true });
+    mkdirSync(resolve(gameDir, 'assets'), { recursive: true });
     writeFileSync(
       manifestPath(),
       JSON.stringify({
@@ -120,7 +149,7 @@ describe('VideoAssetManifestRepository.read', () => {
   });
 
   test('rejects duplicate stable ids after v1 conversion', async () => {
-    mkdirSync(resolve(gameDir, 'game-video/assets'), { recursive: true });
+    mkdirSync(resolve(gameDir, 'assets'), { recursive: true });
     writeFileSync(
       manifestPath(),
       JSON.stringify({
@@ -152,7 +181,7 @@ describe('VideoAssetManifestRepository.read', () => {
   });
 
   test('distinguishes malformed JSON from unexpected read I/O', async () => {
-    mkdirSync(resolve(gameDir, 'game-video/assets'), { recursive: true });
+    mkdirSync(resolve(gameDir, 'assets'), { recursive: true });
     writeFileSync(manifestPath(), '{bad json', 'utf-8');
     await expectKinoError(repo.read(gameDir), 400, 'invalid_manifest');
 
@@ -204,6 +233,65 @@ describe('VideoAssetManifestRepository.mutate', () => {
     expect(manifest.assets.map((asset) => asset.id).sort()).toEqual(['a', 'b']);
   });
 
+  test('preserves foreign records and root metadata while mutating videos', async () => {
+    mkdirSync(resolve(gameDir, 'assets'), { recursive: true });
+    const foreign = {
+      id: 'generated-image',
+      kind: 'image',
+      productionType: 'shot_image',
+      status: 'ready',
+      file: 'media/generated-image.png',
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    writeFileSync(
+      manifestPath(),
+      JSON.stringify({
+        version: 2,
+        styleAxes: { artMedia: 'ink' },
+        assets: [foreign, sampleAsset('old-video')],
+      }),
+      'utf-8',
+    );
+
+    await repo.mutate(gameDir, (manifest) => {
+      manifest.assets = [sampleAsset('new-video')];
+    });
+
+    expect(JSON.parse(readFileSync(manifestPath(), 'utf-8'))).toEqual({
+      version: 2,
+      styleAxes: { artMedia: 'ink' },
+      assets: [foreign, sampleAsset('new-video')],
+    });
+  });
+
+  test('rejects a video id owned by another asset domain', async () => {
+    mkdirSync(resolve(gameDir, 'assets'), { recursive: true });
+    writeFileSync(
+      manifestPath(),
+      JSON.stringify({
+        version: 2,
+        assets: [{
+          id: 'shared-id',
+          kind: 'image',
+          productionType: 'shot_image',
+          status: 'ready',
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+      }),
+      'utf-8',
+    );
+
+    await expectKinoError(
+      repo.mutate(gameDir, (manifest) => {
+        manifest.assets.push(sampleAsset('shared-id'));
+      }),
+      400,
+      'duplicate_asset_id',
+    );
+  });
+
   test('serializes equivalent resolved game directory paths', async () => {
     await Promise.all([
       repo.mutate(gameDir, (manifest) => {
@@ -229,7 +317,7 @@ describe('VideoAssetManifestRepository.mutate', () => {
       assets: [sampleAsset('clip')],
     });
 
-    const assetsDir = resolve(gameDir, 'game-video/assets');
+    const assetsDir = resolve(gameDir, 'assets');
     const leftovers = readdirSync(assetsDir).filter((name) => name.startsWith('manifest.json.tmp-'));
     expect(leftovers).toEqual([]);
   });
@@ -319,7 +407,7 @@ describe('VideoAssetManifestRepository.mutate', () => {
       'manifest_storage_error',
     );
 
-    const assetsDir = resolve(gameDir, 'game-video/assets');
+    const assetsDir = resolve(gameDir, 'assets');
     expect(readdirSync(assetsDir).filter((name) => name.includes('.tmp-'))).toEqual([]);
     expect(() => readFileSync(manifestPath(), 'utf-8')).toThrow();
   });

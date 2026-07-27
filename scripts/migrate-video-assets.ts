@@ -81,7 +81,7 @@ function printHelp(): void {
   console.log(`Usage: bun scripts/migrate-video-assets.ts --game-dir <path> [options]
 
 Options:
-  --game-dir <path>               Game directory containing game-video/assets (required)
+  --game-dir <path>               Game directory containing assets/manifest.json (required)
   --dry-run                       Validate and report without writing manifest.json
   --upload-to-active-provider     Upload local blobs through the active EA video API
   --server-url <url>              EA server base URL (default: ${DEFAULT_SERVER_URL})
@@ -289,7 +289,7 @@ export async function runMigrateCli(argv: string[]): Promise<number> {
         yield {
           assetId: asset.id,
           body: Bun.file(
-            resolve(options.gameDir, 'game-video', 'assets', asset.provider.ref),
+            resolve(options.gameDir, 'assets', asset.provider.ref),
           ),
           size: asset.bytes,
           fileName: `${asset.name}.mp4`,
