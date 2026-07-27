@@ -283,6 +283,23 @@ afterEach(() => {
 });
 
 describe('VideoAssetService validation', () => {
+  test('treats providers without image capability as video-only', async () => {
+    await expectKinoError(
+      service.prepareUpload(
+        {
+          fileName: 'reference.png',
+          mediaType: 'image',
+          mimeType: 'image/png',
+          bytes: FIXTURE.byteLength,
+        },
+        request,
+      ),
+      400,
+      'unsupported_provider_media_type',
+    );
+    expect(fakeProvider.prepareCalls).toBe(0);
+  });
+
   test('rejects invalid prepare inputs', async () => {
     await expectKinoError(
       service.prepareUpload(

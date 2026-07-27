@@ -6,6 +6,7 @@ import type {
   VideoAssetStatus,
 } from './contracts';
 import { isValidVideoAssetResourceId } from './resource-id';
+import { mediaTypeForMime } from './media-policy';
 
 export type VideoAssetManifestSchemaErrorCode =
   | 'invalid_manifest'
@@ -27,7 +28,7 @@ export class VideoAssetManifestSchemaError extends Error {
   }
 }
 
-const LOCAL_BLOB_REF_RE = /^blobs\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.mp4$/;
+const LOCAL_BLOB_REF_RE = /^blobs\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:mp4|png|jpe?g|webp|gif)$/;
 const PROVIDER_KINDS: readonly VideoAssetProviderKind[] = ['local', 's3', 'cos', 'kino'];
 const STATUSES: readonly VideoAssetStatus[] = ['uploading', 'ready', 'failed'];
 
@@ -83,10 +84,10 @@ function assertVideoAsset(asset: unknown): asserts asset is VideoAsset {
   const candidate = asset as unknown as VideoAsset;
   if (
     !isValidVideoAssetResourceId(candidate.id) ||
-    candidate.kind !== 'video' ||
+    (candidate.kind !== 'video' && candidate.kind !== 'image') ||
     typeof candidate.name !== 'string' ||
     !STATUSES.includes(candidate.status) ||
-    candidate.mimeType !== 'video/mp4' ||
+    mediaTypeForMime(candidate.mimeType) !== candidate.kind ||
     !Number.isSafeInteger(candidate.bytes) ||
     candidate.bytes <= 0 ||
     (candidate.durationMs !== undefined &&
@@ -96,6 +97,10 @@ function assertVideoAsset(asset: unknown): asserts asset is VideoAsset {
     typeof candidate.updatedAt !== 'number' ||
     !Number.isFinite(candidate.updatedAt) ||
     (candidate.error !== undefined && typeof candidate.error !== 'string') ||
+    (candidate.productionType !== undefined &&
+      candidate.productionType !== 'character_ref' &&
+      candidate.productionType !== 'scene_ref') ||
+    (candidate.sourceModule !== undefined && typeof candidate.sourceModule !== 'string') ||
     (candidate.meta !== undefined && !assertPlainRecord(candidate.meta))
   ) {
     throw new VideoAssetManifestSchemaError('Invalid asset', 'invalid_asset');

@@ -22,12 +22,14 @@ import type {
 import { KinoApiError } from './kino-api';
 import { VideoAssetManifestRepository } from './manifest-repository';
 import { VideoAssetProviderRegistry } from './provider-registry';
+import type { UploadSession, ValidateUploadSessionInput } from './upload-sessions';
 import {
-  MAX_VIDEO_UPLOAD_BYTES,
-  VIDEO_UPLOAD_MIME,
-  type UploadSession,
-  type ValidateUploadSessionInput,
-} from './upload-sessions';
+  assertUploadFileName,
+  assertUploadMime,
+  assertUploadSize,
+  mediaTypeForMime,
+} from './media-policy';
+import type { KinoMediaType } from './kino-api';
 import { isValidVideoAssetResourceId } from './resource-id';
 
 export interface UploadSessionRepository {
@@ -59,7 +61,7 @@ export interface PrepareUploadResponse {
 
 export interface ListResourcesQuery {
   game_id: string;
-  media_type: 'video';
+  media_type: KinoMediaType;
   page?: number;
   page_size?: number;
 }
@@ -82,7 +84,7 @@ interface AssetMeta {
 }
 
 interface BatchPendingResource {
-  resource: Omit<CreateKinoResourceInput, 'game_id'> & { media_type: 'video' };
+  resource: Omit<CreateKinoResourceInput, 'game_id'>;
   token: string;
   session: UploadSession;
   existing?: VideoAsset;
@@ -98,31 +100,9 @@ function idOf(deps: VideoAssetServiceDeps): () => string {
   return deps.id ?? (() => randomUUID());
 }
 
-function assertMp4FileName(fileName: string): void {
-  if (typeof fileName !== 'string' || fileName.trim().length === 0 || !fileName.endsWith('.mp4')) {
-    throw new KinoApiError('Invalid upload file name', 400, 'invalid_file_name');
-  }
-}
-
-function assertUploadSize(bytes: number): void {
-  if (
-    !Number.isSafeInteger(bytes) ||
-    bytes <= 0 ||
-    bytes > MAX_VIDEO_UPLOAD_BYTES
-  ) {
-    throw new KinoApiError('Invalid upload size', 400, 'invalid_upload_size');
-  }
-}
-
 function assertClientResourceId(resourceId: string): void {
   if (!isValidVideoAssetResourceId(resourceId)) {
     throw new KinoApiError('Invalid client resource id', 400, 'invalid_client_resource_id');
-  }
-}
-
-function assertVideoMime(mimeType: string): asserts mimeType is typeof VIDEO_UPLOAD_MIME {
-  if (mimeType !== VIDEO_UPLOAD_MIME) {
-    throw new KinoApiError('Invalid upload mime type', 400, 'invalid_media_type');
   }
 }
 
@@ -230,7 +210,7 @@ function toDto(asset: VideoAsset, context: VideoAssetRequestContext): KinoResour
   return {
     resource_id: asset.id,
     game_id: context.gameId,
-    media_type: 'video',
+    media_type: asset.kind,
     name: asset.name,
     type: meta.type,
     url: buildContentUrl(asset.id, context),
@@ -264,9 +244,13 @@ export class VideoAssetService {
     context: VideoAssetRequestContext,
   ): Promise<PrepareUploadResponse> {
     const gameDir = this.#resolveGameDir(context);
-    assertMp4FileName(input.fileName);
-    assertVideoMime(input.mimeType);
-    assertUploadSize(input.bytes);
+    const mediaType = input.mediaType ?? mediaTypeForMime(input.mimeType);
+    if (!mediaType) {
+      throw new KinoApiError('Invalid upload mime type', 400, 'invalid_media_type');
+    }
+    assertUploadFileName(input.fileName, input.mimeType);
+    assertUploadMime(mediaType, input.mimeType);
+    assertUploadSize(mediaType, input.bytes);
     if (input.replaceExisting && input.clientResourceId === undefined) {
       throw new KinoApiError(
         'replace_existing requires client_resource_id',
@@ -297,11 +281,20 @@ export class VideoAssetService {
     }
 
     const provider = this.#deps.providers.current();
+    const supported = provider.supportedMediaTypes ?? ['video'];
+    if (!supported.includes(mediaType)) {
+      throw new KinoApiError(
+        `Provider ${provider.kind} does not support ${mediaType} uploads`,
+        400,
+        'unsupported_provider_media_type',
+      );
+    }
     const token = randomUUID();
 
     const draft = await provider.prepareUpload(
       {
         ...input,
+        mediaType,
         uploadToken: token,
       },
       context,
@@ -313,6 +306,7 @@ export class VideoAssetService {
       gameId: context.gameId,
       identity: context.identity,
       fileName: input.fileName,
+      mediaType,
       mimeType: input.mimeType,
       bytes: input.bytes,
       createdAt: now,
@@ -375,13 +369,12 @@ export class VideoAssetService {
     if (input.game_id !== context.gameId) {
       throw new KinoApiError('Upload session game mismatch', 400, 'upload_session_game_mismatch');
     }
-    if (input.media_type !== 'video') {
-      throw new KinoApiError('Invalid media type', 400, 'invalid_media_type');
-    }
-
     const token = parseUploadTokenFromReference(input.url, context.origin);
     return this.#withTokenLock(token, async () => {
     let session = await this.#requirePendingSession(token, context, input.url);
+    if (input.media_type !== session.mediaType) {
+      throw new KinoApiError('Upload session media mismatch', 400, 'upload_session_media_mismatch');
+    }
     const recovered = await this.#recoverSessionAsset(gameDir, token, session, context);
     if (recovered) {
       return toDto(recovered, context);
@@ -416,12 +409,20 @@ export class VideoAssetService {
     const now = nowOf(this.#deps)();
     const finalizedAsset: VideoAsset = {
       id: reservedId,
-      kind: 'video',
+      kind: session.mediaType,
       name: input.name ?? session.fileName,
       status: 'ready',
-      mimeType: 'video/mp4',
+      mimeType: uploaded.mimeType,
       bytes: uploaded.bytes,
       durationMs: input.source_meta?.duration_ms,
+      ...(session.mediaType === 'image' &&
+      (input.type === 'CHARACTER_IMAGE' || input.type === 'LOCATION_IMAGE')
+        ? {
+            productionType:
+              input.type === 'CHARACTER_IMAGE' ? 'character_ref' as const : 'scene_ref' as const,
+            sourceModule: 'wb-game-video',
+          }
+        : {}),
       createdAt: now,
       updatedAt: now,
       provider: mapping,
@@ -524,20 +525,15 @@ export class VideoAssetService {
     }
 
     const seen = new Set<string>();
-    const uniqueResources: Array<
-      Omit<CreateKinoResourceInput, 'game_id'> & { media_type: 'video' }
-    > = [];
+    const uniqueResources: Array<Omit<CreateKinoResourceInput, 'game_id'>> = [];
     let skippedCount = 0;
     for (const resource of input.resources) {
-      if (resource.media_type !== 'video') {
-        throw new KinoApiError('Invalid media type', 400, 'invalid_media_type');
-      }
       if (seen.has(resource.url)) {
         skippedCount += 1;
         continue;
       }
       seen.add(resource.url);
-      uniqueResources.push({ ...resource, media_type: 'video' });
+      uniqueResources.push(resource);
     }
 
     const tokens = uniqueResources.map((resource) =>
@@ -548,6 +544,9 @@ export class VideoAssetService {
     for (const resource of uniqueResources) {
       const token = parseUploadTokenFromReference(resource.url, context.origin);
       const session = await this.#requirePendingSession(token, context, resource.url);
+      if (resource.media_type !== session.mediaType) {
+        throw new KinoApiError('Upload session media mismatch', 400, 'upload_session_media_mismatch');
+      }
       pending.push({ resource, token, session });
     }
 
@@ -708,15 +707,15 @@ export class VideoAssetService {
     if (query.game_id !== context.gameId) {
       throw new KinoApiError('Upload session game mismatch', 400, 'upload_session_game_mismatch');
     }
-    if (query.media_type !== 'video') {
-      throw new KinoApiError('Invalid media type', 400, 'invalid_media_type');
+    const { page, pageSize } = parsePagination(query.page, query.page_size);
+    if (query.media_type === 'video') {
+      await this.#reconcileUpstream(gameDir, context, pageSize);
     }
 
-    const { page, pageSize } = parsePagination(query.page, query.page_size);
-    await this.#reconcileUpstream(gameDir, context, pageSize);
-
     const manifest = await this.#deps.manifest.read(gameDir);
-    const assets = readyAssets(manifest.assets).sort((left, right) => right.updatedAt - left.updatedAt);
+    const assets = readyAssets(manifest.assets)
+      .filter((asset) => asset.kind === query.media_type)
+      .sort((left, right) => right.updatedAt - left.updatedAt);
     const total = assets.length;
     const start = (page - 1) * pageSize;
     const pageItems = assets.slice(start, start + pageSize).map((asset) => toDto(asset, context));
@@ -754,13 +753,12 @@ export class VideoAssetService {
     if (input.resource_id !== resourceId) {
       throw new KinoApiError('Resource id mismatch', 400, 'resource_id_mismatch');
     }
-    if (input.media_type !== 'video') {
-      throw new KinoApiError('Invalid media type', 400, 'invalid_media_type');
-    }
-
     const existing = await this.#deps.manifest.get(gameDir, resourceId);
     if (!existing || existing.status !== 'ready') {
       throw new KinoApiError('Resource not found', 404, 'resource_not_found');
+    }
+    if (input.media_type !== existing.kind) {
+      throw new KinoApiError('Invalid media type', 400, 'invalid_media_type');
     }
 
     const provider = this.#deps.providers.current();
@@ -883,7 +881,8 @@ export class VideoAssetService {
         gameId: context.gameId,
         identity: context.identity,
         providerKind: this.#deps.providers.current().kind,
-        mimeType: VIDEO_UPLOAD_MIME,
+        mediaType: session.mediaType,
+        mimeType: session.mimeType,
         bytes: session.bytes,
       }, nowOf(this.#deps)());
     } catch (error) {
@@ -1000,12 +999,20 @@ export class VideoAssetService {
     const now = nowOf(this.#deps)();
     return {
       id: resourceId,
-      kind: 'video',
+      kind: session.mediaType,
       name: input.name ?? session.fileName,
       status: 'ready',
-      mimeType: 'video/mp4',
+      mimeType: session.mimeType,
       bytes,
       durationMs: input.source_meta?.duration_ms,
+      ...(session.mediaType === 'image' &&
+      (input.type === 'CHARACTER_IMAGE' || input.type === 'LOCATION_IMAGE')
+        ? {
+            productionType:
+              input.type === 'CHARACTER_IMAGE' ? 'character_ref' as const : 'scene_ref' as const,
+            sourceModule: 'wb-game-video',
+          }
+        : {}),
       createdAt: now,
       updatedAt: now,
       provider,

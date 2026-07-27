@@ -36,7 +36,7 @@ export type VideoStorageConfig =
   | CosVideoStorageConfig;
 
 const OBJECT_KEY_UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.mp4$/i;
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:mp4|png|jpe?g|webp|gif)$/i;
 
 function readEnvValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const raw = env[key];
@@ -78,6 +78,15 @@ export function buildVideoObjectKey(gameId: string, uuid: string, prefix?: strin
   return `${buildVideoObjectKeyPrefix(gameId, prefix)}/${uuid}.mp4`;
 }
 
+export function buildMediaObjectKey(
+  gameId: string,
+  uuid: string,
+  extension: string,
+  prefix?: string,
+): string {
+  return `${buildVideoObjectKeyPrefix(gameId, prefix)}/${uuid}.${extension}`;
+}
+
 export function assertScopedVideoObjectKey(
   key: string,
   gameId: string,
@@ -102,6 +111,8 @@ export function assertScopedVideoObjectKey(
     throw new Error('invalid scoped key');
   }
 }
+
+export const assertScopedMediaObjectKey = assertScopedVideoObjectKey;
 
 function missingRequiredKeys(
   env: NodeJS.ProcessEnv,

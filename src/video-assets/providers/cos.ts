@@ -7,12 +7,17 @@ import type {
   VideoAssetRequestContext,
 } from '../contracts';
 import {
-  assertScopedVideoObjectKey,
-  buildVideoObjectKey,
+  assertScopedMediaObjectKey,
+  buildMediaObjectKey,
   type CosVideoStorageConfig,
 } from '../config';
 import { KinoApiError } from '../kino-api';
-import { MAX_VIDEO_UPLOAD_BYTES } from '../upload-sessions';
+import {
+  assertUploadMime,
+  assertUploadSize,
+  extensionForMime,
+  type SupportedUploadMime,
+} from '../media-policy';
 
 const PREPARE_TTL_SECONDS = 10 * 60;
 const PLAYBACK_TTL_SECONDS = 5 * 60;
@@ -28,7 +33,8 @@ export interface CosObjectClient {
 interface CloudUploadState {
   ref: string;
   bytes: number;
-  mimeType: 'video/mp4';
+  mediaType: 'image' | 'video';
+  mimeType: SupportedUploadMime;
 }
 
 export interface CreateDefaultCosObjectClientOptions {
@@ -51,7 +57,7 @@ function normalizeContentType(value: string | undefined): string | undefined {
 
 function assertScopedProviderRef(key: string, gameId: string, prefix?: string): void {
   try {
-    assertScopedVideoObjectKey(key, gameId, prefix);
+    assertScopedMediaObjectKey(key, gameId, prefix);
   } catch {
     throw new KinoApiError('Invalid provider ref', 400, 'invalid_provider_ref');
   }
@@ -74,19 +80,14 @@ function parseUploadState(
   }
   assertScopedProviderRef(ref, gameId, prefix);
 
-  if (
-    typeof bytes !== 'number' ||
-    !Number.isFinite(bytes) ||
-    bytes <= 0 ||
-    bytes > MAX_VIDEO_UPLOAD_BYTES
-  ) {
-    throw new KinoApiError('Invalid upload size', 400, 'invalid_upload_size');
+  const mediaType = state.mediaType ?? (mimeType === 'video/mp4' ? 'video' : undefined);
+  if (mediaType !== 'image' && mediaType !== 'video') {
+    throw new KinoApiError('Invalid upload session', 400, 'invalid_upload_session');
   }
-  if (mimeType !== 'video/mp4') {
-    throw new KinoApiError('Invalid upload mime type', 400, 'invalid_media_type');
-  }
+  assertUploadMime(mediaType, mimeType);
+  assertUploadSize(mediaType, bytes);
 
-  return { ref, bytes, mimeType };
+  return { ref, bytes, mediaType, mimeType };
 }
 
 async function bestEffortDelete(client: CosObjectClient, key: string): Promise<void> {
@@ -207,9 +208,15 @@ export function createCosVideoAssetProvider(
 
   return {
     kind: 'cos',
+    supportedMediaTypes: ['video', 'image'],
 
     async prepareUpload(input: ProviderPrepareUploadInput, context: VideoAssetRequestContext) {
-      const key = buildVideoObjectKey(context.gameId, randomUuid(), config.prefix);
+      const key = buildMediaObjectKey(
+        context.gameId,
+        randomUuid(),
+        extensionForMime(input.mimeType),
+        config.prefix,
+      );
       const url = await client.signPut(key, input.mimeType, PREPARE_TTL_SECONDS);
       const expiresAt = new Date(Date.now() + PREPARE_TTL_MS).toISOString();
 
@@ -225,6 +232,9 @@ export function createCosVideoAssetProvider(
         state: {
           ref: key,
           bytes: input.bytes,
+          ...(input.mimeType === 'video/mp4'
+            ? {}
+            : { mediaType: input.mediaType ?? 'image' }),
           mimeType: input.mimeType,
         },
       };
@@ -258,9 +268,6 @@ export function createCosVideoAssetProvider(
 
     async finalizeResource(object, _input, context) {
       assertScopedProviderRef(object.ref, context.gameId, config.prefix);
-      if (object.mimeType !== 'video/mp4') {
-        throw new KinoApiError('Invalid upload mime type', 400, 'invalid_media_type');
-      }
       return { kind: 'cos', ref: object.ref };
     },
 

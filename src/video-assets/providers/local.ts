@@ -19,17 +19,24 @@ import type {
 import type { ProjectRootResolver } from '../game-path';
 import { resolveVideoAssetsDir } from '../game-path';
 import { KinoApiError } from '../kino-api';
-import { MAX_VIDEO_UPLOAD_BYTES } from '../upload-sessions';
+import {
+  assertUploadMime,
+  assertUploadSize,
+  extensionForMime,
+  maxUploadBytes,
+  type SupportedUploadMime,
+} from '../media-policy';
 
 const PREPARE_TTL_MS = 10 * 60 * 1000;
-const LOCAL_BLOB_REF_RE = /^blobs\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.mp4$/;
+const LOCAL_BLOB_REF_RE = /^blobs\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:mp4|png|jpe?g|webp|gif)$/;
 const TEMP_UPLOAD_REF_RE =
   /^\.uploads\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.part$/i;
 
 interface LocalUploadState {
   ref: string;
   bytes: number;
-  mimeType: 'video/mp4';
+  mediaType: 'image' | 'video';
+  mimeType: SupportedUploadMime;
 }
 
 export interface LocalUploadWriter {
@@ -70,19 +77,14 @@ function parseUploadState(state: Record<string, unknown>): LocalUploadState {
   if (typeof ref !== 'string' || !TEMP_UPLOAD_REF_RE.test(ref)) {
     throw new KinoApiError('Invalid upload session', 400, 'invalid_upload_session');
   }
-  if (
-    typeof bytes !== 'number' ||
-    !Number.isFinite(bytes) ||
-    bytes <= 0 ||
-    bytes > MAX_VIDEO_UPLOAD_BYTES
-  ) {
-    throw new KinoApiError('Invalid upload size', 400, 'invalid_upload_size');
+  const mediaType = state.mediaType ?? (mimeType === 'video/mp4' ? 'video' : undefined);
+  if (mediaType !== 'image' && mediaType !== 'video') {
+    throw new KinoApiError('Invalid upload session', 400, 'invalid_upload_session');
   }
-  if (mimeType !== 'video/mp4') {
-    throw new KinoApiError('Invalid upload mime type', 400, 'invalid_media_type');
-  }
+  assertUploadMime(mediaType, mimeType);
+  assertUploadSize(mediaType, bytes);
 
-  return { ref, bytes, mimeType };
+  return { ref, bytes, mediaType, mimeType };
 }
 
 function assertSafeBlobRef(ref: string): void {
@@ -118,6 +120,7 @@ async function streamToPartFile(
   body: ReadableStream<Uint8Array>,
   destination: string,
   declaredBytes: number,
+  maxBytes: number,
   createWriter: (path: string) => LocalUploadWriter,
 ): Promise<number> {
   mkdirSync(resolve(destination, '..'), { recursive: true });
@@ -158,7 +161,7 @@ async function streamToPartFile(
       }
 
       received += value.byteLength;
-      if (received > declaredBytes || received > MAX_VIDEO_UPLOAD_BYTES) {
+      if (received > declaredBytes || received > maxBytes) {
         throw new KinoApiError('Invalid upload size', 400, 'invalid_upload_size');
       }
 
@@ -214,6 +217,7 @@ export function createLocalVideoAssetProvider(
       createWriteStream(path, { flags: 'wx' }) as LocalUploadWriter);
   return {
     kind: 'local',
+    supportedMediaTypes: ['video', 'image'],
 
     async prepareUpload(input: ProviderPrepareUploadInput, context: VideoAssetRequestContext) {
       assetsDirFor(context, getProjectRoot);
@@ -224,13 +228,16 @@ export function createLocalVideoAssetProvider(
           method: 'PUT' as const,
           url: `${context.origin}/api/v1/kino/uploads/${input.uploadToken}?game_id=${encodeURIComponent(context.gameId)}`,
           headers: {
-            'content-type': 'video/mp4',
+            'content-type': input.mimeType,
           },
           expiresAt,
         },
         state: {
           ref: `.uploads/${input.uploadToken}.part`,
           bytes: input.bytes,
+          ...(input.mimeType === 'video/mp4'
+            ? {}
+            : { mediaType: input.mediaType ?? 'image' }),
           mimeType: input.mimeType,
         },
       };
@@ -240,7 +247,13 @@ export function createLocalVideoAssetProvider(
       const upload = parseUploadState(state);
       const assetsDir = assetsDirFor(context, getProjectRoot);
       const partPath = resolve(assetsDir, upload.ref);
-      await streamToPartFile(body, partPath, upload.bytes, createWriter);
+      await streamToPartFile(
+        body,
+        partPath,
+        upload.bytes,
+        maxUploadBytes(upload.mediaType),
+        createWriter,
+      );
     },
 
     async inspectUpload(state, context) {
@@ -273,11 +286,12 @@ export function createLocalVideoAssetProvider(
       const upload = parseUploadState({
         ref: object.ref,
         bytes: object.bytes,
+        mediaType: object.mimeType === 'video/mp4' ? 'video' : 'image',
         mimeType: object.mimeType,
       });
       const assetsDir = assetsDirFor(context, getProjectRoot);
       const tempPath = resolve(assetsDir, upload.ref);
-      const blobRef = `blobs/${input.resourceId}.mp4`;
+      const blobRef = `blobs/${input.resourceId}.${extensionForMime(upload.mimeType)}`;
       assertSafeBlobRef(blobRef);
       const blobPath = resolve(assetsDir, blobRef);
 

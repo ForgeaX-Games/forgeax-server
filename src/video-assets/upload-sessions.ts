@@ -2,17 +2,26 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { VideoAssetProviderKind } from './contracts';
+import type { KinoMediaType } from './kino-api';
 import { KinoApiError } from './kino-api';
+import {
+  assertUploadMime,
+  assertUploadSize,
+  mediaTypeForMime,
+  MAX_VIDEO_UPLOAD_BYTES,
+  VIDEO_UPLOAD_MIME,
+  type SupportedUploadMime,
+} from './media-policy';
 
-export const MAX_VIDEO_UPLOAD_BYTES = 104_857_600;
-export const VIDEO_UPLOAD_MIME = 'video/mp4' as const;
+export { MAX_VIDEO_UPLOAD_BYTES, VIDEO_UPLOAD_MIME } from './media-policy';
 
 export interface UploadSession {
   token: string;
   gameId: string;
   identity: string;
   fileName: string;
-  mimeType: typeof VIDEO_UPLOAD_MIME;
+  mediaType: KinoMediaType;
+  mimeType: SupportedUploadMime;
   bytes: number;
   createdAt: number;
   expiresAt: number;
@@ -28,7 +37,8 @@ export interface CreateUploadSessionInput {
   gameId: string;
   identity: string;
   fileName: string;
-  mimeType: typeof VIDEO_UPLOAD_MIME;
+  mediaType?: KinoMediaType;
+  mimeType: SupportedUploadMime;
   bytes: number;
   providerKind: VideoAssetProviderKind;
   providerState: Record<string, unknown>;
@@ -39,7 +49,8 @@ export interface ValidateUploadSessionInput {
   gameId: string;
   identity: string;
   providerKind: VideoAssetProviderKind;
-  mimeType: typeof VIDEO_UPLOAD_MIME;
+  mediaType?: KinoMediaType;
+  mimeType: SupportedUploadMime;
   bytes: number;
 }
 
@@ -124,6 +135,12 @@ function assertSessionShape(session: unknown): asserts session is UploadSession 
     throw invalidSession();
   }
   const candidate = session as UploadSession;
+  if (
+    (candidate as { mediaType?: KinoMediaType }).mediaType === undefined &&
+    candidate.mimeType === VIDEO_UPLOAD_MIME
+  ) {
+    candidate.mediaType = 'video';
+  }
   if (typeof candidate.token !== 'string' || !UPLOAD_TOKEN_RE.test(candidate.token)) {
     throw invalidSession();
   }
@@ -136,15 +153,13 @@ function assertSessionShape(session: unknown): asserts session is UploadSession 
   if (typeof candidate.fileName !== 'string' || candidate.fileName.length === 0) {
     throw invalidSession();
   }
-  if (candidate.mimeType !== VIDEO_UPLOAD_MIME) {
+  if (candidate.mediaType !== 'video' && candidate.mediaType !== 'image') {
     throw invalidSession();
   }
-  if (
-    typeof candidate.bytes !== 'number' ||
-    !Number.isFinite(candidate.bytes) ||
-    candidate.bytes <= 0 ||
-    candidate.bytes > MAX_VIDEO_UPLOAD_BYTES
-  ) {
+  try {
+    assertUploadMime(candidate.mediaType, candidate.mimeType);
+    assertUploadSize(candidate.mediaType, candidate.bytes);
+  } catch {
     throw invalidSession();
   }
   if (
@@ -214,12 +229,12 @@ export class UploadSessionStore {
   }
 
   async create(input: CreateUploadSessionInput): Promise<UploadSession> {
-    if (input.mimeType !== VIDEO_UPLOAD_MIME) {
+    const mediaType = input.mediaType ?? mediaTypeForMime(input.mimeType);
+    if (!mediaType) {
       throw new KinoApiError('Invalid upload mime type', 400, 'invalid_media_type');
     }
-    if (!Number.isFinite(input.bytes) || input.bytes <= 0 || input.bytes > MAX_VIDEO_UPLOAD_BYTES) {
-      throw new KinoApiError('Invalid upload size', 400, 'invalid_upload_size');
-    }
+    assertUploadMime(mediaType, input.mimeType);
+    assertUploadSize(mediaType, input.bytes);
 
     const now = Date.now();
     const session: UploadSession = {
@@ -227,6 +242,7 @@ export class UploadSessionStore {
       gameId: input.gameId,
       identity: input.identity,
       fileName: input.fileName,
+      mediaType,
       mimeType: input.mimeType,
       bytes: input.bytes,
       createdAt: now,
@@ -340,11 +356,14 @@ export class UploadSessionStore {
       this.#removeSessionFile(session.token);
       throw new KinoApiError('Upload session expired', 410, 'kino_upload_expired');
     }
-    if (input.mimeType !== VIDEO_UPLOAD_MIME) {
+    const mediaType = input.mediaType ?? mediaTypeForMime(input.mimeType);
+    if (!mediaType) {
       throw new KinoApiError('Invalid upload mime type', 400, 'invalid_media_type');
     }
-    if (!Number.isFinite(input.bytes) || input.bytes <= 0 || input.bytes > MAX_VIDEO_UPLOAD_BYTES) {
-      throw new KinoApiError('Invalid upload size', 400, 'invalid_upload_size');
+    assertUploadMime(mediaType, input.mimeType);
+    assertUploadSize(mediaType, input.bytes);
+    if (session.mediaType !== mediaType) {
+      throw new KinoApiError('Upload session media mismatch', 400, 'upload_session_media_mismatch');
     }
     if (session.mimeType !== input.mimeType) {
       throw new KinoApiError('Upload session mime mismatch', 400, 'invalid_media_type');

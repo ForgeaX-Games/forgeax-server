@@ -277,6 +277,33 @@ describe('LocalVideoAssetProvider.inspectUpload', () => {
 });
 
 describe('LocalVideoAssetProvider.finalizeResource', () => {
+  test('stores image uploads with their MIME-derived extension', async () => {
+    const token = '55555555-5555-4555-8555-555555555555';
+    const { state } = await provider.prepareUpload(
+      {
+        uploadToken: token,
+        fileName: 'reference.png',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        bytes: FIXTURE.byteLength,
+      },
+      context,
+    );
+    await provider.receiveUpload!(state, streamFrom(FIXTURE), context);
+    const uploaded = await provider.inspectUpload(state, context);
+
+    await expect(
+      provider.finalizeResource(
+        uploaded,
+        { resourceId: 'image-finalize', name: 'reference.png' },
+        context,
+      ),
+    ).resolves.toEqual({ kind: 'local', ref: 'blobs/image-finalize.png' });
+    expect(readFileSync(resolve(assetsDir, 'blobs/image-finalize.png'))).toEqual(
+      Buffer.from(FIXTURE),
+    );
+  });
+
   test('atomically moves the temp upload into blobs/<resourceId>.mp4', async () => {
     const token = '66666666-6666-4666-8666-666666666666';
     const resourceId = 'res-finalize';

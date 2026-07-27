@@ -86,6 +86,31 @@ beforeEach(() => {
 });
 
 describe('S3VideoAssetProvider.prepareUpload', () => {
+  test('presigns image uploads with an image object key and content type', async () => {
+    const draft = await provider.prepareUpload(
+      {
+        uploadToken: 'unused-token',
+        fileName: 'reference.webp',
+        mediaType: 'image',
+        mimeType: 'image/webp',
+        bytes: FIXTURE_BYTES,
+      },
+      context,
+    );
+
+    expect(draft.state).toEqual({
+      ref: `uploads/demo/${FIXED_UUID}.webp`,
+      bytes: FIXTURE_BYTES,
+      mediaType: 'image',
+      mimeType: 'image/webp',
+    });
+    expect(client.signPutCalls[0]).toEqual({
+      key: `uploads/demo/${FIXED_UUID}.webp`,
+      mimeType: 'image/webp',
+      expiresIn: 600,
+    });
+  });
+
   test('returns a ten-minute presigned PUT with scoped unpredictable key', async () => {
     const now = Date.now();
     const draft = await provider.prepareUpload(

@@ -68,7 +68,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isManagedVideoAsset(value: unknown): boolean {
-  return isRecord(value) && value.kind === 'video' && Object.hasOwn(value, 'provider');
+  return (
+    isRecord(value) &&
+    (value.kind === 'video' || value.kind === 'image') &&
+    Object.hasOwn(value, 'provider')
+  );
 }
 
 function isLegacyVideoAsset(value: unknown): boolean {

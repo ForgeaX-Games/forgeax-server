@@ -87,6 +87,31 @@ beforeEach(() => {
 });
 
 describe('CosVideoAssetProvider.prepareUpload', () => {
+  test('presigns image uploads with an image object key and content type', async () => {
+    const draft = await provider.prepareUpload(
+      {
+        uploadToken: 'unused-token',
+        fileName: 'reference.png',
+        mediaType: 'image',
+        mimeType: 'image/png',
+        bytes: FIXTURE_BYTES,
+      },
+      context,
+    );
+
+    expect(draft.state).toEqual({
+      ref: `videos/demo/${FIXED_UUID}.png`,
+      bytes: FIXTURE_BYTES,
+      mediaType: 'image',
+      mimeType: 'image/png',
+    });
+    expect(client.signPutCalls[0]).toEqual({
+      key: `videos/demo/${FIXED_UUID}.png`,
+      mimeType: 'image/png',
+      expiresIn: 600,
+    });
+  });
+
   test('returns a ten-minute presigned PUT with scoped unpredictable key', async () => {
     const now = Date.now();
     const draft = await provider.prepareUpload(

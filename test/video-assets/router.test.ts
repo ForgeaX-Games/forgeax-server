@@ -96,15 +96,14 @@ describe('createVideoAssetRouter list', () => {
     expect(result.body.error_code).toBeDefined();
   });
 
-  test('rejects image media_type', async () => {
-    const result = await json<null>(
+  test('lists image media_type independently', async () => {
+    const result = await json<KinoResourcePage>(
       app,
       `/api/v1/kino/resources?game_id=${gameId}&media_type=image&page=1&page_size=20`,
     );
 
-    expect(result.status).toBe(400);
-    expect(result.body.error_code).toBe('invalid_media_type');
-    expect(result.body.message).toBe('Invalid media type');
+    expect(result.status).toBe(200);
+    expect(result.body.data.items).toEqual([]);
   });
 
   test('rejects invalid page values strictly', async () => {
@@ -141,8 +140,8 @@ describe('createVideoAssetRouter list', () => {
 });
 
 describe('createVideoAssetRouter prepare upload', () => {
-  test('rejects image mime_type on prepare', async () => {
-    const result = await json<null>(app, '/api/v1/kino/image-assets/upload', {
+  test('accepts image mime_type on Local prepare', async () => {
+    const result = await json<PrepareUploadResponse>(app, '/api/v1/kino/image-assets/upload', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -153,12 +152,12 @@ describe('createVideoAssetRouter prepare upload', () => {
       }),
     });
 
-    expect(result.status).toBe(400);
-    expect(result.body.error_code).toBe('invalid_media_type');
+    expect(result.status).toBe(200);
+    expect(result.body.data.upload.headers['content-type']).toBe('image/png');
   });
 
-  test('does not trust Content-Type over declared mime_type', async () => {
-    const result = await json<null>(app, '/api/v1/kino/image-assets/upload', {
+  test('uses declared mime_type instead of the JSON request Content-Type', async () => {
+    const result = await json<PrepareUploadResponse>(app, '/api/v1/kino/image-assets/upload', {
       method: 'POST',
       headers: { 'content-type': 'video/mp4' },
       body: JSON.stringify({
@@ -169,8 +168,8 @@ describe('createVideoAssetRouter prepare upload', () => {
       }),
     });
 
-    expect(result.status).toBe(400);
-    expect(result.body.error_code).toBe('invalid_media_type');
+    expect(result.status).toBe(200);
+    expect(result.body.data.upload.headers['content-type']).toBe('image/png');
   });
 
   test('rejects fractional upload bytes', async () => {
@@ -240,6 +239,62 @@ describe('createVideoAssetRouter prepare upload', () => {
 });
 
 describe('createVideoAssetRouter local flow', () => {
+  test('prepare → PUT → create persists and serves an image reference', async () => {
+    const prepared = await json<PrepareUploadResponse>(
+      app,
+      '/api/v1/kino/image-assets/upload',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          game_id: gameId,
+          file_name: 'hero.png',
+          mime_type: 'image/png',
+          bytes: FIXTURE.byteLength,
+        }),
+      },
+    );
+    const putUrl = new URL(prepared.body.data.upload.url);
+    expect(
+      await app.request(putUrl.pathname + putUrl.search, {
+        method: 'PUT',
+        headers: { 'content-type': 'image/png' },
+        body: FIXTURE,
+      }),
+    ).toHaveProperty('status', 200);
+
+    const created = await json<KinoResourceDTO>(app, '/api/v1/kino/resources', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        game_id: gameId,
+        media_type: 'image',
+        url: prepared.body.data.object_url,
+        name: 'Hero',
+        type: 'CHARACTER_IMAGE',
+      }),
+    });
+    expect(created.status).toBe(200);
+    expect(created.body.data.media_type).toBe('image');
+
+    const manifest = JSON.parse(
+      readFileSync(resolve(assetsDir, 'manifest.json'), 'utf-8'),
+    ) as { assets: Array<Record<string, unknown>> };
+    expect(manifest.assets[0]).toMatchObject({
+      kind: 'image',
+      mimeType: 'image/png',
+      productionType: 'character_ref',
+      sourceModule: 'wb-game-video',
+    });
+
+    const content = await app.request(
+      `/api/v1/kino/resources/${created.body.data.resource_id}/content?game_id=${gameId}`,
+    );
+    expect(content.status).toBe(200);
+    expect(content.headers.get('content-type')).toBe('image/png');
+    expect(new Uint8Array(await content.arrayBuffer())).toEqual(FIXTURE);
+  });
+
   test('prepare → PUT → create → get → update → range/HEAD → delete', async () => {
     const auth = 'Bearer test-token';
     const identity = identityFromAuth(auth);
@@ -913,6 +968,7 @@ describe('ProjectUploadSessionRepository concurrency', () => {
       gameId,
       identity: 'anonymous',
       fileName: 'clip.mp4',
+      mediaType: 'video',
       mimeType: 'video/mp4',
       bytes: FIXTURE.byteLength,
       createdAt: Date.now(),

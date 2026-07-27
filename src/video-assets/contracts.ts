@@ -1,3 +1,6 @@
+import type { KinoMediaType } from './kino-api';
+import type { SupportedUploadMime } from './media-policy';
+
 export type VideoAssetProviderKind = 'local' | 's3' | 'cos' | 'kino';
 export type VideoAssetStatus = 'uploading' | 'ready' | 'failed';
 
@@ -9,12 +12,14 @@ export interface ProviderMapping {
 
 export interface VideoAsset {
   id: string;
-  kind: 'video';
+  kind: KinoMediaType;
   name: string;
   status: VideoAssetStatus;
-  mimeType: 'video/mp4';
+  mimeType: SupportedUploadMime;
   bytes: number;
   durationMs?: number;
+  productionType?: 'character_ref' | 'scene_ref';
+  sourceModule?: string;
   createdAt: number;
   updatedAt: number;
   provider: ProviderMapping;
@@ -37,7 +42,8 @@ export interface VideoAssetRequestContext {
 
 export interface PrepareUploadInput {
   fileName: string;
-  mimeType: 'video/mp4';
+  mediaType?: KinoMediaType;
+  mimeType: SupportedUploadMime;
   bytes: number;
   /** Migration-only stable logical id. Normal upload clients omit this field. */
   clientResourceId?: string;
@@ -65,7 +71,7 @@ export interface UploadedObject {
   ref: string;
   sourceUrl?: string;
   bytes: number;
-  mimeType: 'video/mp4';
+  mimeType: SupportedUploadMime;
 }
 
 export type PlaybackSource =
@@ -92,6 +98,8 @@ export interface UpstreamVideoPage {
 
 export interface VideoAssetProvider {
   readonly kind: VideoAssetProviderKind;
+  /** Providers that omit this capability remain video-only (notably Kino). */
+  readonly supportedMediaTypes?: readonly KinoMediaType[];
   prepareUpload(
     input: ProviderPrepareUploadInput,
     context: VideoAssetRequestContext,

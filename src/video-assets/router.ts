@@ -11,7 +11,13 @@ import type {
 import { KinoApiError } from './kino-api';
 import { isValidVideoAssetResourceId } from './resource-id';
 import type { VideoAssetService } from './service';
-import { MAX_VIDEO_UPLOAD_BYTES, VIDEO_UPLOAD_MIME } from './upload-sessions';
+import {
+  assertUploadMime,
+  assertUploadSize,
+  extensionForMime,
+  mediaTypeForMime,
+  type SupportedUploadMime,
+} from './media-policy';
 
 type RangeParseResult =
   | { kind: 'full' }
@@ -149,7 +155,10 @@ function parseStrictInteger(value: string | undefined, field: string): number | 
   return Number.parseInt(value, 10);
 }
 
-function resolveUploadFileName(body: Record<string, unknown>): string {
+function resolveUploadFileName(
+  body: Record<string, unknown>,
+  mimeType: SupportedUploadMime,
+): string {
   const fileName = body.file_name;
   if (typeof fileName === 'string' && fileName.trim().length > 0) {
     return fileName.trim();
@@ -158,10 +167,11 @@ function resolveUploadFileName(body: Record<string, unknown>): string {
   const extension = body.extension;
   const normalized =
     typeof extension === 'string' ? extension.trim().replace(/^\./, '').toLowerCase() : '';
-  if (normalized !== 'mp4') {
+  const expected = extensionForMime(mimeType);
+  if (normalized !== expected && !(mimeType === 'image/jpeg' && normalized === 'jpeg')) {
     throw new KinoApiError('Invalid upload file name', 400, 'invalid_file_name');
   }
-  return `video-${randomUUID()}.mp4`;
+  return `${mediaTypeForMime(mimeType)}-${randomUUID()}.${normalized}`;
 }
 
 function parseRangeHeader(header: string | undefined, size: number): RangeParseResult {
@@ -313,18 +323,13 @@ export function createVideoAssetRouter(service: VideoAssetService): Hono {
       const body = await readJsonObject(c);
       const gameId = requireGameIdFromBody(body);
       const mimeType = body.mime_type;
-      if (mimeType !== VIDEO_UPLOAD_MIME) {
+      const mediaType = mediaTypeForMime(mimeType);
+      if (!mediaType) {
         throw new KinoApiError('Invalid upload mime type', 400, 'invalid_media_type');
       }
       const bytes = body.bytes;
-      if (
-        typeof bytes !== 'number' ||
-        !Number.isSafeInteger(bytes) ||
-        bytes <= 0 ||
-        bytes > MAX_VIDEO_UPLOAD_BYTES
-      ) {
-        throw new KinoApiError('Invalid upload size', 400, 'invalid_upload_size');
-      }
+      assertUploadMime(mediaType, mimeType);
+      assertUploadSize(mediaType, bytes);
       const context = buildRequestContext(c, gameId);
       const clientResourceId = body.client_resource_id;
       if (clientResourceId !== undefined) {
@@ -345,8 +350,9 @@ export function createVideoAssetRouter(service: VideoAssetService): Hono {
       }
       return service.prepareUpload(
         {
-          fileName: resolveUploadFileName(body),
-          mimeType: VIDEO_UPLOAD_MIME,
+          fileName: resolveUploadFileName(body, mimeType),
+          mediaType,
+          mimeType,
           bytes,
           ...(clientResourceId !== undefined
             ? { clientResourceId: clientResourceId.trim() }
@@ -386,7 +392,7 @@ export function createVideoAssetRouter(service: VideoAssetService): Hono {
     return handleServiceCall(c, async () => {
       const gameId = requireGameIdFromQuery(c);
       const mediaType = c.req.query('media_type') ?? 'video';
-      if (mediaType !== 'video') {
+      if (mediaType !== 'video' && mediaType !== 'image') {
         throw new KinoApiError('Invalid media type', 400, 'invalid_media_type');
       }
       const page = parseStrictInteger(c.req.query('page'), 'page');
@@ -395,7 +401,7 @@ export function createVideoAssetRouter(service: VideoAssetService): Hono {
       return service.listResources(
         {
           game_id: gameId,
-          media_type: 'video',
+          media_type: mediaType,
           page,
           page_size: pageSize,
         },
