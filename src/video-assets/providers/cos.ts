@@ -18,9 +18,12 @@ import {
   extensionForMime,
   type SupportedUploadMime,
 } from '../media-policy';
+import { createExpiringUrlCache } from './signed-url-cache';
 
 const PREPARE_TTL_SECONDS = 10 * 60;
 const PLAYBACK_TTL_SECONDS = 5 * 60;
+const PLAYBACK_CACHE_TTL_SECONDS = PLAYBACK_TTL_SECONDS - 60;
+const PLAYBACK_RESPONSE_CACHE_CONTROL = `private, max-age=${PLAYBACK_CACHE_TTL_SECONDS}`;
 const PREPARE_TTL_MS = PREPARE_TTL_SECONDS * 1000;
 
 export interface CosObjectClient {
@@ -33,7 +36,7 @@ export interface CosObjectClient {
 interface CloudUploadState {
   ref: string;
   bytes: number;
-  mediaType: 'image' | 'video';
+  mediaType: 'audio' | 'image' | 'video';
   mimeType: SupportedUploadMime;
 }
 
@@ -45,6 +48,7 @@ export interface CreateDefaultCosObjectClientOptions {
 export interface CosVideoAssetProviderOptions {
   client?: CosObjectClient;
   randomUuid?: () => string;
+  now?: () => number;
   createClient?: (config: CosVideoStorageConfig) => CosObjectClient;
 }
 
@@ -81,7 +85,7 @@ function parseUploadState(
   assertScopedProviderRef(ref, gameId, prefix);
 
   const mediaType = state.mediaType ?? (mimeType === 'video/mp4' ? 'video' : undefined);
-  if (mediaType !== 'image' && mediaType !== 'video') {
+  if (mediaType !== 'audio' && mediaType !== 'image' && mediaType !== 'video') {
     throw new KinoApiError('Invalid upload session', 400, 'invalid_upload_session');
   }
   assertUploadMime(mediaType, mimeType);
@@ -161,6 +165,9 @@ export function createDefaultCosObjectClient(
         Method: 'GET',
         Sign: true,
         Expires: expiresIn,
+        Query: {
+          'response-cache-control': PLAYBACK_RESPONSE_CACHE_CONTROL,
+        },
       });
       if (!data.Url) {
         throw new KinoApiError('Resource content not found', 404, 'resource_content_not_found');
@@ -205,10 +212,14 @@ export function createCosVideoAssetProvider(
 ): VideoAssetProvider {
   const client = options.client ?? options.createClient?.(config) ?? createDefaultCosObjectClient(config);
   const randomUuid = options.randomUuid ?? randomUUID;
+  const playbackUrls = createExpiringUrlCache(
+    PLAYBACK_CACHE_TTL_SECONDS * 1000,
+    options.now,
+  );
 
   return {
     kind: 'cos',
-    supportedMediaTypes: ['video', 'image'],
+    supportedMediaTypes: ['video', 'image', 'audio'],
 
     async prepareUpload(input: ProviderPrepareUploadInput, context: VideoAssetRequestContext) {
       const key = buildMediaObjectKey(
@@ -232,9 +243,7 @@ export function createCosVideoAssetProvider(
         state: {
           ref: key,
           bytes: input.bytes,
-          ...(input.mimeType === 'video/mp4'
-            ? {}
-            : { mediaType: input.mediaType ?? 'image' }),
+          ...(input.mimeType === 'video/mp4' ? {} : { mediaType: input.mediaType }),
           mimeType: input.mimeType,
         },
       };
@@ -273,12 +282,16 @@ export function createCosVideoAssetProvider(
 
     async getPlayback(asset, context) {
       assertScopedProviderRef(asset.provider.ref, context.gameId, config.prefix);
-      const url = await client.signGet(asset.provider.ref, PLAYBACK_TTL_SECONDS);
+      const url = await playbackUrls.get(
+        asset.provider.ref,
+        () => client.signGet(asset.provider.ref, PLAYBACK_TTL_SECONDS),
+      );
       return { kind: 'redirect', url };
     },
 
     async delete(asset, context) {
       assertScopedProviderRef(asset.provider.ref, context.gameId, config.prefix);
+      playbackUrls.delete(asset.provider.ref);
       await bestEffortDelete(client, asset.provider.ref);
     },
   };

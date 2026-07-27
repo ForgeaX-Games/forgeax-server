@@ -25,6 +25,8 @@ type RangeParseResult =
   | { kind: 'unsatisfiable' }
   | { kind: 'invalid' };
 
+const LOCAL_PLAYBACK_CACHE_CONTROL = 'private, max-age=300';
+
 function kinoOk<T>(data: T): KinoEnvelope<T> {
   return { code: 0, message: 'ok', data };
 }
@@ -269,22 +271,41 @@ async function serveLocalContent(
   const method = c.req.method;
   const rangeHeader = c.req.header('range');
   const parsed = parseRangeHeader(rangeHeader, source.bytes);
+  const cacheHeaders = {
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': LOCAL_PLAYBACK_CACHE_CONTROL,
+    ETag: source.etag,
+    'Last-Modified': source.lastModified,
+  };
 
   if (parsed.kind === 'invalid' || parsed.kind === 'unsatisfiable') {
     return new Response(null, {
       status: 416,
       headers: {
+        ...cacheHeaders,
         'Content-Range': `bytes */${source.bytes}`,
-        'Accept-Ranges': 'bytes',
       },
     });
+  }
+
+  const ifNoneMatch = c.req.header('if-none-match');
+  const etagMatches =
+    ifNoneMatch === '*' ||
+    ifNoneMatch?.split(',').some((value) => value.trim() === source.etag);
+  const ifModifiedSince = c.req.header('if-modified-since');
+  const modifiedSinceMatches =
+    ifNoneMatch === undefined &&
+    ifModifiedSince !== undefined &&
+    Date.parse(ifModifiedSince) >= Date.parse(source.lastModified);
+  if (etagMatches || modifiedSinceMatches) {
+    return new Response(null, { status: 304, headers: cacheHeaders });
   }
 
   const start = parsed.kind === 'partial' ? parsed.start : 0;
   const end = parsed.kind === 'partial' ? parsed.end : source.bytes - 1;
   const length = end - start + 1;
   const headers = new Headers({
-    'Accept-Ranges': 'bytes',
+    ...cacheHeaders,
     'Content-Type': source.mimeType,
     'Content-Length': String(length),
   });
@@ -392,7 +413,7 @@ export function createVideoAssetRouter(service: VideoAssetService): Hono {
     return handleServiceCall(c, async () => {
       const gameId = requireGameIdFromQuery(c);
       const mediaType = c.req.query('media_type') ?? 'video';
-      if (mediaType !== 'video' && mediaType !== 'image') {
+      if (mediaType !== 'video' && mediaType !== 'image' && mediaType !== 'audio') {
         throw new KinoApiError('Invalid media type', 400, 'invalid_media_type');
       }
       const page = parseStrictInteger(c.req.query('page'), 'page');

@@ -282,6 +282,13 @@ export class VideoAssetService {
 
     const provider = this.#deps.providers.current();
     const supported = provider.supportedMediaTypes ?? ['video'];
+    if (provider.kind === 'kino' && mediaType === 'audio') {
+      throw new KinoApiError(
+        'Provider kino does not support audio uploads',
+        400,
+        'unsupported_provider_media_type',
+      );
+    }
     if (!supported.includes(mediaType)) {
       throw new KinoApiError(
         `Provider ${provider.kind} does not support ${mediaType} uploads`,

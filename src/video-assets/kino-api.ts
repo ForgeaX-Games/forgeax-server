@@ -5,7 +5,7 @@ export interface KinoEnvelope<T> {
   error_code?: string;
 }
 
-export type KinoMediaType = 'image' | 'video';
+export type KinoMediaType = 'image' | 'video' | 'audio';
 
 export type KinoResourceType =
   | 'KEYFRAME'

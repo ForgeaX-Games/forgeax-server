@@ -106,6 +106,16 @@ describe('createVideoAssetRouter list', () => {
     expect(result.body.data.items).toEqual([]);
   });
 
+  test('lists audio media_type independently', async () => {
+    const result = await json<KinoResourcePage>(
+      app,
+      `/api/v1/kino/resources?game_id=${gameId}&media_type=audio&page=1&page_size=20`,
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.body.data.items).toEqual([]);
+  });
+
   test('rejects invalid page values strictly', async () => {
     const result = await json<null>(
       app,
@@ -239,6 +249,53 @@ describe('createVideoAssetRouter prepare upload', () => {
 });
 
 describe('createVideoAssetRouter local flow', () => {
+  test('prepare → PUT → create persists and serves audio through the Kino API', async () => {
+    const prepared = await json<PrepareUploadResponse>(
+      app,
+      '/api/v1/kino/image-assets/upload',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          game_id: gameId,
+          file_name: 'battle-theme.mp3',
+          mime_type: 'audio/mpeg',
+          bytes: FIXTURE.byteLength,
+        }),
+      },
+    );
+    expect(prepared.status).toBe(200);
+    expect(prepared.body.data.upload.headers['content-type']).toBe('audio/mpeg');
+
+    const putUrl = new URL(prepared.body.data.upload.url);
+    const put = await app.request(putUrl.pathname + putUrl.search, {
+      method: 'PUT',
+      headers: { 'content-type': 'audio/mpeg' },
+      body: FIXTURE,
+    });
+    expect(put.status).toBe(200);
+
+    const created = await json<KinoResourceDTO>(app, '/api/v1/kino/resources', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        game_id: gameId,
+        media_type: 'audio',
+        url: prepared.body.data.object_url,
+        name: 'Battle theme',
+      }),
+    });
+    expect(created.status).toBe(200);
+    expect(created.body.data.media_type).toBe('audio');
+
+    const content = await app.request(
+      `/api/v1/kino/resources/${created.body.data.resource_id}/content?game_id=${gameId}`,
+    );
+    expect(content.status).toBe(200);
+    expect(content.headers.get('content-type')).toBe('audio/mpeg');
+    expect(new Uint8Array(await content.arrayBuffer())).toEqual(FIXTURE);
+  });
+
   test('prepare → PUT → create persists and serves an image reference', async () => {
     const prepared = await json<PrepareUploadResponse>(
       app,
@@ -397,7 +454,23 @@ describe('createVideoAssetRouter local flow', () => {
     );
     expect(head.status).toBe(200);
     expect(head.headers.get('content-type')).toBe('video/mp4');
+    expect(head.headers.get('cache-control')).toBe('private, max-age=300');
+    expect(head.headers.get('etag')).toMatch(/^W\/"[A-Za-z0-9_-]+"$/);
+    expect(head.headers.get('last-modified')).not.toBeNull();
     expect(await head.text()).toBe('');
+
+    const notModified = await app.request(
+      `/api/v1/kino/resources/${resourceId}/content?game_id=${gameId}`,
+      {
+        headers: {
+          authorization: auth,
+          'if-none-match': head.headers.get('etag')!,
+        },
+      },
+    );
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers.get('cache-control')).toBe('private, max-age=300');
+    expect(await notModified.text()).toBe('');
 
     const deleted = await json<null>(
       app,
@@ -664,6 +737,8 @@ describe('createVideoAssetRouter identity and errors', () => {
         filePath: '/must/not/be/opened.mp4',
         mimeType: 'video/mp4',
         bytes: 0,
+        etag: 'W/"zero"',
+        lastModified: new Date(0).toUTCString(),
       }),
     } as unknown as VideoAssetService;
     const localApp = mountRouter(createVideoAssetRouter(fakeService));

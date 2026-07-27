@@ -28,7 +28,8 @@ export class VideoAssetManifestSchemaError extends Error {
   }
 }
 
-const LOCAL_BLOB_REF_RE = /^blobs\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:mp4|png|jpe?g|webp|gif)$/;
+const LOCAL_BLOB_REF_RE =
+  /^blobs\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:mp4|png|jpe?g|webp|gif|mp3|wav|ogg|m4a|aac)$/;
 const PROVIDER_KINDS: readonly VideoAssetProviderKind[] = ['local', 's3', 'cos', 'kino'];
 const STATUSES: readonly VideoAssetStatus[] = ['uploading', 'ready', 'failed'];
 
@@ -84,7 +85,7 @@ function assertVideoAsset(asset: unknown): asserts asset is VideoAsset {
   const candidate = asset as unknown as VideoAsset;
   if (
     !isValidVideoAssetResourceId(candidate.id) ||
-    (candidate.kind !== 'video' && candidate.kind !== 'image') ||
+    (candidate.kind !== 'video' && candidate.kind !== 'image' && candidate.kind !== 'audio') ||
     typeof candidate.name !== 'string' ||
     !STATUSES.includes(candidate.status) ||
     mediaTypeForMime(candidate.mimeType) !== candidate.kind ||

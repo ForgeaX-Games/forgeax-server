@@ -153,7 +153,11 @@ function assertSessionShape(session: unknown): asserts session is UploadSession 
   if (typeof candidate.fileName !== 'string' || candidate.fileName.length === 0) {
     throw invalidSession();
   }
-  if (candidate.mediaType !== 'video' && candidate.mediaType !== 'image') {
+  if (
+    candidate.mediaType !== 'video' &&
+    candidate.mediaType !== 'image' &&
+    candidate.mediaType !== 'audio'
+  ) {
     throw invalidSession();
   }
   try {

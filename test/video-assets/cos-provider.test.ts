@@ -55,6 +55,7 @@ class FakeCosClient implements CosObjectClient {
 let client: FakeCosClient;
 let provider: ReturnType<typeof createCosVideoAssetProvider>;
 let context: VideoAssetRequestContext;
+let nowMs: number;
 
 async function expectKinoError(
   action: Promise<unknown>,
@@ -75,9 +76,11 @@ async function expectKinoError(
 
 beforeEach(() => {
   client = new FakeCosClient();
+  nowMs = 1_000;
   provider = createCosVideoAssetProvider(CONFIG, {
     client,
     randomUuid: () => FIXED_UUID,
+    now: () => nowMs,
   });
   context = {
     gameId: 'demo',
@@ -87,6 +90,31 @@ beforeEach(() => {
 });
 
 describe('CosVideoAssetProvider.prepareUpload', () => {
+  test('presigns audio uploads with an audio object key and content type', async () => {
+    const draft = await provider.prepareUpload(
+      {
+        uploadToken: 'unused-token',
+        fileName: 'battle-theme.ogg',
+        mediaType: 'audio',
+        mimeType: 'audio/ogg',
+        bytes: FIXTURE_BYTES,
+      },
+      context,
+    );
+
+    expect(draft.state).toEqual({
+      ref: `videos/demo/${FIXED_UUID}.ogg`,
+      bytes: FIXTURE_BYTES,
+      mediaType: 'audio',
+      mimeType: 'audio/ogg',
+    });
+    expect(client.signPutCalls[0]).toEqual({
+      key: `videos/demo/${FIXED_UUID}.ogg`,
+      mimeType: 'audio/ogg',
+      expiresIn: 600,
+    });
+  });
+
   test('presigns image uploads with an image object key and content type', async () => {
     const draft = await provider.prepareUpload(
       {
@@ -211,7 +239,7 @@ describe('CosVideoAssetProvider.finalizeResource', () => {
 });
 
 describe('CosVideoAssetProvider.getPlayback', () => {
-  test('returns a five-minute presigned GET redirect URL', async () => {
+  test('reuses a presigned GET URL until the one-minute safety window', async () => {
     const key = 'videos/demo/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.mp4';
     const playback = await provider.getPlayback(
       {
@@ -233,6 +261,39 @@ describe('CosVideoAssetProvider.getPlayback', () => {
       url: 'https://cos.example.test/videos/demo/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.mp4?get=1',
     });
     expect(client.signGetCalls).toEqual([{ key, expiresIn: 300 }]);
+
+    await provider.getPlayback(
+      {
+        id: 'res-playback',
+        kind: 'video',
+        name: 'clip.mp4',
+        status: 'ready',
+        mimeType: 'video/mp4',
+        bytes: FIXTURE_BYTES,
+        createdAt: 1,
+        updatedAt: 2,
+        provider: { kind: 'cos', ref: key },
+      },
+      context,
+    );
+    expect(client.signGetCalls).toHaveLength(1);
+
+    nowMs += 4 * 60 * 1000;
+    await provider.getPlayback(
+      {
+        id: 'res-playback',
+        kind: 'video',
+        name: 'clip.mp4',
+        status: 'ready',
+        mimeType: 'video/mp4',
+        bytes: FIXTURE_BYTES,
+        createdAt: 1,
+        updatedAt: 2,
+        provider: { kind: 'cos', ref: key },
+      },
+      context,
+    );
+    expect(client.signGetCalls).toHaveLength(2);
   });
 });
 
@@ -370,6 +431,18 @@ describe('createDefaultCosObjectClient', () => {
 
     expect(signedHeaders).toContain('content-type');
     expect(signedUrl).not.toContain('cos-secret-value');
+  });
+
+  test('overrides playback responses with a cache lifetime inside the signed URL TTL', async () => {
+    const realClient = createDefaultCosObjectClient(CONFIG);
+    const signedUrl = await realClient.signGet(
+      'videos/demo/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.mp4',
+      300,
+    );
+
+    expect(new URL(signedUrl).searchParams.get('response-cache-control')).toBe(
+      'private, max-age=240',
+    );
   });
 
   test('returns Content-Type in the upload instruction headers', async () => {

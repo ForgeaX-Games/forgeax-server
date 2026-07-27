@@ -70,7 +70,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isManagedVideoAsset(value: unknown): boolean {
   return (
     isRecord(value) &&
-    (value.kind === 'video' || value.kind === 'image') &&
+    (value.kind === 'video' || value.kind === 'image' || value.kind === 'audio') &&
     Object.hasOwn(value, 'provider')
   );
 }

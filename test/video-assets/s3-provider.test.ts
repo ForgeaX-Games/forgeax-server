@@ -54,6 +54,7 @@ class FakeS3Client implements S3ObjectClient {
 let client: FakeS3Client;
 let provider: ReturnType<typeof createS3VideoAssetProvider>;
 let context: VideoAssetRequestContext;
+let nowMs: number;
 
 async function expectKinoError(
   action: Promise<unknown>,
@@ -74,9 +75,11 @@ async function expectKinoError(
 
 beforeEach(() => {
   client = new FakeS3Client();
+  nowMs = 1_000;
   provider = createS3VideoAssetProvider(CONFIG, {
     client,
     randomUuid: () => FIXED_UUID,
+    now: () => nowMs,
   });
   context = {
     gameId: 'demo',
@@ -86,6 +89,31 @@ beforeEach(() => {
 });
 
 describe('S3VideoAssetProvider.prepareUpload', () => {
+  test('presigns audio uploads with an audio object key and content type', async () => {
+    const draft = await provider.prepareUpload(
+      {
+        uploadToken: 'unused-token',
+        fileName: 'battle-theme.m4a',
+        mediaType: 'audio',
+        mimeType: 'audio/mp4',
+        bytes: FIXTURE_BYTES,
+      },
+      context,
+    );
+
+    expect(draft.state).toEqual({
+      ref: `uploads/demo/${FIXED_UUID}.m4a`,
+      bytes: FIXTURE_BYTES,
+      mediaType: 'audio',
+      mimeType: 'audio/mp4',
+    });
+    expect(client.signPutCalls[0]).toEqual({
+      key: `uploads/demo/${FIXED_UUID}.m4a`,
+      mimeType: 'audio/mp4',
+      expiresIn: 600,
+    });
+  });
+
   test('presigns image uploads with an image object key and content type', async () => {
     const draft = await provider.prepareUpload(
       {
@@ -210,7 +238,7 @@ describe('S3VideoAssetProvider.finalizeResource', () => {
 });
 
 describe('S3VideoAssetProvider.getPlayback', () => {
-  test('returns a five-minute presigned GET redirect URL', async () => {
+  test('reuses a presigned GET URL until the one-minute safety window', async () => {
     const key = 'uploads/demo/cccccccc-cccc-4ccc-8ccc-cccccccccccc.mp4';
     const playback = await provider.getPlayback(
       {
@@ -232,6 +260,39 @@ describe('S3VideoAssetProvider.getPlayback', () => {
       url: 'https://s3.example.test/uploads/demo/cccccccc-cccc-4ccc-8ccc-cccccccccccc.mp4?get=1',
     });
     expect(client.signGetCalls).toEqual([{ key, expiresIn: 300 }]);
+
+    await provider.getPlayback(
+      {
+        id: 'res-playback',
+        kind: 'video',
+        name: 'clip.mp4',
+        status: 'ready',
+        mimeType: 'video/mp4',
+        bytes: FIXTURE_BYTES,
+        createdAt: 1,
+        updatedAt: 2,
+        provider: { kind: 's3', ref: key },
+      },
+      context,
+    );
+    expect(client.signGetCalls).toHaveLength(1);
+
+    nowMs += 4 * 60 * 1000;
+    await provider.getPlayback(
+      {
+        id: 'res-playback',
+        kind: 'video',
+        name: 'clip.mp4',
+        status: 'ready',
+        mimeType: 'video/mp4',
+        bytes: FIXTURE_BYTES,
+        createdAt: 1,
+        updatedAt: 2,
+        provider: { kind: 's3', ref: key },
+      },
+      context,
+    );
+    expect(client.signGetCalls).toHaveLength(2);
   });
 
   test('rejects unsafe provider refs', async () => {
@@ -310,5 +371,17 @@ describe('createDefaultS3ObjectClient', () => {
     expect(signedHeaders).toContain('content-type');
     expect(parsed.searchParams.get('X-Amz-Expires')).toBe('600');
     expect(signedUrl).not.toContain('super-secret-value');
+  });
+
+  test('overrides playback responses with a cache lifetime inside the signed URL TTL', async () => {
+    const realClient = createDefaultS3ObjectClient(CONFIG);
+    const signedUrl = await realClient.signGet(
+      'uploads/demo/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.mp4',
+      300,
+    );
+
+    expect(new URL(signedUrl).searchParams.get('response-cache-control')).toBe(
+      'private, max-age=240',
+    );
   });
 });

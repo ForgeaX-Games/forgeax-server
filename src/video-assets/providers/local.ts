@@ -7,7 +7,7 @@ import {
   rmSync,
   statSync,
 } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type {
   ProviderPrepareUploadInput,
@@ -24,18 +24,20 @@ import {
   assertUploadSize,
   extensionForMime,
   maxUploadBytes,
+  mediaTypeForMime,
   type SupportedUploadMime,
 } from '../media-policy';
 
 const PREPARE_TTL_MS = 10 * 60 * 1000;
-const LOCAL_BLOB_REF_RE = /^blobs\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:mp4|png|jpe?g|webp|gif)$/;
+const LOCAL_BLOB_REF_RE =
+  /^blobs\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:mp4|png|jpe?g|webp|gif|mp3|wav|ogg|m4a|aac)$/;
 const TEMP_UPLOAD_REF_RE =
   /^\.uploads\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.part$/i;
 
 interface LocalUploadState {
   ref: string;
   bytes: number;
-  mediaType: 'image' | 'video';
+  mediaType: 'audio' | 'image' | 'video';
   mimeType: SupportedUploadMime;
 }
 
@@ -78,7 +80,7 @@ function parseUploadState(state: Record<string, unknown>): LocalUploadState {
     throw new KinoApiError('Invalid upload session', 400, 'invalid_upload_session');
   }
   const mediaType = state.mediaType ?? (mimeType === 'video/mp4' ? 'video' : undefined);
-  if (mediaType !== 'image' && mediaType !== 'video') {
+  if (mediaType !== 'audio' && mediaType !== 'image' && mediaType !== 'video') {
     throw new KinoApiError('Invalid upload session', 400, 'invalid_upload_session');
   }
   assertUploadMime(mediaType, mimeType);
@@ -203,6 +205,13 @@ async function streamToPartFile(
   }
 }
 
+function localPlaybackEtag(ref: string, bytes: number, mtimeMs: number): string {
+  const fingerprint = createHash('sha256')
+    .update(`${ref}\0${bytes}\0${mtimeMs}`)
+    .digest('base64url');
+  return `W/"${fingerprint}"`;
+}
+
 function blobSize(path: string): number {
   return statSync(path).size;
 }
@@ -217,7 +226,7 @@ export function createLocalVideoAssetProvider(
       createWriteStream(path, { flags: 'wx' }) as LocalUploadWriter);
   return {
     kind: 'local',
-    supportedMediaTypes: ['video', 'image'],
+    supportedMediaTypes: ['video', 'image', 'audio'],
 
     async prepareUpload(input: ProviderPrepareUploadInput, context: VideoAssetRequestContext) {
       assetsDirFor(context, getProjectRoot);
@@ -235,9 +244,7 @@ export function createLocalVideoAssetProvider(
         state: {
           ref: `.uploads/${input.uploadToken}.part`,
           bytes: input.bytes,
-          ...(input.mimeType === 'video/mp4'
-            ? {}
-            : { mediaType: input.mediaType ?? 'image' }),
+          ...(input.mimeType === 'video/mp4' ? {} : { mediaType: input.mediaType }),
           mimeType: input.mimeType,
         },
       };
@@ -286,7 +293,7 @@ export function createLocalVideoAssetProvider(
       const upload = parseUploadState({
         ref: object.ref,
         bytes: object.bytes,
-        mediaType: object.mimeType === 'video/mp4' ? 'video' : 'image',
+        mediaType: mediaTypeForMime(object.mimeType) ?? undefined,
         mimeType: object.mimeType,
       });
       const assetsDir = assetsDirFor(context, getProjectRoot);
@@ -352,12 +359,15 @@ export function createLocalVideoAssetProvider(
         throw new KinoApiError('Resource content not found', 404, 'resource_content_not_found');
       }
 
-      const bytes = blobSize(filePath);
+      const stat = statSync(filePath);
+      const bytes = stat.size;
       return {
         kind: 'local',
         filePath,
         mimeType: asset.mimeType,
         bytes,
+        etag: localPlaybackEtag(asset.provider.ref, bytes, stat.mtimeMs),
+        lastModified: stat.mtime.toUTCString(),
       };
     },
 

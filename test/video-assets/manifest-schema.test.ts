@@ -32,6 +32,24 @@ function validManifest(): Record<string, unknown> {
 }
 
 describe('shared video asset manifest schema', () => {
+  test('accepts an audio asset with a MIME-derived local blob ref', () => {
+    const input = validManifest();
+    const assets = input.assets as Array<Record<string, unknown>>;
+    assets[0] = {
+      ...assets[0],
+      kind: 'audio',
+      name: 'battle-theme.mp3',
+      mimeType: 'audio/mpeg',
+      provider: { kind: 'local', ref: 'blobs/battle-theme.mp3' },
+    };
+
+    expect(validateAndCloneVideoAssetManifest(input).assets[0]).toMatchObject({
+      kind: 'audio',
+      mimeType: 'audio/mpeg',
+      provider: { kind: 'local', ref: 'blobs/battle-theme.mp3' },
+    });
+  });
+
   test('returns a deep clone and accepts zero duration', () => {
     const input = validManifest();
     const validated = validateAndCloneVideoAssetManifest(input);

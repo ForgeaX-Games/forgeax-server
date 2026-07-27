@@ -102,6 +102,28 @@ afterEach(() => {
 });
 
 describe('LocalVideoAssetProvider.prepareUpload', () => {
+  test('preserves audio media type in upload state', async () => {
+    const token = '10101010-1010-4010-8010-101010101010';
+    const draft = await provider.prepareUpload(
+      {
+        uploadToken: token,
+        fileName: 'battle-theme.mp3',
+        mediaType: 'audio',
+        mimeType: 'audio/mpeg',
+        bytes: FIXTURE.byteLength,
+      },
+      context,
+    );
+
+    expect(draft.instruction.headers['content-type']).toBe('audio/mpeg');
+    expect(draft.state).toEqual({
+      ref: `.uploads/${token}.part`,
+      bytes: FIXTURE.byteLength,
+      mediaType: 'audio',
+      mimeType: 'audio/mpeg',
+    });
+  });
+
   test('returns same-origin PUT instruction with mp4 content-type and ten-minute expiry', async () => {
     const token = '11111111-1111-4111-8111-111111111111';
     const now = Date.now();
@@ -277,6 +299,30 @@ describe('LocalVideoAssetProvider.inspectUpload', () => {
 });
 
 describe('LocalVideoAssetProvider.finalizeResource', () => {
+  test('stores audio uploads with their MIME-derived extension', async () => {
+    const token = '50505050-5050-4050-8050-505050505050';
+    const { state } = await provider.prepareUpload(
+      {
+        uploadToken: token,
+        fileName: 'battle-theme.mp3',
+        mediaType: 'audio',
+        mimeType: 'audio/mpeg',
+        bytes: FIXTURE.byteLength,
+      },
+      context,
+    );
+    await provider.receiveUpload!(state, streamFrom(FIXTURE), context);
+    const uploaded = await provider.inspectUpload(state, context);
+
+    await expect(
+      provider.finalizeResource(
+        uploaded,
+        { resourceId: 'audio-finalize', name: 'battle-theme.mp3' },
+        context,
+      ),
+    ).resolves.toEqual({ kind: 'local', ref: 'blobs/audio-finalize.mp3' });
+  });
+
   test('stores image uploads with their MIME-derived extension', async () => {
     const token = '55555555-5555-4555-8555-555555555555';
     const { state } = await provider.prepareUpload(
@@ -433,6 +479,8 @@ describe('LocalVideoAssetProvider.getPlayback', () => {
       filePath: blobPath,
       mimeType: 'video/mp4',
       bytes: FIXTURE.byteLength,
+      etag: expect.stringMatching(/^W\/"[A-Za-z0-9_-]+"$/),
+      lastModified: expect.any(String),
     });
 
     const rangeSlice = readFileSync(blobPath).subarray(2, 5);

@@ -75,7 +75,14 @@ export interface UploadedObject {
 }
 
 export type PlaybackSource =
-  | { kind: 'local'; filePath: string; mimeType: string; bytes: number }
+  | {
+      kind: 'local';
+      filePath: string;
+      mimeType: string;
+      bytes: number;
+      etag: string;
+      lastModified: string;
+    }
   | { kind: 'redirect'; url: string };
 
 export interface UpstreamVideoResource {

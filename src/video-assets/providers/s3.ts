@@ -26,9 +26,12 @@ import {
   extensionForMime,
   type SupportedUploadMime,
 } from '../media-policy';
+import { createExpiringUrlCache } from './signed-url-cache';
 
 const PREPARE_TTL_SECONDS = 10 * 60;
 const PLAYBACK_TTL_SECONDS = 5 * 60;
+const PLAYBACK_CACHE_TTL_SECONDS = PLAYBACK_TTL_SECONDS - 60;
+const PLAYBACK_RESPONSE_CACHE_CONTROL = `private, max-age=${PLAYBACK_CACHE_TTL_SECONDS}`;
 const PREPARE_TTL_MS = PREPARE_TTL_SECONDS * 1000;
 
 export interface S3ObjectClient {
@@ -41,7 +44,7 @@ export interface S3ObjectClient {
 interface CloudUploadState {
   ref: string;
   bytes: number;
-  mediaType: 'image' | 'video';
+  mediaType: 'audio' | 'image' | 'video';
   mimeType: SupportedUploadMime;
 }
 
@@ -53,6 +56,7 @@ export interface CreateDefaultS3ObjectClientOptions {
 export interface S3VideoAssetProviderOptions {
   client?: S3ObjectClient;
   randomUuid?: () => string;
+  now?: () => number;
   createClient?: (config: S3VideoStorageConfig) => S3ObjectClient;
 }
 
@@ -89,7 +93,7 @@ function parseUploadState(
   assertScopedProviderRef(ref, gameId, prefix);
 
   const mediaType = state.mediaType ?? (mimeType === 'video/mp4' ? 'video' : undefined);
-  if (mediaType !== 'image' && mediaType !== 'video') {
+  if (mediaType !== 'audio' && mediaType !== 'image' && mediaType !== 'video') {
     throw new KinoApiError('Invalid upload session', 400, 'invalid_upload_session');
   }
   assertUploadMime(mediaType, mimeType);
@@ -147,6 +151,7 @@ export function createDefaultS3ObjectClient(
       const command = new GetObjectCommand({
         Bucket: config.bucket,
         Key: key,
+        ResponseCacheControl: PLAYBACK_RESPONSE_CACHE_CONTROL,
       });
       return sign(client, command, { expiresIn });
     },
@@ -182,10 +187,14 @@ export function createS3VideoAssetProvider(
 ): VideoAssetProvider {
   const client = options.client ?? options.createClient?.(config) ?? createDefaultS3ObjectClient(config);
   const randomUuid = options.randomUuid ?? randomUUID;
+  const playbackUrls = createExpiringUrlCache(
+    PLAYBACK_CACHE_TTL_SECONDS * 1000,
+    options.now,
+  );
 
   return {
     kind: 's3',
-    supportedMediaTypes: ['video', 'image'],
+    supportedMediaTypes: ['video', 'image', 'audio'],
 
     async prepareUpload(input: ProviderPrepareUploadInput, context: VideoAssetRequestContext) {
       const key = buildMediaObjectKey(
@@ -209,9 +218,7 @@ export function createS3VideoAssetProvider(
         state: {
           ref: key,
           bytes: input.bytes,
-          ...(input.mimeType === 'video/mp4'
-            ? {}
-            : { mediaType: input.mediaType ?? 'image' }),
+          ...(input.mimeType === 'video/mp4' ? {} : { mediaType: input.mediaType }),
           mimeType: input.mimeType,
         },
       };
@@ -250,12 +257,16 @@ export function createS3VideoAssetProvider(
 
     async getPlayback(asset, context) {
       assertScopedProviderRef(asset.provider.ref, context.gameId, config.prefix);
-      const url = await client.signGet(asset.provider.ref, PLAYBACK_TTL_SECONDS);
+      const url = await playbackUrls.get(
+        asset.provider.ref,
+        () => client.signGet(asset.provider.ref, PLAYBACK_TTL_SECONDS),
+      );
       return { kind: 'redirect', url };
     },
 
     async delete(asset, context) {
       assertScopedProviderRef(asset.provider.ref, context.gameId, config.prefix);
+      playbackUrls.delete(asset.provider.ref);
       await bestEffortDelete(client, asset.provider.ref);
     },
   };

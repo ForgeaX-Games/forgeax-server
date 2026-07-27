@@ -283,6 +283,29 @@ afterEach(() => {
 });
 
 describe('VideoAssetService validation', () => {
+  test('rejects audio when the Kino provider advertises audio capability', async () => {
+    registry.control.setProvider({
+      ...fakeProvider,
+      kind: 'kino',
+      supportedMediaTypes: ['video', 'image', 'audio'],
+    });
+
+    await expectKinoError(
+      service.prepareUpload(
+        {
+          fileName: 'battle-theme.mp3',
+          mediaType: 'audio',
+          mimeType: 'audio/mpeg',
+          bytes: FIXTURE.byteLength,
+        },
+        request,
+      ),
+      400,
+      'unsupported_provider_media_type',
+    );
+    expect(fakeProvider.prepareCalls).toBe(0);
+  });
+
   test('treats providers without image capability as video-only', async () => {
     await expectKinoError(
       service.prepareUpload(
@@ -386,6 +409,8 @@ describe('VideoAssetService.playResource', () => {
       filePath: resolve(assetsDir, 'blobs/zero-source.mp4'),
       mimeType: 'video/mp4',
       bytes: 0,
+      etag: 'W/"zero"',
+      lastModified: new Date(0).toUTCString(),
     });
 
     await expectKinoError(

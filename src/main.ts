@@ -63,6 +63,9 @@ import {
 } from './game/ui-asset-cleanup';
 import { activateServerModules } from './composition-host';
 import { createVideoAssetRuntime } from './video-assets/index';
+import { mountRuntimeCarrierApi } from './runtime-carrier/api';
+import { createRuntimeCarrierSupervisor } from './runtime-carrier/supervisor';
+import { createPlaywrightCarrierHost } from './runtime-carrier/playwright-host';
 
 // ──────────────────────────────────────────────────────────────────────────
 // FaultBoundary — top-level process-wide exception backstop (perf-analysis-2
@@ -220,6 +223,9 @@ if (process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core') {
 // WS、Bun.serve、文件 watcher。这是"产品层初始化并注入编排层"的落点;换产品 = 换这层注入。
 const shimEnv = process.env as Record<string, string | undefined>;
 const videoAssets = createVideoAssetRuntime({ getProjectRoot: defaultProjectRoot });
+const runtimeCarrierSupervisor = createRuntimeCarrierSupervisor({
+  host: createPlaywrightCarrierHost(),
+});
 const { app } = await createForgeaxApp({
   projectRoot,
   version: VERSION,
@@ -281,6 +287,10 @@ await activateServerModules({
     videoAssets: videoAssets.providerControl,
   },
 });
+
+// W1-L1 runtime carrier surface. The supervisor owns only a future revealable
+// :18920 carrier; the existing :15173 preview proxy remains unmanaged.
+mountRuntimeCarrierApi(app, runtimeCarrierSupervisor);
 
 // projectRoot 必须每请求实时读 defaultProjectRoot():POST /api/workspaces/activate
 // 热切换只改 process.env.FORGEAX_PROJECT_ROOT,启动时固化的 const projectRoot 不会跟。
