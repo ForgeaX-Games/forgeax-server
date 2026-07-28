@@ -10,9 +10,9 @@
 // knowledge of "which extension, which source path" lives here in the product
 // shell (which already owns extension paths via `mp`).
 
-import { existsSync, mkdirSync, readdirSync, statSync, copyFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, copyFileSync, rmSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { mp } from '@forgeax/platform-io';
+import { mp, assetRoot } from '@forgeax/platform-io';
 
 function copyDirExcludingTests(src: string, dest: string): void {
   mkdirSync(dest, { recursive: true });
@@ -50,4 +50,29 @@ export async function gameHostBeforeVersion(args: {
   const dest = resolve(args.gameDir, 'components');
   if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
   copyDirExcludingTests(src, dest);
+}
+
+/** Load the bundled nodia sample without copying its records into the host. */
+export async function gameHostSeedProvider(args: { slug: string }): Promise<{
+  project: Record<string, unknown>;
+  blueprint: unknown;
+  assetsManifest: unknown;
+}> {
+  const root = resolve(assetRoot(), 'games', 'game-nodia-fighting');
+  const blueprintPath = resolve(root, 'blueprint.json');
+  const manifestPath = resolve(root, 'assets', 'manifest.json');
+  if (!existsSync(blueprintPath) || !existsSync(manifestPath)) {
+    throw new Error('canonical game-nodia-fighting sample is missing');
+  }
+  return {
+    project: {
+      id: args.slug,
+      title: args.slug,
+      platform: 'wb-game-video',
+      platformVersion: '1',
+      entry: { blueprint: 'blueprint.json', components: 'dist/components' },
+    },
+    blueprint: JSON.parse(readFileSync(blueprintPath, 'utf-8')),
+    assetsManifest: JSON.parse(readFileSync(manifestPath, 'utf-8')),
+  };
 }

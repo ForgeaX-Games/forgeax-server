@@ -49,7 +49,7 @@ import {
 import { createCeApiShimRouter } from './game/ce-api-shim';
 import { GameSystemPromptComposer } from './game/system-prompt-composer';
 import { studioHostTools } from './game/host-tools';
-import { gameHostBeforeVersion } from './game/game-host-hooks';
+import { gameHostBeforeVersion, gameHostSeedProvider } from './game/game-host-hooks';
 // 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
 import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from './kernel/telemetry-file-sink';
@@ -284,6 +284,7 @@ const { app } = await createForgeaxApp({
   // game-host 打版本前置钩子:wb-game-video 游戏把平台组件集同步进游戏仓(随版本携带)。
   // 通用 game-host(platform-io) 只调钩子,具体拷贝知识留产品壳(见 game/game-host-hooks.ts)。
   gameHostBeforeVersion,
+  gameHostSeedProvider,
 });
 
 await activateServerModules({
