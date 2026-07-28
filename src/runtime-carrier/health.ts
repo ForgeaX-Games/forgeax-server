@@ -21,6 +21,7 @@ export interface CarrierHealthFailure {
 
 export interface CarrierHealthObservation {
   readonly runtimeId: string | null;
+  readonly challengeResponse: string | null;
   readonly confirmedScope: RuntimeScope | null;
   readonly pageNonce: string;
   readonly pageIdentity: string;
@@ -54,6 +55,9 @@ export function parseCarrierHealthMessage(value: unknown): CarrierHealthObservat
 
   const payload = value.payload;
   const runtimeId = payload.runtimeId === null ? null : nonEmptyString(payload.runtimeId);
+  const challengeResponse = payload.challengeResponse === null || payload.challengeResponse === undefined
+    ? null
+    : nonEmptyString(payload.challengeResponse) ?? null;
   const pageNonce = nonEmptyString(payload.pageNonce);
   const pageIdentity = nonEmptyString(payload.pageIdentity);
   const canvasIdentity = nonEmptyString(payload.canvasIdentity);
@@ -61,7 +65,7 @@ export function parseCarrierHealthMessage(value: unknown): CarrierHealthObservat
   const sentinel = payload.sentinel;
   const liveness = payload.liveness;
   const renderReadiness = payload.renderReadiness;
-  if (runtimeId === undefined || !pageNonce || !pageIdentity || !canvasIdentity || !rendererIdentity) return null;
+  if (runtimeId === undefined || (payload.challengeResponse !== null && payload.challengeResponse !== undefined && !challengeResponse) || !pageNonce || !pageIdentity || !canvasIdentity || !rendererIdentity) return null;
   if (typeof sentinel !== 'number' || !Number.isInteger(sentinel) || sentinel < 0) return null;
   if (typeof liveness !== 'string' || !LIVENESS.has(liveness)) return null;
   if (typeof renderReadiness !== 'string' || !READINESS.has(renderReadiness)) return null;
@@ -75,6 +79,7 @@ export function parseCarrierHealthMessage(value: unknown): CarrierHealthObservat
 
   return {
     runtimeId,
+    challengeResponse,
     confirmedScope,
     pageNonce,
     pageIdentity,

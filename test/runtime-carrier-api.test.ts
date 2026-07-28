@@ -14,7 +14,14 @@ const host: CarrierHost = {
   supportsReveal: true,
   async start(input): Promise<CarrierHostHandle> {
     return {
+      runtimeId: input.runtimeId,
+      challengeResponse: input.ownerToken,
       confirmedScope: input.scope,
+      pageNonce: 'page-a',
+      pageIdentity: 'http://localhost:18920/preview/',
+      canvasIdentity: 'canvas-a',
+      rendererIdentity: 'renderer-a',
+      sentinel: 0,
       reveal: async () => {},
       stop: async () => {},
     };
@@ -37,8 +44,15 @@ test('server surface exposes only ensure, status, reveal, and stop projections',
   });
   const ensured = await json(ensuredResponse);
   expect(ensuredResponse.status).toBe(200);
-  expect(ensured).toMatchObject({ ok: true, action: 'ensure', lifecycle: 'running' });
+  expect(ensured).toMatchObject({ ok: true, action: 'ensure', lifecycle: 'starting' });
   const runtimeId = ensured.runtimeId as string;
+
+  for (let i = 0; i < 20; i++) {
+    const status = await app.request(`/api/runtime-carrier/status/${runtimeId}`);
+    const body = await json(status);
+    if (body.lifecycle === 'running') break;
+    await Bun.sleep(10);
+  }
 
   const statusResponse = await app.request(`/api/runtime-carrier/status/${runtimeId}`);
   expect(statusResponse.status).toBe(200);

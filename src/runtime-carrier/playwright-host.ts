@@ -15,19 +15,20 @@ export interface PlaywrightCarrierHostOptions {
   readonly baseUrl?: string;
   readonly timeoutMs?: number;
   readonly executablePath?: string;
+  readonly resolveScope?: () => RuntimeScope | Promise<RuntimeScope>;
 }
 
 interface CarrierEventWindow {
-  __forgeaxCarrierEvents?: unknown[];
+  __forgeaxCarrierLatest?: unknown;
   addEventListener: (type: string, listener: (event: { source: unknown; data: unknown }) => void) => void;
   focus: () => void;
 }
 
 const installCarrierEventBuffer = (): void => {
   const target = globalThis as unknown as CarrierEventWindow;
-  target.__forgeaxCarrierEvents = [];
+  target.__forgeaxCarrierLatest = undefined;
   target.addEventListener('message', (event) => {
-    if (event.source === target) target.__forgeaxCarrierEvents?.push(event.data);
+    if (event.source === target) target.__forgeaxCarrierLatest = event.data;
   });
 };
 
@@ -37,6 +38,8 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
   let context: BrowserContext | null = null;
   let page: Page | null = null;
   let userDataDir: string | null = null;
+  let navigationCount = 0;
+  let initialNavigationCount = 0;
 
   return {
     supportsReveal: true,
@@ -51,19 +54,26 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
           args: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding'],
         });
         page = context.pages()[0] ?? await context.newPage();
+        page.on('framenavigated', (frame) => {
+          if (frame === page?.mainFrame()) navigationCount++;
+        });
         await context.addInitScript(installCarrierEventBuffer);
-        await page.goto(carrierUrl(baseUrl, input.runtimeId, input.scope), {
+        const actualScope = options.resolveScope ? await options.resolveScope() : input.scope;
+        await page.goto(carrierUrl(baseUrl, input.runtimeId, actualScope, input.ownerToken), {
           waitUntil: 'domcontentloaded',
           timeout: timeoutMs,
         });
         if (input.signal.aborted) throw new Error('Carrier startup was cancelled.');
         await page.waitForFunction(() => {
-          const events = (globalThis as unknown as CarrierEventWindow).__forgeaxCarrierEvents ?? [];
-          return events.some((event) => (event as { type?: unknown } | null)?.type === 'VAG_CARRIER_HANDSHAKE');
+          const latest = (globalThis as unknown as CarrierEventWindow).__forgeaxCarrierLatest;
+          return (latest as { type?: unknown } | null)?.type === 'VAG_CARRIER_HANDSHAKE';
         }, { timeout: timeoutMs });
         const observation = await readObservation(page, timeoutMs);
         if (!observation) throw new Error('Managed page did not provide a valid carrier handshake.');
+        initialNavigationCount = navigationCount;
         return {
+          runtimeId: observation.runtimeId,
+          challengeResponse: observation.challengeResponse,
           ...toHostObservation(observation),
           reveal: async () => {
             if (!page || page.isClosed()) throw new Error('Managed carrier page is closed.');
@@ -72,6 +82,28 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
           },
           stop: async () => { await closeHost(); },
           observe: async () => {
+            if (navigationCount > initialNavigationCount) {
+              return {
+                runtimeId: input.runtimeId,
+                challengeResponse: input.ownerToken,
+                confirmedScope: null,
+                liveness: 'terminated',
+                renderReadiness: 'unavailable',
+                pageNonce: `reloaded-${navigationCount}`,
+                pageIdentity: page?.url() ?? 'unknown',
+                canvasIdentity: 'reloaded',
+                rendererIdentity: 'reloaded',
+                lastFailure: {
+                  code: 'PAGE_RELOADED',
+                  stage: 'status',
+                  retryable: true,
+                  hint: 'Stop the old runtime and ensure again to establish a new page identity.',
+                  at: new Date().toISOString(),
+                  message: 'The managed carrier page was reloaded.',
+                  runtimeId: input.runtimeId,
+                },
+              };
+            }
             const next = await readObservation(page, timeoutMs);
             return next ? toHostObservation(next) : unreachableObservation();
           },
@@ -85,31 +117,33 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
 
   async function closeHost(): Promise<void> {
     const activeContext = context;
-    context = null;
-    page = null;
-    if (activeContext) await activeContext.close().catch(() => undefined);
+    if (activeContext) {
+      await activeContext.close();
+      context = null;
+      page = null;
+    }
     const dir = userDataDir;
-    userDataDir = null;
-    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    if (dir) {
+      await rm(dir, { recursive: true, force: true });
+      userDataDir = null;
+    }
   }
 }
 
-function carrierUrl(baseUrl: string, runtimeId: string, scope: RuntimeScope): string {
+function carrierUrl(baseUrl: string, runtimeId: string, scope: RuntimeScope, ownerToken: string): string {
   const params = new URLSearchParams({
     game: scope.gameId ?? '_template',
     runtimeId,
-    projectId: scope.projectId,
+    ownershipChallenge: ownerToken,
   });
   return `${baseUrl}/preview/?${params.toString()}`;
 }
 
 async function readObservation(page: Page | null, timeoutMs: number): Promise<CarrierHealthObservation | null> {
   if (!page || page.isClosed()) return null;
-  const events = await page.evaluate(() => (globalThis as unknown as CarrierEventWindow).__forgeaxCarrierEvents ?? []) as unknown[];
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const parsed = parseCarrierHealthMessage(events[index]);
-    if (parsed) return parsed;
-  }
+  const latest = await page.evaluate(() => (globalThis as unknown as CarrierEventWindow).__forgeaxCarrierLatest);
+  const parsed = parseCarrierHealthMessage(latest);
+  if (parsed) return parsed;
   await page.waitForTimeout(Math.min(100, timeoutMs));
   return null;
 }
@@ -120,6 +154,8 @@ function unreachableObservation(): CarrierHostObservation {
 
 function toHostObservation(observation: CarrierHealthObservation): CarrierHostObservation {
   return {
+    runtimeId: observation.runtimeId,
+    challengeResponse: observation.challengeResponse,
     confirmedScope: observation.confirmedScope,
     liveness: observation.liveness,
     renderReadiness: observation.renderReadiness,

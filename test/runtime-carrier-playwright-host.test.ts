@@ -6,10 +6,13 @@ const scope = { projectId: 'project-smoke', gameId: 'game-smoke' };
 
 test('headed host reveals the original page while preserving current surface identity', async () => {
   const html = `<!doctype html><canvas id="canvas-smoke"></canvas><script>
+    const params = new URLSearchParams(location.search);
+    const runtimeId = params.get('runtimeId');
+    const challengeResponse = params.get('ownershipChallenge');
     const scope = { projectId: 'project-smoke', gameId: 'game-smoke' };
     let sentinel = 0;
     const payload = () => ({
-      version: 1, runtimeId: 'runtime-smoke', scope, pageNonce: 'page-smoke',
+      version: 1, runtimeId, challengeResponse, scope, pageNonce: 'page-smoke',
       pageIdentity: location.origin + location.pathname, canvasIdentity: 'canvas-smoke',
       rendererIdentity: 'renderer-smoke', sentinel: sentinel++, liveness: 'alive',
       renderReadiness: 'ready', failure: null,
@@ -27,8 +30,14 @@ test('headed host reveals the original page while preserving current surface ide
 
   try {
     const ensured = await supervisor.ensure(scope);
-    expect(ensured).toMatchObject({ ok: true, lifecycle: 'running', renderReadiness: 'ready' });
+    expect(ensured).toMatchObject({ ok: true, lifecycle: 'starting' });
     if (!ensured.ok) throw new Error('headed carrier did not start');
+    let running = await supervisor.status(ensured.runtimeId);
+    for (let i = 0; i < 40 && (running.ok && running.lifecycle === 'starting'); i++) {
+      await Bun.sleep(25);
+      running = await supervisor.status(ensured.runtimeId);
+    }
+    expect(running).toMatchObject({ ok: true, lifecycle: 'running', renderReadiness: 'ready' });
     await Bun.sleep(250);
     const beforeReveal = await supervisor.status(ensured.runtimeId);
     const revealed = await supervisor.reveal(ensured.runtimeId);

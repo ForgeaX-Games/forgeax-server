@@ -51,6 +51,7 @@ const unsupportedHost: CarrierHost = {
 
 interface SupervisorOptions {
   readonly host?: CarrierHost;
+  readonly healthStaleMs?: number;
 }
 
 interface ActiveRuntime {
@@ -76,7 +77,7 @@ interface ActiveRuntime {
 
 export class RuntimeCarrierSupervisor {
   readonly #host: CarrierHost;
-  readonly #ownerToken = crypto.randomUUID();
+  readonly #healthStaleMs: number;
   readonly #terminals = new Map<string, RuntimeSnapshot>();
   #active: ActiveRuntime | null = null;
   #queue: Promise<void> = Promise.resolve();
@@ -84,6 +85,7 @@ export class RuntimeCarrierSupervisor {
 
   constructor(options: SupervisorOptions = {}) {
     this.#host = options.host ?? unsupportedHost;
+    this.#healthStaleMs = options.healthStaleMs ?? 1_500;
   }
 
   ensure(scope: RuntimeScope): Promise<EnsureResult> {
@@ -146,6 +148,14 @@ export class RuntimeCarrierSupervisor {
           retryable: false,
           hint: 'Report health against the runtimeId assigned to this page.',
           message: 'The health message belongs to a different runtime.',
+          runtimeId,
+        });
+      }
+      if (observation.challengeResponse !== null && observation.challengeResponse !== current.ownerToken) {
+        return this.#failure('status', 'HANDSHAKE_OWNERSHIP_MISMATCH', {
+          retryable: false,
+          hint: 'Report health only from the page that completed this runtime start.',
+          message: 'The health message failed the runtime ownership challenge.',
           runtimeId,
         });
       }
@@ -245,14 +255,14 @@ export class RuntimeCarrierSupervisor {
     return this.#active ? this.#snapshot(this.#active) : null;
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(): Promise<StopResult | null> {
     this.#shuttingDown = true;
     const active = this.#active;
-    if (!active) return;
+    if (!active) return null;
     active.stopRequested = true;
     active.lifecycle = 'stopping';
     active.abortController.abort();
-    await this.#enqueue(() => this.#finishStop(active));
+    return await this.#enqueue(() => this.#finishStop(active));
   }
 
   async #ensureSerialized(scope: RuntimeScope): Promise<EnsureResult> {
@@ -306,7 +316,7 @@ export class RuntimeCarrierSupervisor {
     const created: ActiveRuntime = {
       runtimeId: crypto.randomUUID(),
       requestedScope: { ...scope },
-      ownerToken: this.#ownerToken,
+      ownerToken: crypto.randomUUID(),
       abortController: new AbortController(),
       lifecycle: 'starting',
       liveness: 'alive',
@@ -317,7 +327,10 @@ export class RuntimeCarrierSupervisor {
     };
     this.#active = created;
     created.startPromise = this.#start(created);
-    return created.startPromise;
+    // The identity is allocated before the headed host handshake completes.
+    // Callers can immediately status/stop this starting runtime; the later
+    // handshake either promotes it to running or records a terminal failure.
+    return Promise.resolve(this.#success('ensure', this.#snapshot(created)));
   }
 
   async #start(active: ActiveRuntime): Promise<EnsureResult> {
@@ -330,6 +343,12 @@ export class RuntimeCarrierSupervisor {
         signal: active.abortController.signal,
       });
       active.host = handle;
+      if (handle.runtimeId !== active.runtimeId) {
+        return await this.#failedStart(active, 'HANDSHAKE_RUNTIME_MISMATCH', 'The managed page did not prove the allocated runtime identity.', 'The page handshake runtimeId does not match the supervisor allocation.');
+      }
+      if (handle.challengeResponse !== active.ownerToken) {
+        return await this.#failedStart(active, 'HANDSHAKE_OWNERSHIP_MISMATCH', 'Stop the unmanaged page and ensure again so the supervisor can establish ownership.', 'The page handshake did not prove ownership of this start attempt.');
+      }
       this.#applyObservation(active, handle);
       if (active.stopRequested) return this.#stopDuringStart(active);
       if (!active.confirmedScope) return await this.#failedStart(active, 'SCOPE_UNCONFIRMED', 'Wait for a valid page handshake, then retry ensure.');
@@ -360,6 +379,10 @@ export class RuntimeCarrierSupervisor {
 
   async #finishStop(active: ActiveRuntime): Promise<StopResult> {
     if (active.lifecycle === 'stopped') return this.#success('stop', this.#snapshot(active));
+    if (!active.host && active.startPromise) {
+      await active.startPromise;
+      if ((active as ActiveRuntime).lifecycle === 'stopped') return this.#success('stop', this.#snapshot(active));
+    }
     try {
       if (active.host) await active.host.stop();
       active.lifecycle = 'stopped';
@@ -379,13 +402,29 @@ export class RuntimeCarrierSupervisor {
         runtimeId: active.runtimeId,
       }));
       active.lifecycle = 'failed';
+      active.stopPromise = undefined;
       return { ok: false, action: 'stop', error: failure };
     }
   }
 
   async #stopDuringStart(active: ActiveRuntime, handle?: CarrierHostHandle): Promise<EnsureResult> {
     if (handle) {
-      try { await handle.stop(); } catch { /* stop result reports the managed terminal state */ }
+      try {
+        await handle.stop();
+      } catch (error) {
+        const failure = this.#recordFailure(active, runtimeFailure({
+          code: 'HOST_STOP_FAILED',
+          stage: 'stop',
+          retryable: true,
+          hint: 'Retry stop; the supervisor retains ownership until the host confirms exit.',
+          message: errorMessage(error),
+          runtimeId: active.runtimeId,
+        }));
+        active.lifecycle = 'failed';
+        active.liveness = 'unreachable';
+        active.renderReadiness = 'unavailable';
+        return { ok: false, action: 'ensure', error: failure };
+      }
     }
     active.lifecycle = 'stopped';
     active.liveness = 'terminated';
@@ -408,14 +447,31 @@ export class RuntimeCarrierSupervisor {
     };
   }
 
-  async #failedStart(active: ActiveRuntime, code: 'SCOPE_UNCONFIRMED' | 'SCOPE_MISMATCH', hint: string): Promise<EnsureResult> {
-    if (active.host) await active.host.stop().catch(() => undefined);
+  async #failedStart(active: ActiveRuntime, code: RuntimeFailure['code'], hint: string, message?: string): Promise<EnsureResult> {
+    if (active.host) {
+      try {
+        await active.host.stop();
+      } catch (error) {
+        const failure = this.#recordFailure(active, runtimeFailure({
+          code: 'HOST_STOP_FAILED',
+          stage: 'stop',
+          retryable: true,
+          hint: 'Retry stop; the supervisor retains ownership until the host confirms exit.',
+          message: errorMessage(error),
+          runtimeId: active.runtimeId,
+        }));
+        active.lifecycle = 'failed';
+        active.liveness = 'unreachable';
+        active.renderReadiness = 'unavailable';
+        return { ok: false, action: 'ensure', error: failure };
+      }
+    }
     const failure = this.#recordFailure(active, runtimeFailure({
       code,
       stage: 'ensure',
       retryable: true,
       hint,
-      message: code === 'SCOPE_UNCONFIRMED' ? 'The page did not confirm a scope.' : 'The page confirmed a different scope.',
+      message: message ?? (code === 'SCOPE_UNCONFIRMED' ? 'The page did not confirm a scope.' : 'The page confirmed a different scope.'),
       runtimeId: active.runtimeId,
       requestedScope: active.requestedScope,
       occupyingScope: active.confirmedScope,
@@ -430,7 +486,55 @@ export class RuntimeCarrierSupervisor {
   async #refresh(active: ActiveRuntime): Promise<void> {
     if (!active.host?.observe) return;
     try {
-      this.#applyObservation(active, await active.host.observe());
+      const observation = await active.host.observe();
+      if (observation.runtimeId !== undefined && observation.runtimeId !== active.runtimeId) {
+        await this.#retireForFailure(active, runtimeFailure({
+          code: 'HANDSHAKE_RUNTIME_MISMATCH',
+          stage: 'status',
+          retryable: true,
+          hint: 'Stop the old page and ensure again to establish a new runtime identity.',
+          message: 'The managed page reported a different runtimeId.',
+          runtimeId: active.runtimeId,
+        }));
+        return;
+      }
+      if (observation.challengeResponse !== undefined && observation.challengeResponse !== active.ownerToken) {
+        await this.#retireForFailure(active, runtimeFailure({
+          code: 'HANDSHAKE_OWNERSHIP_MISMATCH',
+          stage: 'status',
+          retryable: true,
+          hint: 'Stop the old page and ensure again so the supervisor can re-establish ownership.',
+          message: 'The managed page failed the ownership challenge.',
+          runtimeId: active.runtimeId,
+        }));
+        return;
+      }
+      if (observation.pageNonce && active.pageNonce && observation.pageNonce !== active.pageNonce) {
+        await this.#retireForFailure(active, runtimeFailure({
+          code: 'PAGE_RELOADED',
+          stage: 'status',
+          retryable: true,
+          hint: 'Stop the old runtime and ensure again to establish a new page identity.',
+          message: 'The managed carrier page was reloaded.',
+          runtimeId: active.runtimeId,
+        }));
+        return;
+      }
+      this.#applyObservation(active, observation);
+      const heartbeatAt = active.heartbeat?.at;
+      const heartbeatAge = heartbeatAt ? Date.now() - Date.parse(heartbeatAt) : Number.POSITIVE_INFINITY;
+      if (heartbeatAge > this.#healthStaleMs) {
+        active.liveness = 'unreachable';
+        active.renderReadiness = 'unavailable';
+        active.lastFailure = runtimeFailure({
+          code: 'HEALTH_STALE',
+          stage: 'heartbeat',
+          retryable: true,
+          hint: 'Check the managed page, then reveal or stop and ensure again.',
+          message: `No new carrier heartbeat has arrived for ${heartbeatAge}ms.`,
+          runtimeId: active.runtimeId,
+        });
+      }
     } catch (error) {
       this.#recordFailure(active, runtimeFailure({
         code: 'HOST_START_FAILED',
@@ -442,6 +546,29 @@ export class RuntimeCarrierSupervisor {
       }));
       active.liveness = 'unreachable';
       active.renderReadiness = 'unavailable';
+    }
+  }
+
+  async #retireForFailure(active: ActiveRuntime, failure: RuntimeFailure): Promise<void> {
+    this.#recordFailure(active, failure);
+    active.lifecycle = 'failed';
+    active.liveness = 'terminated';
+    active.renderReadiness = 'unavailable';
+    try {
+      if (active.host) await active.host.stop();
+      const snapshot = this.#snapshot(active);
+      this.#terminals.set(active.runtimeId, snapshot);
+      if (this.#active === active) this.#active = null;
+    } catch (error) {
+      active.liveness = 'unreachable';
+      this.#recordFailure(active, runtimeFailure({
+        code: 'HOST_STOP_FAILED',
+        stage: 'stop',
+        retryable: true,
+        hint: 'Retry stop; the supervisor retains ownership until the host confirms exit.',
+        message: errorMessage(error),
+        runtimeId: active.runtimeId,
+      }));
     }
   }
 
@@ -474,18 +601,43 @@ export class RuntimeCarrierSupervisor {
     if (observation.canvasIdentity) active.canvasIdentity = observation.canvasIdentity;
     if (observation.rendererIdentity) active.rendererIdentity = observation.rendererIdentity;
     if (observation.sentinel !== undefined) {
-      active.heartbeat = { sentinel: observation.sentinel, at: observation.at ?? new Date().toISOString() };
+      const previousSentinel = active.heartbeat?.sentinel;
+      if (previousSentinel === undefined || observation.sentinel > previousSentinel) {
+        active.heartbeat = { sentinel: observation.sentinel, at: new Date().toISOString() };
+      } else if (observation.sentinel < previousSentinel) {
+        active.lastFailure = runtimeFailure({
+          code: 'HEALTH_STALE',
+          stage: 'heartbeat',
+          retryable: true,
+          hint: 'The carrier heartbeat reset; stop and ensure again to establish a new page identity.',
+          message: 'The carrier heartbeat sentinel is not monotonic.',
+          runtimeId: active.runtimeId,
+        });
+        active.liveness = 'unreachable';
+        active.renderReadiness = 'unavailable';
+      }
     }
     if (observation.lastFailure) active.lastFailure = observation.lastFailure;
   }
 
   #applyHealth(active: ActiveRuntime, observation: CarrierHealthObservation): void {
-    this.#applyObservation(active, observation);
+    this.#applyObservation(active, {
+      runtimeId: observation.runtimeId,
+      challengeResponse: observation.challengeResponse,
+      confirmedScope: observation.confirmedScope,
+      liveness: observation.liveness,
+      renderReadiness: observation.renderReadiness,
+      pageNonce: observation.pageNonce,
+      pageIdentity: observation.pageIdentity,
+      canvasIdentity: observation.canvasIdentity,
+      rendererIdentity: observation.rendererIdentity,
+      sentinel: observation.sentinel,
+      lastFailure: observation.failure ? undefined : null,
+    });
     active.pageNonce = observation.pageNonce;
     active.pageIdentity = observation.pageIdentity;
     active.canvasIdentity = observation.canvasIdentity;
     active.rendererIdentity = observation.rendererIdentity;
-    active.heartbeat = { sentinel: observation.sentinel, at: new Date().toISOString() };
     if (observation.failure) {
       const failure = runtimeFailure({
         code: observation.failure.code,

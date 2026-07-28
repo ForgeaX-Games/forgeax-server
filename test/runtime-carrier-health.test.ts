@@ -13,7 +13,14 @@ const host: CarrierHost = {
   supportsReveal: true,
   async start(input): Promise<CarrierHostHandle> {
     return {
+      runtimeId: input.runtimeId,
+      challengeResponse: input.ownerToken,
       confirmedScope: input.scope,
+      pageNonce: 'page-a',
+      pageIdentity: 'http://localhost:18920/preview/',
+      canvasIdentity: 'canvas-a',
+      rendererIdentity: 'renderer-a',
+      sentinel: 0,
       renderReadiness: 'ready',
       reveal: async () => {},
       stop: async () => {},
@@ -24,6 +31,7 @@ const host: CarrierHost = {
 function observation(runtimeId: string, overrides: Partial<CarrierHealthObservation> = {}): CarrierHealthObservation {
   return {
     runtimeId,
+    challengeResponse: null,
     confirmedScope: scopeA,
     pageNonce: 'page-a',
     pageIdentity: 'http://localhost:18920/editor',

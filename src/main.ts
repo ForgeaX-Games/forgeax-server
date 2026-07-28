@@ -224,7 +224,12 @@ if (process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core') {
 const shimEnv = process.env as Record<string, string | undefined>;
 const videoAssets = createVideoAssetRuntime({ getProjectRoot: defaultProjectRoot });
 const runtimeCarrierSupervisor = createRuntimeCarrierSupervisor({
-  host: createPlaywrightCarrierHost(),
+  host: createPlaywrightCarrierHost({
+    resolveScope: () => {
+      const root = defaultProjectRoot();
+      return { projectId: root, gameId: getActiveGame(root) ?? null };
+    },
+  }),
 });
 const { app } = await createForgeaxApp({
   projectRoot,
@@ -918,6 +923,10 @@ const shutdown = async (sig: string) => {
   // live session（per-Session logger 各自 close）+ detach console bridge +
   // close SM 单例 logger，确保 `<userRoot>/debug.log` 尾部 buffer 落盘。
   try { await getSessionManager().shutdown(); } catch { /* SM 可能未 init */ }
+  const carrierShutdown = await runtimeCarrierSupervisor.shutdown();
+  if (carrierShutdown && !carrierShutdown.ok) {
+    console.error('[forgeax-server] runtime carrier shutdown failed', JSON.stringify(carrierShutdown.error));
+  }
   // Spawned children (incl. the agent-host sidecar) are supervised by the
   // sidecar/@forgeax/orchestrator runtime now, not by the thin server shell — they tear
   // themselves down on the SM shutdown above / their own exit handlers.

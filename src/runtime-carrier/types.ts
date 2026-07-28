@@ -27,6 +27,10 @@ export type RuntimeErrorCode =
   | 'STOPPED_DURING_START'
   | 'UNKNOWN_RUNTIME'
   | 'HOST_START_FAILED'
+  | 'HANDSHAKE_RUNTIME_MISMATCH'
+  | 'HANDSHAKE_OWNERSHIP_MISMATCH'
+  | 'PAGE_RELOADED'
+  | 'HEALTH_STALE'
   | 'HOST_REVEAL_FAILED'
   | 'HOST_STOP_FAILED'
   | 'SUPERVISOR_SHUTDOWN'
@@ -94,6 +98,8 @@ export interface CarrierHostStartInput {
 }
 
 export interface CarrierHostObservation {
+  readonly runtimeId?: string | null;
+  readonly challengeResponse?: string | null;
   readonly confirmedScope: RuntimeScope | null;
   readonly liveness?: RuntimeLiveness;
   readonly renderReadiness?: RenderReadiness;
