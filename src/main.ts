@@ -39,6 +39,14 @@ import { getActiveGame } from './game/active-game';
 import { GameSessionLayout } from './studio-session-layout';
 // 游戏业务路由(阶段A:从 @forgeax/orchestrator 搬入产品壳)—— 经 ctx.routers 注入编排层。
 import { createWorkbenchRouter } from './game/workbench';
+import {
+  PARTY_WS_PATH,
+  handlePartyClose,
+  handlePartyMessage,
+  handlePartyOpen,
+  isPartyWsData,
+  type PartyWsData,
+} from './game/party-signal';
 import { createCharacterRouter } from './game/wb-character';
 import { createBgmRouter } from './game/wb-bgm';
 import { createGenerativeVisualsRouter, getFluxRtWsUpstreamUrl } from './game/generative-visuals';
@@ -642,21 +650,27 @@ function boundedPositiveEnv(name: string, fallback: number, maximum: number): nu
   return Number.isFinite(parsed) ? Math.max(1, Math.min(maximum, Math.floor(parsed))) : fallback;
 }
 
+type WsProxyPayload = Parameters<WebSocket['send']>[0];
 const wsProxies = new WeakMap<import('bun').ServerWebSocket<WsClientData>, {
   upstream: WebSocket;
-  pending: (string | ArrayBufferLike | Blob | ArrayBufferView)[];
+  pending: WsProxyPayload[];
   fluxRt: boolean;
   messageWindowStartedAt: number;
   messagesInWindow: number;
 }>();
-const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
+const wsHandler: import('bun').WebSocketHandler<WsClientData | PartyWsData> = {
   open(ws) {
+    if (isPartyWsData(ws.data)) {
+      handlePartyOpen(ws as import('bun').ServerWebSocket<PartyWsData>);
+      return;
+    }
     const generativeVisuals = ws.data as GenerativeVisualsWsData;
     if (generativeVisuals.accessDenied) {
       ws.close(1008, `visual-access-denied: ${generativeVisuals.accessDenied}`);
       return;
     }
-    if (ws.data.proxy) {
+    const data = ws.data as WsClientData;
+    if (data.proxy) {
       const generativeVisuals = (ws.data as GenerativeVisualsWsData).generativeVisuals;
       if (generativeVisuals && activeFluxRtRelaySessions >= maxFluxRtRelaySessions) {
         ws.close(1013, 'FluxRT relay capacity reached');
@@ -666,17 +680,17 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
       // Forward the client's WS subprotocol (vite HMR requires "vite-hmr";
       // without it vite's ws server rejects the upgrade → "closed before
       // established" reconnect spam + dead hot-reload).
-      const upstream = ws.data.proxy.protocol
-        ? new WebSocket(ws.data.proxy.url, ws.data.proxy.protocol)
-        : new WebSocket(ws.data.proxy.url);
+      const upstream = data.proxy.protocol
+        ? new WebSocket(data.proxy.url, data.proxy.protocol)
+        : new WebSocket(data.proxy.url);
       const entry = {
         upstream,
-        pending: [],
+        pending: [] as WsProxyPayload[],
         fluxRt: Boolean(generativeVisuals),
         messageWindowStartedAt: Date.now(),
         messagesInWindow: 0,
       };
-      wsProxies.set(ws, entry);
+      wsProxies.set(ws as import('bun').ServerWebSocket<WsClientData>, entry);
       upstream.binaryType = 'arraybuffer';
       upstream.onopen = () => {
         for (const m of entry.pending) upstream.send(m);
@@ -706,10 +720,14 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
       };
       return;
     }
-    return baseWsHandler.open?.(ws);
+    return baseWsHandler.open?.(ws as import('bun').ServerWebSocket<WsClientData>);
   },
   message(ws, message) {
-    const entry = wsProxies.get(ws);
+    if (isPartyWsData(ws.data)) {
+      handlePartyMessage(ws as import('bun').ServerWebSocket<PartyWsData>, message as string | ArrayBuffer | Uint8Array);
+      return;
+    }
+    const entry = wsProxies.get(ws as import('bun').ServerWebSocket<WsClientData>);
     if (entry) {
       const generativeVisuals = (ws.data as GenerativeVisualsWsData).generativeVisuals;
       if (generativeVisuals) {
@@ -739,7 +757,11 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData> = {
     return baseWsHandler.message?.(ws, message);
   },
   close(ws, code, reason) {
-    const entry = wsProxies.get(ws);
+    if (isPartyWsData(ws.data)) {
+      handlePartyClose(ws as import('bun').ServerWebSocket<PartyWsData>);
+      return;
+    }
+    const entry = wsProxies.get(ws as import('bun').ServerWebSocket<WsClientData>);
     if (entry) {
       try { entry.upstream.close(); } catch { /* ignore */ }
       wsProxies.delete(ws);
@@ -761,6 +783,12 @@ try {
   fetch(req, srv) {
     const url = new URL(req.url);
     const connectionAddress = srv.requestIP(req)?.address;
+    if (url.pathname === PARTY_WS_PATH) {
+      const data: PartyWsData = { id: crypto.randomUUID(), kind: 'party' };
+      const upgraded = srv.upgrade(req, { data });
+      if (upgraded) return undefined;
+      return new Response('upgrade required', { status: 426 });
+    }
     if (url.pathname === '/ws') {
       const sid = url.searchParams.get('sid') ?? undefined;
       // 断线续传参数(多 tab 同步 §3.3):since=<lastAppliedSeq>&sgen=<generation>。
