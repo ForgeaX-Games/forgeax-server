@@ -227,6 +227,7 @@ const shimEnv = process.env as Record<string, string | undefined>;
 const videoAssets = createVideoAssetRuntime({ getProjectRoot: defaultProjectRoot });
 const runtimeCarrierSupervisor = createRuntimeCarrierSupervisor({
   host: createPlaywrightCarrierHost({
+    timeoutMs: Number(process.env.FORGEAX_CARRIER_TIMEOUT_MS) || undefined,
     resolveScope: () => {
       const root = defaultProjectRoot();
       return { projectId: root, gameId: getActiveGame(root) ?? null };

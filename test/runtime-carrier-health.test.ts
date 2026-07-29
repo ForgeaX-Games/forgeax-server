@@ -6,8 +6,40 @@ import {
   type RuntimeScope,
 } from '../src/runtime-carrier/supervisor';
 import type { CarrierHealthObservation } from '../src/runtime-carrier/health';
+import { parseCarrierHealthMessage } from '../src/runtime-carrier/health';
 
 const scopeA: RuntimeScope = { projectId: 'project-a', gameId: 'game-a' };
+
+test('accepts the Editor unavailable handshake with a null renderer generation', () => {
+  expect(parseCarrierHealthMessage({
+    type: 'VAG_CARRIER_HANDSHAKE',
+    payload: {
+      version: 1,
+      runtimeId: 'runtime-a',
+      challengeResponse: 'challenge-a',
+      scope: scopeA,
+      pageNonce: 'page-a',
+      pageIdentity: 'http://localhost:18920/',
+      canvasIdentity: 'canvas-a',
+      rendererIdentity: 'renderer-unavailable',
+      rendererGeneration: null,
+      sentinel: 0,
+      liveness: 'alive',
+      renderReadiness: 'unavailable',
+      failure: {
+        code: 'renderer-generation-unavailable',
+        stage: 'renderer',
+        retryable: true,
+        hint: 'Wait for a numeric renderer generation.',
+        at: '2026-07-29T00:00:00.000Z',
+      },
+    },
+  })).toMatchObject({
+    runtimeId: 'runtime-a',
+    renderReadiness: 'unavailable',
+    failure: { code: 'renderer-generation-unavailable' },
+  });
+});
 
 const host: CarrierHost = {
   supportsReveal: true,

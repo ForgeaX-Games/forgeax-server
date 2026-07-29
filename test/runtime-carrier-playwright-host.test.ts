@@ -4,7 +4,7 @@ import { createRuntimeCarrierSupervisor } from '../src/runtime-carrier/superviso
 
 const scope = { projectId: 'project-smoke', gameId: 'game-smoke' };
 
-test('headed host reveals the original page while preserving current surface identity', async () => {
+test('headless host preserves current surface identity across reveal', async () => {
   const html = `<!doctype html><canvas id="canvas-smoke"></canvas><script>
     const params = new URLSearchParams(location.search);
     const runtimeId = params.get('runtimeId');
@@ -21,21 +21,25 @@ test('headed host reveals the original page while preserving current surface ide
       version: 1,
       execute: async (request) => ({ ok: true, operation: request.operation.operation, state: 'running', identity: request.identity }),
     };
-    window.parent.postMessage({ type: 'VAG_CARRIER_HANDSHAKE', payload: payload() }, '*');
-    setInterval(() => window.parent.postMessage({ type: 'VAG_CARRIER_HEARTBEAT', payload: payload() }, '*'), 100);
+    window.__forgeax_carrier_health = payload();
+    setInterval(() => { window.__forgeax_carrier_health = payload(); }, 100);
   </script>`;
   const server = Bun.serve({
     port: 0,
     fetch: () => new Response(html, { headers: { 'content-type': 'text/html' } }),
   });
   const supervisor = createRuntimeCarrierSupervisor({
-    host: createPlaywrightCarrierHost({ baseUrl: `http://127.0.0.1:${server.port}`, timeoutMs: 10_000 }),
+    host: createPlaywrightCarrierHost({
+      baseUrl: `http://127.0.0.1:${server.port}`,
+      timeoutMs: 10_000,
+      headless: true,
+    }),
   });
 
   try {
     const ensured = await supervisor.ensure(scope);
     expect(ensured).toMatchObject({ ok: true, lifecycle: 'starting' });
-    if (!ensured.ok) throw new Error('headed carrier did not start');
+    if (!ensured.ok) throw new Error('headless carrier did not start');
     let running = await supervisor.status(ensured.runtimeId);
     const readyDeadline = Date.now() + 10_000;
     while (Date.now() < readyDeadline && running.ok && running.lifecycle === 'starting') {

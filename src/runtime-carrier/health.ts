@@ -63,7 +63,7 @@ export function parseCarrierHealthMessage(value: unknown): CarrierHealthObservat
   const pageIdentity = nonEmptyString(payload.pageIdentity);
   const canvasIdentity = nonEmptyString(payload.canvasIdentity);
   const rendererIdentity = nonEmptyString(payload.rendererIdentity);
-  const rendererGeneration = payload.rendererGeneration;
+  const rendererGeneration = payload.rendererGeneration === null ? undefined : payload.rendererGeneration;
   const sentinel = payload.sentinel;
   const liveness = payload.liveness;
   const renderReadiness = payload.renderReadiness;

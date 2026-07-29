@@ -21,6 +21,7 @@ export interface PlaywrightCarrierHostOptions {
   readonly baseUrl?: string;
   readonly timeoutMs?: number;
   readonly executablePath?: string;
+  readonly headless?: boolean;
   readonly resolveScope?: () => RuntimeScope | Promise<RuntimeScope>;
 }
 
@@ -42,6 +43,7 @@ const installCarrierEventBuffer = (): void => {
 export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOptions = {}): CarrierHost {
   const baseUrl = (options.baseUrl ?? process.env.FORGEAX_INTERFACE_ORIGIN ?? 'http://127.0.0.1:18920').replace(/\/$/, '');
   const timeoutMs = options.timeoutMs ?? 15_000;
+  const headless = options.headless ?? process.env.FORGEAX_CARRIER_HEADLESS === '1';
   let context: BrowserContext | null = null;
   let page: Page | null = null;
   let userDataDir: string | null = null;
@@ -55,10 +57,18 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
         const { chromium } = await import('playwright');
         userDataDir = await mkdtemp(join(tmpdir(), 'forgeax-runtime-carrier-'));
         context = await chromium.launchPersistentContext(userDataDir, {
-          headless: false,
+          headless,
           executablePath: options.executablePath,
           viewport: { width: 1280, height: 720 },
-          args: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding'],
+          args: [
+            '--disable-background-timer-throttling',
+            '--disable-renderer-backgrounding',
+            ...(headless ? [
+              '--enable-unsafe-webgpu',
+              '--ignore-gpu-blocklist',
+              '--use-angle=swiftshader',
+            ] : []),
+          ],
         });
         page = context.pages()[0] ?? await context.newPage();
         page.on('framenavigated', (frame) => {
@@ -79,11 +89,16 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
           timeout: timeoutMs,
         });
         if (input.signal.aborted) throw new Error('Carrier startup was cancelled.');
-        await page.waitForFunction((expectedRuntimeId) => {
+        await page.waitForFunction(({ expectedRuntimeId, expectedScope }) => {
           const latest = (globalThis as unknown as CarrierEventWindow).__forgeaxCarrierLatest;
           const health = (globalThis as unknown as CarrierEventWindow).__forgeax_carrier_health as { runtimeId?: unknown } | undefined;
-          return (latest as { type?: unknown } | null)?.type === 'VAG_CARRIER_HANDSHAKE' || health?.runtimeId === expectedRuntimeId;
-        }, input.runtimeId, { timeout: timeoutMs });
+          const payload = (latest as { payload?: { runtimeId?: unknown; scope?: unknown } } | null)?.payload;
+          const candidate = health?.runtimeId === expectedRuntimeId ? health : payload?.runtimeId === expectedRuntimeId ? payload : null;
+          const scope = candidate && typeof candidate === 'object' ? (candidate as { scope?: unknown }).scope : null;
+          return !!scope && typeof scope === 'object'
+            && (scope as RuntimeScope).projectId === expectedScope.projectId
+            && (scope as RuntimeScope).gameId === expectedScope.gameId;
+        }, { expectedRuntimeId: input.runtimeId, expectedScope: actualScope }, { timeout: timeoutMs });
         const observation = await readObservation(page, timeoutMs);
         if (!observation) throw new Error('Managed page did not provide a valid carrier handshake.');
         initialNavigationCount = navigationCount;
@@ -218,6 +233,7 @@ function carrierUrl(baseUrl: string, runtimeId: string, scope: RuntimeScope, own
   const params = new URLSearchParams({
     runtimeId,
     ownershipChallenge: ownerToken,
+    ...(scope.gameId ? { gameId: scope.gameId } : {}),
   });
   return `${baseUrl}/?${params.toString()}`;
 }
@@ -226,7 +242,10 @@ async function readObservation(page: Page | null, timeoutMs: number): Promise<Ca
   if (!page || page.isClosed()) return null;
   const latest = await page.evaluate(() => (globalThis as unknown as CarrierEventWindow).__forgeaxCarrierLatest);
   const producerHealth = await page.evaluate(() => (globalThis as unknown as CarrierEventWindow).__forgeax_carrier_health);
-  const parsed = parseCarrierHealthMessage(latest) ?? parseCarrierHealthMessage(producerHealth);
+  const parsed = parseCarrierHealthMessage({
+    type: 'VAG_CARRIER_HEARTBEAT',
+    payload: producerHealth,
+  }) ?? parseCarrierHealthMessage(latest);
   if (parsed) return parsed;
   await page.waitForTimeout(Math.min(100, timeoutMs));
   return null;
