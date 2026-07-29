@@ -2,7 +2,7 @@
  *  with backward compatibility for pre-PR2 sessions (PR2-compat).
  *
  *  Canonical layout (new sessions): a session lives under its permanently-bound
- *  game at  <projectRoot>/.forgeax/games/<slug>/sessions/<sid>/ . The binding is
+ *  game at  <instanceRoot>/.forgeax/games/<slug>/sessions/<sid>/ . The binding is
  *  set once at allocate() against the current active game and is recoverable from
  *  the on-disk path (path-as-SSOT); no defaultDir is persisted. A sid→slug cache
  *  makes resolution O(1); binding is permanent so the cache never invalidates.
@@ -12,7 +12,7 @@
  *              roots (`<proj>/.forgeax/sessions`, `~/.forgeax/sessions`). Only
  *              legacy sessions whose bound game (session.json.defaultDir) STILL
  *              EXISTS in this project are surfaced — this filters out unit-test
- *              pollution and other-workspace noise automatically.
+ *              pollution and unrelated session noise automatically.
  *    - write → `isLegacySession` flags such a session; `migrateLegacyIntoProject`
  *              MOVES its whole dir into games/<slug>/sessions/<sid>/ before the
  *              first write, so new + old records end up under the project.
@@ -185,14 +185,14 @@ export class GameSessionLayout implements SessionLayout {
   // ── scope authority (Stage A §3.3) ────────────────────────────────────────
 
   /** The single "current scope" authority cli reads through (replaces the
-   *  scattered `getActiveGame(projectRoot)` fallback — SSOT).
+   *  scattered `getActiveGame(instanceRoot)` fallback — SSOT).
    *    - no sid → the current active game (== the injected getActiveGame
    *      closure), i.e. byte-for-byte the legacy fallback every consumer used;
    *    - with sid → that session's permanently-bound game (path-as-SSOT, then
    *      legacy index), else the active game.
    *  Generic/flat layouts omit this → undefined (game-agnostic standalone). */
   resolveScope(sessionId?: string, root?: string): string | undefined {
-    // explicit root (workspace activation) ⇒ active game under THAT root.
+    // explicit instance root ⇒ active game under that root.
     if (root) return this.getActiveGame(root);
     if (sessionId) {
       const bound = this.projectSlugOf(sessionId) ?? this.ensureLegacyIndex().get(sessionId)?.slug;

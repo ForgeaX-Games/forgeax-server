@@ -52,7 +52,7 @@ async function safe(name: string, fn: () => Promise<{ ok: boolean; detail?: stri
 }
 
 async function main(): Promise<void> {
-  await createForgeaxApp({ projectRoot: defaultProjectRoot(), version: 'e2e', broadcast: () => {} });
+  await createForgeaxApp({ instanceRoot: defaultProjectRoot(), version: 'e2e' });
 
   // 1) 内环 = forgeax-core
   await safe('switch · resolveKernel("forge").id === forgeax-core', async () => {

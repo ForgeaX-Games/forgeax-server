@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { readFile, writeFile, cp, stat, rm, unlink } from 'node:fs/promises';
-import { existsSync, lstatSync, mkdirSync, readdirSync, statSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, statSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve, basename, join, isAbsolute, dirname } from 'node:path';
 // Why Bun.Glob and not node:fs/promises#glob: bun 1.3.x's shim of the node
@@ -14,6 +14,7 @@ import { Glob } from 'bun';
 import { defaultProjectRoot } from '@forgeax/platform-io';
 import { assetRoot } from '@forgeax/platform-io';
 import { friendlyPath } from '@forgeax/platform-io';
+import { addKnownGame } from '@forgeax/platform-io';
 import { getActiveGame, setActiveGame, clearActiveGameIf } from './active-game';
 import { findMarketplaceManifest } from '@forgeax/orchestrator/api/lib/marketplace-manifest';
 import { computeAgentNaming, pickPersonName, type AgentNaming } from '@forgeax/orchestrator/api/lib/agent-naming';
@@ -29,8 +30,7 @@ import type { TargetPlatform } from './packager';
 
 /**
  * Valid game slug: 1-41 chars, [a-z0-9] first then [a-z0-9-]*. No
- * underscores (projects.ts allows them at the workspace level; games
- * intentionally stricter to keep URL/path/import-specifier ergonomics
+ * underscores are intentionally excluded to keep URL/path/import-specifier ergonomics
  * uniform — e.g. /preview/?slug=<x> + .forgeax/games/<x>/). Exported
  * for tests (cc-game/20).
  */
@@ -249,7 +249,7 @@ function expandTemplates(pattern: string, slug?: string): string {
 
 // Defensive resolver guards. Some plugin manifests ship unbounded patterns
 // (`**/*.ts`) that aren't anchored to <active_game>.dir; without filtering
-// they walk every nested workspace's node_modules and return 60k+ matches
+// they walk every nested dependency's node_modules and return 60k+ matches
 // per agent → 50MB JSON, 7s blocking glob. Skip the noise dirs, and cap
 // total matches per agent — the UI renders this as a sidebar list and
 // can't reasonably display thousands of files anyway.
@@ -394,7 +394,7 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
   // ── GET /templates — list built-in games usable as first-run templates ──
   // Source is the official examples under assetRoot()/games (dev: packages/games;
   // packaged: Resources/games). Read-only: onboarding "从模板创建" copies one of
-  // these into a fresh workspace via POST /api/workspaces/activate {template}.
+  // these into a fresh game via POST /api/workbench/games {template}.
   // Filters underscore/dot/scripts entries and anything without a forge.json.
   router.get('/templates', (c) => {
     const gamesRoot = resolve(assetRoot(), 'games');
@@ -695,7 +695,7 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
   // Optional `template` = a built-in game slug (GET /templates, sourced from
   // assetRoot()/games) to copy from instead of the blank `_template`/game-default.
   // Either way the copy gets fresh GUIDs (regenerateGameGuids) so a template
-  // copied into a workspace that already holds games can't collide in the catalog.
+  // copied into an instance that already holds games can't collide in the catalog.
   router.post('/games', async (c) => {
     let body: { slug?: string; name?: string; brief?: string; template?: string };
     try {
@@ -777,10 +777,9 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
   });
 
   // ── POST /games/link — adopt an existing game dir at an arbitrary path ──
-  // The game keeps living at its own path; we just symlink it into this
-  // workspace's .forgeax/games/<slug> so it belongs to the workspace (same
-  // mechanism as the seeded shared games: .forgeax/games/<slug> -> /abs/path).
-  // Used by first-run onboarding "打开目录" and any "adopt existing game" flow.
+  // The game keeps living at its own path. The runtime host may mount it into
+  // its engine-visible games directory, but that mount is infrastructure, not
+  // another game. Opening an already-mounted game is idempotent.
   router.post('/games/link', async (c) => {
     let body: { path?: string; slug?: string };
     try { body = (await c.req.json()) as typeof body; }
@@ -797,7 +796,7 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
 
     // Must look like a game — forge.json (canonical) or a bare main.ts entry.
     // Empty (or junk/dotfile-only) dirs get a default template scaffolded in place
-    // first so onboarding "打开目录" can mount a blank folder outside the workspace.
+    // first so onboarding "打开目录" can mount a blank folder outside the instance.
     let isGame = existsSync(join(abs, 'forge.json')) || existsSync(join(abs, 'main.ts'));
     let scaffolded = false;
     if (!isGame) {
@@ -863,13 +862,33 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
     const projectRoot = defaultProjectRoot();
     const gamesRoot = resolve(projectRoot, '.forgeax/games');
     const linkPath = resolve(gamesRoot, slug);
-    if (existsSync(linkPath) || (() => { try { return !!lstatSync(linkPath); } catch { return false; } })()) {
+    const linkExists = existsSync(linkPath) || (() => { try { return !!lstatSync(linkPath); } catch { return false; } })();
+    if (linkExists) {
+      // Selecting `.forgeax/games/<slug>` itself used to be treated as a name
+      // collision. Compare canonical paths before rejecting: same game means
+      // bind-and-activate, while a different game with the same slug remains a
+      // real conflict.
+      try {
+        if (realpathSync(linkPath) === realpathSync(abs)) {
+          addKnownGame(abs, slug);
+          setActiveGame(projectRoot, slug);
+          return c.json({
+            ok: true,
+            slug,
+            gameDir: friendlyPath(linkPath),
+            target: friendlyPath(abs),
+            alreadyMounted: true,
+            ...(scaffolded ? { scaffolded: true } : {}),
+          });
+        }
+      } catch { /* broken/unreadable mount — report the normal collision */ }
       return c.json({ error: `.forgeax/games/${slug} already exists`, slug }, 409);
     }
     try {
       mkdirSync(gamesRoot, { recursive: true });
       // 'junction' on Windows: links a dir without admin rights (unlike 'dir').
       symlinkSync(abs, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+      addKnownGame(abs, slug);
       setActiveGame(projectRoot, slug);
       return c.json({
         ok: true,

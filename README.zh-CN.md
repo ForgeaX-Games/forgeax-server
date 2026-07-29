@@ -39,7 +39,7 @@ Workbench API,并运行把 agent 的代码改动变成实时预览的文件系�
 
 ## API 表面(节选)
 
-`/api/chat` · `/api/sessions` · `/api/threads` · `/api/files` · `/api/projects` · `/api/assets`
+`/api/chat` · `/api/sessions` · `/api/threads` · `/api/files` · `/api/workbench/games` · `/api/assets`
 · `/api/game-assets/:slug/*` · `/api/workbench` · `/api/packs` · `/api/plugins` · `/api/skills`
 · `/api/commands` · `/api/tools` · `/api/llm` · `/api/brand` · `/api/usage` · `/api/health`。
 UI 所需的一切,都只隔着一个 HTTP/WS 端点。

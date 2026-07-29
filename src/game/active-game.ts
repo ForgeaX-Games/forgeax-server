@@ -1,5 +1,5 @@
 // Explicit "active game" binding — the SSOT for "which game is the user
-// currently working on" within a workspace.
+// currently working on" within the Studio instance.
 //
 // Why this exists (root-fix 2026-05-29): the active game used to be derived
 // purely from `detectActiveSlug()` — most-recently-mtime'd .forgeax/games/<slug>/
@@ -13,7 +13,7 @@
 //   <projectRoot>/.forgeax/active-game.json  → { version: 1, slug }
 // `getActiveGame()` returns that slug when it still resolves to a real game
 // dir, and only falls back to the mtime heuristic when no explicit binding
-// exists (fresh workspace / pre-existing installs). Consumers (claude-code
+// exists (fresh instance / pre-existing installs). Consumers (claude-code
 // provider, /api/workbench endpoints, session defaultDir bootstrap) read this
 // single function so they cannot drift.
 
@@ -55,7 +55,7 @@ function readExplicit(root: string): string | undefined {
 }
 
 /**
- * The active game slug for a workspace.
+ * The active game slug for the current Studio instance.
  *
  * Resolution order:
  *   1. explicit binding (active-game.json) — IF the slug still points at a
@@ -63,7 +63,7 @@ function readExplicit(root: string): string | undefined {
  *   2. else the legacy most-recent-mtime heuristic (detectActiveSlug);
  *   3. else `undefined` (no games at all).
  *
- * @param root - studio/instance project root (typically `defaultProjectRoot()`)
+ * @param root - Studio instance root (typically `defaultProjectRoot()`)
  */
 export function getActiveGame(root: string): string | undefined {
   const explicit = readExplicit(root);

@@ -97,7 +97,7 @@ function record(name: string, ok: boolean, detail: string): void {
 }
 
 async function main(): Promise<void> {
-  ({ app } = await createForgeaxApp({ projectRoot: defaultProjectRoot(), version: 'e2e', broadcast: () => {} }));
+  ({ app } = await createForgeaxApp({ instanceRoot: defaultProjectRoot(), version: 'e2e' }));
 
   record('switch · 内环 = forgeax-core', resolveKernel('forge').id === 'forgeax-core', resolveKernel('forge').id,);
 

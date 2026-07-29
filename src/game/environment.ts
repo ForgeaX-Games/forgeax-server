@@ -60,7 +60,7 @@ export function renderEnvironmentText(opts: RenderEnvironmentOpts): string {
   // Paths
   lines.push("## Paths");
   lines.push(`- Working directory: ${cwd}`);
-  lines.push(`- Project root: ${projectRoot}`);
+  lines.push(`- Instance root: ${projectRoot}`);
   if (slug) {
     lines.push(`- Game slug: ${slug}`);
     lines.push(`- Game dir: .forgeax/games/${slug}/`);

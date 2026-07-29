@@ -105,7 +105,7 @@ export const GAMEPLAY_INPUT_SCHEMA = {
   ],
 } as const;
 
-/** List workspace games from the current and legacy roots. */
+/** List games from the current instance root and legacy root layout. */
 function listGames(projectRoot: string): { count: number; games: string[] } {
   const out: string[] = [];
   for (const base of [join(projectRoot, '.forgeax/games'), join(projectRoot, 'games')]) {
@@ -126,7 +126,7 @@ export function gameHostTools(): HostToolSpec[] {
   return [
     {
       name: 'list_games',
-      description: 'List the game projects in this forgeax workspace. Returns { count, games }.',
+      description: 'List the game projects in this ForgeaX instance. Returns { count, games }.',
       inputSchema: { type: 'object', properties: {} },
       run: (_args, ctx: HostToolRunCtx) => listGames(ctx.projectRoot),
     },

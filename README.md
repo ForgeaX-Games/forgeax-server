@@ -43,7 +43,7 @@ preview. No Docker, no microservice sprawl — one process, started in seconds.
 
 ## The API surface (selected)
 
-`/api/chat` · `/api/sessions` · `/api/threads` · `/api/files` · `/api/projects` · `/api/assets`
+`/api/chat` · `/api/sessions` · `/api/threads` · `/api/files` · `/api/workbench/games` · `/api/assets`
 · `/api/game-assets/:slug/*` · `/api/workbench` · `/api/packs` · `/api/plugins` · `/api/skills`
 · `/api/commands` · `/api/tools` · `/api/llm` · `/api/brand` · `/api/usage` · `/api/health`.
 Everything the UI needs is one HTTP/WS endpoint away.

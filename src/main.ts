@@ -154,22 +154,15 @@ const WATCH_FS = process.env.FORGEAX_NO_WATCH !== '1';
 
 const hub = new WsHub();
 const watcher = new FsWatcher();
-const projectRoot = defaultProjectRoot();
+const instanceRoot = defaultProjectRoot();
 
-// Realign the play-engine `.forgeax` junction to THIS server's active root on
-// every (re)start. The active root is in-memory (process.env.FORGEAX_PROJECT_ROOT,
-// mutated by POST /api/workspaces/activate) while the junction is on-disk — so a
-// `bun --watch` server restart reverts env to the run.ts default but leaves the
-// junction pinned to whatever the last activate set. That desync makes the play
-// engine (:15173) serve games from a DIFFERENT root than the one the server
-// writes new games into → runtime-created games' /preview/pack-index/<slug>.json
-// 404s → asset-not-imported. Repointing here re-establishes the invariant "play
-// engine serves from the server's active root". Best-effort: throws in packaged
-// mode (no engine-src dir) and when the link is a real dir — non-fatal.
+// Realign the play-engine `.forgeax` junction to this server's private instance
+// root on every (re)start. Best-effort: packaged mode may not contain the
+// source-side engine mount, and a real directory at the link path is non-fatal.
 {
   const { repointEngineForgeaXSymlink } = await import('@forgeax/orchestrator/api/lib/engine-symlink');
   try {
-    repointEngineForgeaXSymlink(projectRoot);
+    repointEngineForgeaXSymlink(instanceRoot);
   } catch (e) {
     console.warn(`[forgeax-server] engine .forgeax realign skipped — ${(e as Error).message}`);
   }
@@ -247,10 +240,8 @@ const gameplayAdapter = new CarrierGameplayAdapter({
   },
 });
 const { app } = await createForgeaxApp({
-  projectRoot,
+  instanceRoot,
   version: VERSION,
-  broadcast: (msg) => hub.broadcast(msg as Parameters<typeof hub.broadcast>[0]),
-  rebindWatcher: WATCH_FS ? (root) => watcher.rebind(root) : undefined,
   // system-prompt charter/environment/note 由产品壳提供(阶段A §3.2)——编排层经
   // 注入的 composer 取,cli 自身不再硬编码游戏宪章。ports 取自 env(与原 cli 顶层常量一致)。
   systemPromptComposer: new GameSystemPromptComposer({
@@ -270,7 +261,7 @@ const { app } = await createForgeaxApp({
         cloneTemplateAssets: (input) => videoAssets.service.cloneTemplateAssets(input),
       }),
     },
-    { path: '/api/wb/character', router: createCharacterRouter({ projectRoot, env: shimEnv }) },
+    { path: '/api/wb/character', router: createCharacterRouter({ projectRoot: instanceRoot, env: shimEnv }) },
     { path: '/api/wb/bgm', router: createBgmRouter() },
     {
       path: '/api/generative-visuals',
@@ -279,27 +270,25 @@ const { app } = await createForgeaxApp({
     {
       path: '/__ce-api__',
       router: createCeApiShimRouter({
-        projectRoot,
+        projectRoot: instanceRoot,
         env: shimEnv,
         // marketplace UI 资产清洗能力直接交给业务 router(不再经 cli ProductContext 中转)。
         uiAssetCleanup: { inspectUiAssetCanvas, normalizeStandaloneUiAsset },
       }),
     },
   ],
-  // 方案B PR2:session 状态树落**绑定 game 下** <projectRoot>/.forgeax/games/<slug>/sessions/<sid>/
+  // Session 状态树落**绑定 game 下** <instanceRoot>/.forgeax/games/<slug>/sessions/<sid>/
   //   ——新建时绑当前 active game(永久绑定,路径即 SSOT,无 defaultDir)。WAL 的 logsDir() 与
   //   telemetrySink(回落同一 PathManager 路径)同落该 game 的 <sid>/logs/ → trace/log 与 WAL
   //   同源同根,且整份记录随 game 目录可迁移/上传(#033)。slug→sid 缓存,切 game 不动既有 session。
-  // **工厂**(而非单实例):切 workspace/项目根时 workspaces 路由用新 root 重建 layout 再
-  //   initPathManager,否则会退回默认扁平布局、扫不到 games/<slug>/sessions/ → 列会话/查历史失灵。
-  //   内层闭包带可选 root(配合 SessionLayout.resolveScope(sessionId?, root?) —— workspaces 激活
-  //   时用 abs 查该工作区的 active game);无参时回落工厂 root。
+  // **工厂**(而非单实例):在 instance root 启动时重建 layout，确保始终扫描
+  //   games/<slug>/sessions/，而不是退回默认扁平布局。
   sessionLayoutFactory: (root) => new GameSessionLayout(root, (r) => getActiveGame(r ?? root)),
   // 产品模式把 CLI 的可移动运行态(cache/checkpoints/SM debug.log)收进项目:
   //   <root>/.forgeax/state —— 不用 .forgeax/user,那个前缀在 file API 白名单
   //   (platform-io safe-path.ts),否则 cache/checkpoints 会经 /api/files 暴露。
   //   keys / kits / user settings 不随此根走,留 ~/.forgeax(跨项目共享/机密)。
-  // 工厂,理由同上 sessionLayoutFactory:切 workspace 要对新根重建。
+  // state root 与 session layout 使用同一 instance root。
   stateRootFactory: (root) => join(root, '.forgeax', 'state'),
   // game-host 打版本前置钩子:wb-game-video 游戏把平台组件集同步进游戏仓(随版本携带)。
   // 通用 game-host(platform-io) 只调钩子,具体拷贝知识留产品壳(见 game/game-host-hooks.ts)。
@@ -324,10 +313,8 @@ await activateServerModules({
 // :18920 carrier; the existing :15173 preview proxy remains unmanaged.
 mountRuntimeCarrierApi(app, runtimeCarrierSupervisor);
 
-// projectRoot 必须每请求实时读 defaultProjectRoot():POST /api/workspaces/activate
-// 热切换只改 process.env.FORGEAX_PROJECT_ROOT,启动时固化的 const projectRoot 不会跟。
-// edit-runtime 的 Play 模式用这里的 projectRootAbs 拼游戏入口的 /@fs 绝对 URL——上报
-// 旧根会让切换后的 workspace 游戏入口 404 → 世界无相机 → 每帧 RhiError。
+// The instance root is private runtime infrastructure. The active user project
+// is always the game slug returned by /api/workbench/games.
 app.get('/api/health', (c) =>
   c.json({
     status: 'ok',
@@ -335,8 +322,8 @@ app.get('/api/health', (c) =>
     name: '@forgeax/server',
     pid: process.pid,
     uptime: process.uptime(),
-    projectRoot: friendlyPath(defaultProjectRoot()),
-    projectRootAbs: defaultProjectRoot(),
+    instanceRoot: friendlyPath(defaultProjectRoot()),
+    instanceRootAbs: defaultProjectRoot(),
     wsClients: hub.size(),
     // Live native-path model id (read from process.env, which /api/settings/env
     // live-applies). The UI's useModelLabel() falls back to this instead of the
@@ -371,11 +358,11 @@ app.post('/api/telemetry', async (c) => {
   }
 });
 
-console.log(`[forgeax-server] project root = ${projectRoot}`);
+console.log(`[forgeax-server] instance root = ${instanceRoot}`);
 
 // HTTP surface scope (post-runtime-rewrite cleanup):
-//   Server only owns session-management-and-below — workspace activation,
-//   file/fs/projects browsing, settings, version, changelog, boot splash,
+//   Server owns session-management-and-below — file/fs browsing, settings,
+//   version, changelog, boot splash,
 //   workbench (game/agent UI list). Anything agent-level (chat, sessions,
 //   threads, runs, daemons) was deleted along with the cli daemon model.
 //   The runtime/ rewrite (docs/features/runtime-rewrite-core-plan.md) will
@@ -413,7 +400,7 @@ app.use('/extensions/*', async (c, next) => {
 // is `blobs/<sha[0:2]>/<sha>.<ext>`; this route maps the prefix back to the
 // gen3d asset root so the plugin UI can <img>/GLTFLoader them. Blob names carry
 // their sha256 (immutable) so they are safely long-cacheable.
-const gen3dAssetRoot = resolve(projectRoot, '.forgeax', 'assets', 'gen3d');
+const gen3dAssetRoot = resolve(instanceRoot, '.forgeax', 'assets', 'gen3d');
 app.use('/api/gen3d-blobs/*', serveStatic({
   root: gen3dAssetRoot,
   rewriteRequestPath: (p) => p.replace(/^\/api\/gen3d-blobs/, '') || '/',
@@ -432,7 +419,7 @@ app.use('/api/gen3d-blobs/*', serveStatic({
 // server for the game dir: it only serves files under `assets/3d/**`, rejects
 // unsafe slugs and `..` traversal, and asserts the resolved path stays inside
 // `<gameDir>/assets/3d/`. Mutations still go through the gen3d:delete-asset tool.
-const gamesRoot = resolve(projectRoot, '.forgeax', 'games');
+const gamesRoot = resolve(instanceRoot, '.forgeax', 'games');
 const GAME_ASSETS_RE = /^\/api\/game-assets\/([^/]+)\/3d\/(.+)$/;
 const SAFE_SLUG_RE = /^[A-Za-z0-9._-]+$/;
 app.get('/api/game-assets/:slug/*', async (c) => {
@@ -913,7 +900,7 @@ try {
 }
 
 if (WATCH_FS) {
-  watcher.start(projectRoot);
+  watcher.start(instanceRoot);
   watcher.on((ev) => hub.broadcast(ev));
 }
 
