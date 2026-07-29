@@ -115,7 +115,19 @@ export interface CarrierHostObservation {
 export interface CarrierHostHandle extends CarrierHostObservation {
   readonly reveal: () => Promise<void>;
   readonly stop: () => Promise<void>;
+  /**
+   * Typed transport into the already-managed page. The supervisor still owns
+   * lifecycle and identity; gameplay calls are delegated to the page's
+   * existing Editor Gateway and never become a second runtime owner.
+   */
+  readonly gameplay?: CarrierGameplayTransport;
   readonly observe?: () => Promise<CarrierHostObservation>;
+}
+
+export interface CarrierGameplayTransport {
+  execute(operation: unknown): Promise<unknown>;
+  capture(): Promise<{ dataUrl: string; bytes: number }>;
+  focus(): Promise<void>;
 }
 
 export interface CarrierHost {

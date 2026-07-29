@@ -1,23 +1,111 @@
 /** gameHostTools — the studio shell's game-domain host tools, injected into the
- *  orchestration layer via the `HostToolSpec` seam (Stage A §3 / P1-7 落地:
- *  `list_games` / `query_world` / `capture_frame` 从 cli 硬编码迁到这里,cli 层回
- *  纯通用)。
+ *  orchestration layer via the `HostToolSpec` seam (Stage A §3 / P1-7).
+ *  `list_games` / `query_world` / `capture_frame` are declared here so the cli
+ *  layer remains generic.
  *
- *  执行形态:两个 host 工具执行口(host-tool-bridge / `:sid/kernel-tool`)在信任闸
- *  放行后调用 `run(args, ctx)`。感知类工具经 `ctx.perception`(编排层通用感知往返:
- *  EventBus→WS→interface→preview iframe→回灌)取真值——机制业务无关归 cli,
- *  「感知的是游戏世界」这层语义归本文件。UI 未连 fail-soft 返回 `{ unavailable }`。
+ *  Execution uses two host-tool entry points (host-tool-bridge / `:sid/kernel-tool`)
+ *  after the trust gate calls `run(args, ctx)`. Perception tools use
+ *  `ctx.perception` to read the live preview and return `{ unavailable }` when
+ *  the UI is not connected.
  *
- *  注:租用内核(外部 CLI 内核)路径的这三个工具仍由 cli 的
- *  `kernel/mcp/forgeax-tools-server.mjs` 本地镜像执行(历史双镜像债,收敛是独立
- *  follow-up);本 seam 覆盖 forgeax-core 原生路径。
+ *  The leased-kernel path still has a local cli mirror; this seam covers the
+ *  forgeax-core native path.
  */
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HostToolSpec, HostToolRunCtx } from '@forgeax/orchestrator/orchestration-seams';
 import { editorGatewayHostTools } from './editor-gateway-host-tools';
+import type { CarrierGameplayAdapter } from './carrier-gameplay-adapter';
+import { parseGameplayOperation } from './gameplay-operation-contract';
 
-/** 列出工作区里的游戏(`.forgeax/games/` + 兼容旧 `games/`),过滤 _template / 隐藏。 */
+const gameplayScopeSchema = {
+  type: 'object',
+  required: ['projectId', 'gameId'],
+  properties: {
+    projectId: { type: 'string', minLength: 1 },
+    gameId: { type: 'string', minLength: 1 },
+  },
+  additionalProperties: false,
+} as const;
+
+const gameplayInputActionSchema = {
+  oneOf: [
+    {
+      type: 'object',
+      required: ['type', 'key', 'phase'],
+      properties: {
+        type: { const: 'key' },
+        key: { type: 'string', minLength: 1 },
+        phase: { enum: ['down', 'up'] },
+      },
+      additionalProperties: false,
+    },
+    {
+      type: 'object',
+      required: ['type', 'x', 'y'],
+      properties: {
+        type: { const: 'pointer' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        button: { enum: ['left', 'middle', 'right'] },
+      },
+      additionalProperties: false,
+    },
+  ],
+} as const;
+
+const gameplayArtifactSchema = {
+  type: 'object',
+  required: ['dataUrl', 'bytes', 'provenance'],
+  properties: {
+    dataUrl: { type: 'string', minLength: 1 },
+    bytes: { type: 'number', minimum: 1 },
+    provenance: {
+      type: 'object',
+      required: ['runtimeId', 'scope', 'pageIdentity', 'canvasIdentity', 'rendererGeneration'],
+      properties: {
+        runtimeId: { type: 'string', minLength: 1 },
+        scope: gameplayScopeSchema,
+        pageIdentity: { type: 'string', minLength: 1 },
+        canvasIdentity: { type: 'string', minLength: 1 },
+        rendererGeneration: { type: 'integer', minimum: 0 },
+      },
+      additionalProperties: false,
+    },
+  },
+  additionalProperties: false,
+} as const;
+
+export const GAMEPLAY_INPUT_SCHEMA = {
+  oneOf: [
+    ...(['play', 'gameplayStop', 'capture'] as const).map((operation) => ({
+      type: 'object',
+      required: ['operation', 'scope'],
+      properties: { operation: { const: operation }, scope: gameplayScopeSchema },
+      additionalProperties: false,
+    })),
+    {
+      type: 'object',
+      required: ['operation', 'scope', 'action'],
+      properties: { operation: { const: 'input' }, scope: gameplayScopeSchema, action: gameplayInputActionSchema },
+      additionalProperties: false,
+    },
+    {
+      type: 'object',
+      required: ['operation', 'scope', 'query'],
+      properties: { operation: { const: 'query' }, scope: gameplayScopeSchema, query: { type: 'string' } },
+      additionalProperties: false,
+    },
+    {
+      type: 'object',
+      required: ['operation', 'scope', 'artifact'],
+      properties: { operation: { const: 'reveal' }, scope: gameplayScopeSchema, artifact: gameplayArtifactSchema },
+      additionalProperties: false,
+    },
+  ],
+} as const;
+
+/** List workspace games from the current and legacy roots. */
 function listGames(projectRoot: string): { count: number; games: string[] } {
   const out: string[] = [];
   for (const base of [join(projectRoot, '.forgeax/games'), join(projectRoot, 'games')]) {
@@ -43,7 +131,7 @@ export function gameHostTools(): HostToolSpec[] {
       run: (_args, ctx: HostToolRunCtx) => listGames(ctx.projectRoot),
     },
     {
-      // 感知接地(R5/M8):向运行中的游戏取真值。仅取数,裁判是模型 + 结构/不变量,引擎不当裁判。
+      // Read live game facts; the model remains the judge of structure and invariants.
       name: 'query_world',
       description:
         "Query the RUNNING game's live world for ground truth: a structural ECS snapshot { entityCount, archetypes:[{componentNames, entityCount}], activeComponents, systems, resourceKeys }. Use it to VERIFY what the game actually contains/does (after writing code) instead of guessing. Data only — you are the judge.",
@@ -54,7 +142,7 @@ export function gameHostTools(): HostToolSpec[] {
     {
       name: 'capture_frame',
       description:
-        "Capture the running game preview's current rendered frame as a PNG data URL (best-effort; may be blank on some GPUs — judge by structure/invariants, not pixels). Returns { dataUrl, bytes }.",
+        "Capture the running editor-viewport Play surface's current rendered frame as a PNG data URL (best-effort; may be blank on some GPUs — judge by structure/invariants, not pixels). Returns { dataUrl, bytes }.",
       inputSchema: { type: 'object', properties: {} },
       run: async (_args, ctx: HostToolRunCtx) => {
         if (!ctx.perception) return { unavailable: true, reason: 'no perception channel' };
@@ -76,6 +164,34 @@ export function gameHostTools(): HostToolSpec[] {
 /** Product-shell registration point for host tools. Keeping this composition
  * named and testable prevents a new editor capability from being implemented
  * but accidentally omitted at `createForgeaxApp` boot. */
-export function studioHostTools(): HostToolSpec[] {
-  return [...gameHostTools(), ...editorGatewayHostTools()];
+export function studioHostTools(adapter?: CarrierGameplayAdapter): HostToolSpec[] {
+  return [...gameHostTools(), ...editorGatewayHostTools(), gameplayHostTool(adapter)];
+}
+
+export function gameplayHostTool(adapter?: CarrierGameplayAdapter): HostToolSpec {
+  return {
+    name: 'gameplay',
+    description: 'Run a typed gameplay operation on the existing live carrier.',
+    inputSchema: GAMEPLAY_INPUT_SCHEMA,
+    run: async (args) => {
+      let operation;
+      try {
+        operation = parseGameplayOperation(args);
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            code: 'operation-unsupported',
+            phase: 'dispatch',
+            retryable: false,
+            message: error instanceof Error ? error.message : 'Invalid gameplay operation payload.',
+            hint: { action: 'status' },
+          },
+        };
+      }
+      return adapter
+        ? adapter.execute(operation)
+        : { ok: false, error: { code: 'dependency-gate-closed', phase: 'dependency', retryable: false, message: 'Gameplay adapter is not configured.', hint: { action: 'status' } } };
+    },
+  };
 }

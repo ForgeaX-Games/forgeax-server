@@ -141,7 +141,6 @@ export function readProjectType(gameDir: string): 'reel' | 'engine' | 'game-vide
 }
 
 const GUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
-
 /** After scaffold-copying a game template, give the new game its own identity
  *  for every asset it DEFINES, while leaving references to SHARED/builtin assets
  *  intact.
@@ -361,7 +360,16 @@ async function listAllGames(root: string): Promise<Array<{ slug: string; name: s
 }
 
 
-export function createWorkbenchRouter(): Hono {
+export interface WorkbenchRouterOptions {
+  cloneTemplateAssets?: (input: {
+    sourceGameDir: string;
+    sourceGameId: string;
+    targetGameDir: string;
+    targetGameId: string;
+  }) => Promise<void>;
+}
+
+export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hono {
   const router = new Hono();
 
   // ── GET /active-slug — single-field, low-cost. Polled every 5s by
@@ -706,12 +714,14 @@ export function createWorkbenchRouter(): Hono {
       return c.json({ error: `.forgeax/games/${slug} already exists`, slug }, 409);
     }
     let templateDir: string | null;
+    let templateSlug: string | null = null;
     if (body.template) {
       const tslug = String(body.template).trim();
       if (!GAME_SLUG_RE.test(tslug)) return c.json({ error: 'invalid template slug' }, 400);
       const cand = resolve(assetRoot(), 'games', tslug);
       templateDir = existsSync(cand) ? cand : null;
       if (!templateDir) return c.json({ error: `template not found: ${tslug}` }, 404);
+      templateSlug = tslug;
     } else {
       templateDir = resolveGameTemplate(projectRoot);
     }
@@ -744,12 +754,24 @@ export function createWorkbenchRouter(): Hono {
       const memoPath = join(gameDir, 'FORGE.md');
       const memo = `# ${body.name ?? slug}\n\n${body.brief ? body.brief + '\n' : '_(no brief yet — tell Forge what you want to make)_\n'}`;
       await writeFile(memoPath, memo, 'utf-8');
+      if (templateSlug) {
+        if (!options.cloneTemplateAssets) {
+          throw new Error('video asset template copier is not configured');
+        }
+        await options.cloneTemplateAssets({
+          sourceGameDir: templateDir,
+          sourceGameId: templateSlug,
+          targetGameDir: gameDir,
+          targetGameId: slug,
+        });
+      }
       // A freshly-created game is what the user wants to work on next — record
       // it as the explicit active game and relocate live sessions' cli there,
       // so the agent's shell stops resolving against the previous game.
       setActiveGame(projectRoot, slug);
       return c.json({ ok: true, slug, gameDir: friendlyPath(gameDir) });
     } catch (e) {
+      await rm(gameDir, { recursive: true, force: true });
       return c.json({ error: (e as Error).message }, 500);
     }
   });

@@ -23,6 +23,7 @@ const CONFIG: CosVideoStorageConfig = {
 
 class FakeCosClient implements CosObjectClient {
   deleted: string[] = [];
+  copied: Array<{ sourceKey: string; targetKey: string }> = [];
   readonly heads = new Map<string, { bytes: number; mimeType?: string }>();
 
   signPutCalls: Array<{ key: string; mimeType: string; expiresIn: number }> = [];
@@ -46,11 +47,44 @@ class FakeCosClient implements CosObjectClient {
     return value;
   }
 
+  async copy(sourceKey: string, targetKey: string): Promise<void> {
+    this.copied.push({ sourceKey, targetKey });
+  }
+
   async delete(key: string): Promise<void> {
     this.deleted.push(key);
     this.heads.delete(key);
   }
 }
+
+describe('CosVideoAssetProvider.cloneAsset', () => {
+  test('copies an object into the target game scope', async () => {
+    const mapping = await provider.cloneAsset!(
+      {
+        id: 'intro',
+        kind: 'video',
+        name: 'intro.mp4',
+        status: 'ready',
+        mimeType: 'video/mp4',
+        bytes: FIXTURE_BYTES,
+        createdAt: 1,
+        updatedAt: 1,
+        provider: { kind: 'cos', ref: `videos/demo/${FIXED_UUID}.mp4` },
+      },
+      context,
+      { ...context, gameId: 'new-game' },
+    );
+
+    expect(mapping).toEqual({
+      kind: 'cos',
+      ref: `videos/new-game/${FIXED_UUID}.mp4`,
+    });
+    expect(client.copied).toEqual([{
+      sourceKey: `videos/demo/${FIXED_UUID}.mp4`,
+      targetKey: `videos/new-game/${FIXED_UUID}.mp4`,
+    }]);
+  });
+});
 
 let client: FakeCosClient;
 let provider: ReturnType<typeof createCosVideoAssetProvider>;

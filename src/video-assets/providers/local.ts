@@ -351,6 +351,22 @@ export function createLocalVideoAssetProvider(
       return { kind: 'local', ref: blobRef };
     },
 
+    async cloneAsset(asset, _sourceContext, targetContext) {
+      assertSafeBlobRef(asset.provider.ref);
+      const targetPath = resolve(
+        assetsDirFor(targetContext, getProjectRoot),
+        asset.provider.ref,
+      );
+      if (!existsSync(targetPath) || blobSize(targetPath) !== asset.bytes) {
+        throw new KinoApiError(
+          'Copied template asset is missing',
+          500,
+          'template_asset_copy_failed',
+        );
+      }
+      return { kind: 'local', ref: asset.provider.ref };
+    },
+
     async getPlayback(asset, context) {
       assertSafeBlobRef(asset.provider.ref);
       const assetsDir = assetsDirFor(context, getProjectRoot);

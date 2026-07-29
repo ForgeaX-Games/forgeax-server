@@ -25,6 +25,7 @@ describe('editorGatewayHostTools', () => {
       'query_world',
       'capture_frame',
       'editor_gateway_eval',
+      'gameplay',
     ]);
   });
 

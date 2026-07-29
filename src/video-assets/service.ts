@@ -239,6 +239,78 @@ export class VideoAssetService {
     return resolveGameDir(context.gameId, this.#deps.getProjectRoot);
   }
 
+  async cloneTemplateAssets(input: {
+    sourceGameDir: string;
+    sourceGameId: string;
+    targetGameDir: string;
+    targetGameId: string;
+  }): Promise<void> {
+    const sourceManifest = await this.#deps.manifest.read(input.sourceGameDir);
+    const assets = sourceManifest.assets.filter((asset) => asset.status === 'ready');
+    if (assets.length === 0) return;
+
+    const provider = this.#deps.providers.current();
+    if (typeof provider.cloneAsset !== 'function') {
+      throw new KinoApiError(
+        `Provider ${provider.kind} cannot copy template assets`,
+        501,
+        'template_asset_copy_unsupported',
+      );
+    }
+    const mismatched = assets.find((asset) => asset.provider.kind !== provider.kind);
+    if (mismatched) {
+      throw new KinoApiError(
+        `Template asset provider ${mismatched.provider.kind} does not match active provider ${provider.kind}`,
+        409,
+        'template_asset_provider_mismatch',
+      );
+    }
+
+    const sourceContext: VideoAssetRequestContext = {
+      gameId: input.sourceGameId,
+      identity: 'template-copy',
+      origin: 'http://localhost',
+    };
+    const targetContext: VideoAssetRequestContext = {
+      gameId: input.targetGameId,
+      identity: 'template-copy',
+      origin: 'http://localhost',
+    };
+    const cloned: Array<{ asset: VideoAsset; mapping: VideoAsset['provider'] }> = [];
+
+    try {
+      for (const asset of assets) {
+        const mapping = await provider.cloneAsset(asset, sourceContext, targetContext);
+        cloned.push({ asset, mapping });
+      }
+      const mappings = new Map(cloned.map(({ asset, mapping }) => [asset.id, mapping]));
+      await this.#deps.manifest.mutate(input.targetGameDir, (manifest) => {
+        const clonedAssets = new Map(
+          assets.map((asset) => {
+            const mapping = mappings.get(asset.id)!;
+            return [asset.id, { ...asset, provider: mapping }] as const;
+          }),
+        );
+        manifest.assets = manifest.assets.map((asset) => {
+          const replacement = clonedAssets.get(asset.id);
+          if (!replacement) return asset;
+          clonedAssets.delete(asset.id);
+          return replacement;
+        });
+        for (const asset of clonedAssets.values()) {
+          manifest.assets.push(asset);
+        }
+      });
+    } catch (error) {
+      await Promise.allSettled(
+        cloned.map(({ asset, mapping }) =>
+          provider.delete({ ...asset, provider: mapping }, targetContext),
+        ),
+      );
+      throw error;
+    }
+  }
+
   async prepareUpload(
     input: PrepareUploadInput,
     context: VideoAssetRequestContext,

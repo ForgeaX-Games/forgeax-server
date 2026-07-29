@@ -30,6 +30,7 @@ export interface CosObjectClient {
   signPut(key: string, mimeType: string, expiresIn: number): Promise<string>;
   signGet(key: string, expiresIn: number): Promise<string>;
   head(key: string): Promise<{ bytes: number; mimeType?: string }>;
+  copy(sourceKey: string, targetKey: string): Promise<void>;
   delete(key: string): Promise<void>;
 }
 
@@ -108,6 +109,21 @@ function getSignedObjectUrl(
 ): Promise<COS.GetObjectUrlResult> {
   return new Promise((resolve, reject) => {
     cos.getObjectUrl(params, (error, data) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(data);
+    });
+  });
+}
+
+function copyObject(
+  cos: COS,
+  params: COS.PutObjectCopyParams,
+): Promise<COS.PutObjectCopyResult> {
+  return new Promise((resolve, reject) => {
+    cos.putObjectCopy(params, (error, data) => {
       if (error) {
         reject(error);
         return;
@@ -196,6 +212,17 @@ export function createDefaultCosObjectClient(
         mimeType: typeof mimeType === 'string' ? mimeType : undefined,
       };
     },
+    async copy(sourceKey, targetKey) {
+      const sourceHost = config.endpoint
+        ? `${config.bucket}.${config.endpoint}`
+        : `${config.bucket}.cos.${config.region}.myqcloud.com`;
+      await copyObject(cos, {
+        Bucket: config.bucket,
+        Region: config.region,
+        Key: targetKey,
+        CopySource: `${sourceHost}/${encodeURIComponent(sourceKey)}`,
+      });
+    },
     async delete(key) {
       await cos.deleteObject({
         Bucket: config.bucket,
@@ -278,6 +305,18 @@ export function createCosVideoAssetProvider(
     async finalizeResource(object, _input, context) {
       assertScopedProviderRef(object.ref, context.gameId, config.prefix);
       return { kind: 'cos', ref: object.ref };
+    },
+
+    async cloneAsset(asset, sourceContext, targetContext) {
+      assertScopedProviderRef(asset.provider.ref, sourceContext.gameId, config.prefix);
+      const targetRef = buildMediaObjectKey(
+        targetContext.gameId,
+        randomUuid(),
+        extensionForMime(asset.mimeType),
+        config.prefix,
+      );
+      await client.copy(asset.provider.ref, targetRef);
+      return { kind: 'cos', ref: targetRef };
     },
 
     async getPlayback(asset, context) {

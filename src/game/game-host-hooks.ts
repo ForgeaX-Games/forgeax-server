@@ -10,19 +10,55 @@
 // knowledge of "which extension, which source path" lives here in the product
 // shell (which already owns extension paths via `mp`).
 
-import { existsSync, mkdirSync, readdirSync, statSync, copyFileSync, rmSync, readFileSync } from 'node:fs';
+import { constants } from 'node:fs';
+import { access, copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { mp, assetRoot } from '@forgeax/platform-io';
 
-function copyDirExcludingTests(src: string, dest: string): void {
-  mkdirSync(dest, { recursive: true });
-  for (const name of readdirSync(src)) {
-    if (name === '__tests__') continue;
-    const s = join(src, name);
-    const d = join(dest, name);
-    if (statSync(s).isDirectory()) copyDirExcludingTests(s, d);
-    else copyFileSync(s, d);
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.F_OK);
+    return true;
+  } catch {
+    return false;
   }
+}
+
+async function filesEqual(a: string, b: string): Promise<boolean> {
+  if (!(await exists(b))) return false;
+  const [left, right] = await Promise.all([readFile(a), readFile(b)]);
+  return left.equals(right);
+}
+
+/** Mirror generated component sources without touching identical files.
+ * Vite watches every linked game directory; deleting and recopying the whole
+ * tree on each blueprint save caused a full HMR/reload even when no component
+ * changed, which remounted the editor and showed its initialization overlay. */
+export async function syncComponentsExcludingTests(src: string, dest: string): Promise<void> {
+  await mkdir(dest, { recursive: true });
+  const sourceEntries = (await readdir(src, { withFileTypes: true }))
+    .filter((entry) => entry.name !== '__tests__');
+  const sourceNames = new Set(sourceEntries.map((entry) => entry.name));
+  const destEntries = await readdir(dest, { withFileTypes: true });
+
+  for (const destEntry of destEntries) {
+    const sourceEntry = sourceEntries.find((entry) => entry.name === destEntry.name);
+    const sameShape = sourceEntry
+      && sourceEntry.isDirectory() === destEntry.isDirectory();
+    if (sourceNames.has(destEntry.name) && sameShape) continue;
+    await rm(join(dest, destEntry.name), { recursive: true, force: true });
+  }
+
+  await Promise.all(sourceEntries.map(async (entry) => {
+    const sourcePath = join(src, entry.name);
+    const destPath = join(dest, entry.name);
+    if (entry.isDirectory()) {
+      await syncComponentsExcludingTests(sourcePath, destPath);
+      return;
+    }
+    if (await filesEqual(sourcePath, destPath)) return;
+    await copyFile(sourcePath, destPath);
+  }));
 }
 
 /** wb-game-video component source (dev: extension `src`). */
@@ -45,15 +81,35 @@ export async function gameHostBeforeVersion(args: {
 }): Promise<void> {
   const project = args.project as Project;
   if (project?.platform !== 'wb-game-video') return;
+  const forgePath = resolve(args.gameDir, 'forge.json');
+  if (await exists(forgePath)) {
+    const forge = JSON.parse(await readFile(forgePath, 'utf-8')) as Record<string, unknown>;
+    if (forge.projectType !== 'game-video') {
+      await writeFile(
+        forgePath,
+        `${JSON.stringify({ ...forge, projectType: 'game-video' }, null, 2)}\n`,
+        'utf-8',
+      );
+    }
+  }
   const src = wbGameVideoComponentsSrc();
-  if (!existsSync(src)) return; // prod/dist-only: skip (components already固化 in the release)
+  if (!(await exists(src))) return; // prod/dist-only: components already固化
   const dest = resolve(args.gameDir, 'components');
-  if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
-  copyDirExcludingTests(src, dest);
+  await syncComponentsExcludingTests(src, dest);
 }
 
-/** Load the bundled nodia sample without copying its records into the host. */
-export async function gameHostSeedProvider(args: { slug: string }): Promise<{
+type CloneTemplateAssets = (input: {
+  sourceGameDir: string;
+  sourceGameId: string;
+  targetGameDir: string;
+  targetGameId: string;
+}) => Promise<void>;
+
+/** Load the bundled nodia sample and clone provider-backed media into the target scope. */
+export async function gameHostSeedProvider(
+  args: { slug: string; targetGameDir: string },
+  cloneTemplateAssets: CloneTemplateAssets,
+): Promise<{
   project: Record<string, unknown>;
   blueprint: unknown;
   assetsManifest: unknown;
@@ -61,9 +117,19 @@ export async function gameHostSeedProvider(args: { slug: string }): Promise<{
   const root = resolve(assetRoot(), 'games', 'game-nodia-fighting');
   const blueprintPath = resolve(root, 'blueprint.json');
   const manifestPath = resolve(root, 'assets', 'manifest.json');
-  if (!existsSync(blueprintPath) || !existsSync(manifestPath)) {
+  if (!(await exists(blueprintPath)) || !(await exists(manifestPath))) {
     throw new Error('canonical game-nodia-fighting sample is missing');
   }
+  await cloneTemplateAssets({
+    sourceGameDir: root,
+    sourceGameId: 'game-nodia-fighting',
+    targetGameDir: args.targetGameDir,
+    targetGameId: args.slug,
+  });
+  const [blueprint, assetsManifest] = await Promise.all([
+    readFile(blueprintPath, 'utf-8').then(JSON.parse),
+    readFile(resolve(args.targetGameDir, 'assets', 'manifest.json'), 'utf-8').then(JSON.parse),
+  ]);
   return {
     project: {
       id: args.slug,
@@ -72,7 +138,7 @@ export async function gameHostSeedProvider(args: { slug: string }): Promise<{
       platformVersion: '1',
       entry: { blueprint: 'blueprint.json', components: 'dist/components' },
     },
-    blueprint: JSON.parse(readFileSync(blueprintPath, 'utf-8')),
-    assetsManifest: JSON.parse(readFileSync(manifestPath, 'utf-8')),
+    blueprint,
+    assetsManifest,
   };
 }

@@ -7,6 +7,7 @@ import type {
   CarrierHost,
   CarrierHostHandle,
   CarrierHostObservation,
+  CarrierGameplayTransport,
   EnsureResult,
   RevealResult,
   RuntimeActionFailure,
@@ -253,6 +254,17 @@ export class RuntimeCarrierSupervisor {
 
   snapshot(): RuntimeSnapshot | null {
     return this.#active ? this.#snapshot(this.#active) : null;
+  }
+
+  /**
+   * Return the transport owned by a confirmed active carrier. This is a
+   * capability lookup, not a lifecycle action: gameplay adapters perform the
+   * readiness and identity checks before using it.
+   */
+  gameplay(runtimeId: string): CarrierGameplayTransport | undefined {
+    const active = this.#active;
+    if (!active || active.runtimeId !== runtimeId || active.lifecycle !== 'running') return undefined;
+    return active.host?.gameplay;
   }
 
   async shutdown(): Promise<StopResult | null> {

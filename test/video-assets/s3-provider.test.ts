@@ -22,6 +22,7 @@ const CONFIG: S3VideoStorageConfig = {
 
 class FakeS3Client implements S3ObjectClient {
   deleted: string[] = [];
+  copied: Array<{ sourceKey: string; targetKey: string }> = [];
   readonly heads = new Map<string, { bytes: number; mimeType?: string }>();
 
   signPutCalls: Array<{ key: string; mimeType: string; expiresIn: number }> = [];
@@ -45,11 +46,44 @@ class FakeS3Client implements S3ObjectClient {
     return value;
   }
 
+  async copy(sourceKey: string, targetKey: string): Promise<void> {
+    this.copied.push({ sourceKey, targetKey });
+  }
+
   async delete(key: string): Promise<void> {
     this.deleted.push(key);
     this.heads.delete(key);
   }
 }
+
+describe('S3VideoAssetProvider.cloneAsset', () => {
+  test('copies an object into the target game scope', async () => {
+    const mapping = await provider.cloneAsset!(
+      {
+        id: 'intro',
+        kind: 'video',
+        name: 'intro.mp4',
+        status: 'ready',
+        mimeType: 'video/mp4',
+        bytes: FIXTURE_BYTES,
+        createdAt: 1,
+        updatedAt: 1,
+        provider: { kind: 's3', ref: `uploads/demo/${FIXED_UUID}.mp4` },
+      },
+      context,
+      { ...context, gameId: 'new-game' },
+    );
+
+    expect(mapping).toEqual({
+      kind: 's3',
+      ref: `uploads/new-game/${FIXED_UUID}.mp4`,
+    });
+    expect(client.copied).toEqual([{
+      sourceKey: `uploads/demo/${FIXED_UUID}.mp4`,
+      targetKey: `uploads/new-game/${FIXED_UUID}.mp4`,
+    }]);
+  });
+});
 
 let client: FakeS3Client;
 let provider: ReturnType<typeof createS3VideoAssetProvider>;

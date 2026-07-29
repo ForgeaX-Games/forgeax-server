@@ -8,6 +8,7 @@ import type {
   CarrierHostHandle,
   CarrierHostObservation,
   CarrierHostStartInput,
+  CarrierGameplayTransport,
   RuntimeScope,
 } from './types';
 
@@ -20,6 +21,7 @@ export interface PlaywrightCarrierHostOptions {
 
 interface CarrierEventWindow {
   __forgeaxCarrierLatest?: unknown;
+  __forgeax_carrier_health?: unknown;
   addEventListener: (type: string, listener: (event: { source: unknown; data: unknown }) => void) => void;
   focus: () => void;
 }
@@ -59,15 +61,24 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
         });
         await context.addInitScript(installCarrierEventBuffer);
         const actualScope = options.resolveScope ? await options.resolveScope() : input.scope;
+        // A managed carrier must mount the Studio editor viewport immediately;
+        // a fresh persistent profile would otherwise stop at onboarding before
+        // the in-process ViewportComponent can publish its carrier handshake.
+        await context.addInitScript((scope) => {
+          const storage = (globalThis as unknown as { localStorage: { setItem: (key: string, value: string) => void } }).localStorage;
+          storage.setItem('forgeax.onboarding.v2', JSON.stringify({ v: 2, phase: 'done', done: { tour: true, firstChat: true } }));
+          if (scope.gameId) storage.setItem('forgeax.pinnedSlug', scope.gameId);
+        }, actualScope);
         await page.goto(carrierUrl(baseUrl, input.runtimeId, actualScope, input.ownerToken), {
           waitUntil: 'domcontentloaded',
           timeout: timeoutMs,
         });
         if (input.signal.aborted) throw new Error('Carrier startup was cancelled.');
-        await page.waitForFunction(() => {
+        await page.waitForFunction((expectedRuntimeId) => {
           const latest = (globalThis as unknown as CarrierEventWindow).__forgeaxCarrierLatest;
-          return (latest as { type?: unknown } | null)?.type === 'VAG_CARRIER_HANDSHAKE';
-        }, { timeout: timeoutMs });
+          const health = (globalThis as unknown as CarrierEventWindow).__forgeax_carrier_health as { runtimeId?: unknown } | undefined;
+          return (latest as { type?: unknown } | null)?.type === 'VAG_CARRIER_HANDSHAKE' || health?.runtimeId === expectedRuntimeId;
+        }, input.runtimeId, { timeout: timeoutMs });
         const observation = await readObservation(page, timeoutMs);
         if (!observation) throw new Error('Managed page did not provide a valid carrier handshake.');
         initialNavigationCount = navigationCount;
@@ -80,6 +91,7 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
             await page.bringToFront();
             await page.evaluate(() => (globalThis as unknown as CarrierEventWindow).focus());
           },
+          gameplay: createGameplayTransport(() => page, observation.canvasIdentity),
           stop: async () => { await closeHost(); },
           observe: async () => {
             if (navigationCount > initialNavigationCount) {
@@ -130,19 +142,121 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
   }
 }
 
+function createGameplayTransport(getPage: () => Page | null, expectedCanvasIdentity?: string): CarrierGameplayTransport {
+  const withPage = (): Page => {
+    const current = getPage();
+    if (!current || current.isClosed()) throw new Error('Managed carrier page is closed.');
+    return current;
+  };
+
+  return {
+    async execute(operation: unknown): Promise<unknown> {
+      const current = withPage();
+      const result = await current.evaluate(async (payload) => {
+        const root = globalThis as unknown as {
+          __forgeax_editor?: {
+            readActiveWorld?: () => unknown;
+            dispatchGameplayInput?: (action: unknown) => unknown;
+            gateway?: {
+              mode?: string;
+              playPhase?: string;
+              dispatch?: (op: unknown, origin?: string) => { ok: boolean; error?: unknown };
+              invokeGameAction?: (id: string, args: unknown) => Promise<unknown>;
+              readGameState?: (query: string) => Promise<unknown>;
+            };
+            playSimulation?: () => unknown;
+            stopSimulation?: () => unknown;
+          };
+        };
+        if (!payload || typeof payload !== 'object' || typeof (payload as { operation?: unknown }).operation !== 'string') {
+          return { ok: false, error: { code: 'operation-unsupported', hint: 'A typed gameplay operation is required.' } };
+        }
+        const op = payload as { operation: string; action?: unknown; query?: string };
+        const editor = root.__forgeax_editor;
+        const gateway = editor?.gateway;
+        if (!editor || !gateway) return { ok: false, error: { code: 'surface-unavailable', hint: 'Editor Gateway is not booted.' } };
+        if (op.operation === 'play') {
+          if (gateway.mode !== 'play') await editor.playSimulation?.();
+          return { ok: true, state: 'running' };
+        }
+        if (op.operation === 'gameplayStop') {
+          if (gateway.mode === 'play') await editor.stopSimulation?.();
+          return { ok: true, state: 'stopped' };
+        }
+        if (op.operation === 'input') {
+          if (gateway.mode !== 'play') return { ok: false, error: { code: 'surface-unavailable', hint: 'input requires an active live Play projection' } };
+          if (gateway.invokeGameAction) {
+            const projected = await gateway.invokeGameAction('input', op.action);
+            const projectedError = projected && typeof projected === 'object' && 'ok' in projected && (projected as { ok?: unknown }).ok === false
+              ? (projected as { error?: { code?: unknown } }).error?.code : undefined;
+            if (projectedError !== 'unknown-game-projection') return projected;
+          }
+          if (!editor.dispatchGameplayInput) return { ok: false, error: { code: 'surface-unavailable', hint: 'input surface is unavailable' } };
+          return editor.dispatchGameplayInput(op.action);
+        }
+        if (op.operation === 'query') {
+          if (gateway.mode !== 'play') return { ok: false, error: { code: 'surface-unavailable', hint: 'query requires an active live Play projection' } };
+          if ((op.query ?? '').trim() === 'world' && editor.readActiveWorld) return { ok: true, value: editor.readActiveWorld() };
+          if (!gateway.readGameState) return { ok: false, error: { code: 'surface-unavailable', hint: 'query requires an active live Play projection' } };
+          return await gateway.readGameState((op.query ?? '').trim() || 'world');
+        }
+        return { ok: false, error: { code: 'operation-unsupported', hint: 'Use the capture or reveal transport for that operation.' } };
+      }, operation);
+      if (result && typeof result === 'object' && 'ok' in result && (result as { ok?: unknown }).ok === false) return result;
+      if (operation && typeof operation === 'object' && (operation as { operation?: unknown }).operation === 'play') {
+        await current.waitForFunction(() => (globalThis as unknown as { __forgeax_editor?: { gateway?: { mode?: string } } }).__forgeax_editor?.gateway?.mode === 'play', { timeout: 15_000 });
+      } else if (operation && typeof operation === 'object' && (operation as { operation?: unknown }).operation === 'gameplayStop') {
+        await current.waitForFunction(() => (globalThis as unknown as { __forgeax_editor?: { gateway?: { mode?: string } } }).__forgeax_editor?.gateway?.mode === 'edit', { timeout: 15_000 });
+      }
+      return result;
+    },
+    async capture(): Promise<{ dataUrl: string; bytes: number }> {
+      const current = withPage();
+      const result = await current.evaluate((canvasIdentity) => {
+        const documentRef = (globalThis as unknown as { document?: { querySelectorAll: (selector: string) => ArrayLike<unknown> } }).document;
+        const canvases = documentRef?.querySelectorAll('canvas') ?? [];
+        const canvas = Array.from(canvases).find((candidate) => {
+          const element = candidate as { dataset?: { forgeaxCarrierCanvas?: string } };
+          return canvasIdentity === undefined || element.dataset?.forgeaxCarrierCanvas === canvasIdentity;
+        }) as { isConnected?: boolean; toDataURL?: (type: string) => string } | undefined;
+        if (!canvas || canvas.isConnected !== true || typeof canvas.toDataURL !== 'function') throw new Error('Live carrier canvas is unavailable.');
+        const dataUrl = canvas.toDataURL('image/png');
+        if (!dataUrl.startsWith('data:image/')) throw new Error('Live carrier canvas produced no readable artifact.');
+        return { dataUrl, bytes: dataUrl.length };
+      }, expectedCanvasIdentity);
+      return result;
+    },
+    async focus(): Promise<void> {
+      const current = withPage();
+      await current.bringToFront();
+      await current.evaluate((canvasIdentity) => {
+        const documentRef = (globalThis as unknown as { document?: { querySelectorAll: (selector: string) => ArrayLike<unknown> } }).document;
+        const canvases = documentRef?.querySelectorAll('canvas') ?? [];
+        const canvas = Array.from(canvases).find((candidate) => {
+          const element = candidate as { dataset?: { forgeaxCarrierCanvas?: string } };
+          return canvasIdentity === undefined || element.dataset?.forgeaxCarrierCanvas === canvasIdentity;
+        }) as { focus?: (options?: unknown) => void } | undefined;
+        if (!canvas) throw new Error('Live carrier canvas identity is unavailable.');
+        canvas?.focus?.({ preventScroll: true });
+        (globalThis as unknown as CarrierEventWindow).focus();
+      }, expectedCanvasIdentity);
+    },
+  };
+}
+
 function carrierUrl(baseUrl: string, runtimeId: string, scope: RuntimeScope, ownerToken: string): string {
   const params = new URLSearchParams({
-    game: scope.gameId ?? '_template',
     runtimeId,
     ownershipChallenge: ownerToken,
   });
-  return `${baseUrl}/preview/?${params.toString()}`;
+  return `${baseUrl}/?${params.toString()}`;
 }
 
 async function readObservation(page: Page | null, timeoutMs: number): Promise<CarrierHealthObservation | null> {
   if (!page || page.isClosed()) return null;
   const latest = await page.evaluate(() => (globalThis as unknown as CarrierEventWindow).__forgeaxCarrierLatest);
-  const parsed = parseCarrierHealthMessage(latest);
+  const producerHealth = await page.evaluate(() => (globalThis as unknown as CarrierEventWindow).__forgeax_carrier_health);
+  const parsed = parseCarrierHealthMessage(latest) ?? parseCarrierHealthMessage(producerHealth);
   if (parsed) return parsed;
   await page.waitForTimeout(Math.min(100, timeoutMs));
   return null;

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
@@ -38,6 +39,7 @@ export interface S3ObjectClient {
   signPut(key: string, mimeType: string, expiresIn: number): Promise<string>;
   signGet(key: string, expiresIn: number): Promise<string>;
   head(key: string): Promise<{ bytes: number; mimeType?: string }>;
+  copy(sourceKey: string, targetKey: string): Promise<void>;
   delete(key: string): Promise<void>;
 }
 
@@ -170,6 +172,15 @@ export function createDefaultS3ObjectClient(
         mimeType: response.ContentType,
       };
     },
+    async copy(sourceKey, targetKey) {
+      await client.send(
+        new CopyObjectCommand({
+          Bucket: config.bucket,
+          Key: targetKey,
+          CopySource: `${config.bucket}/${encodeURIComponent(sourceKey)}`,
+        }),
+      );
+    },
     async delete(key) {
       await client.send(
         new DeleteObjectCommand({
@@ -253,6 +264,18 @@ export function createS3VideoAssetProvider(
     async finalizeResource(object, _input, context) {
       assertScopedProviderRef(object.ref, context.gameId, config.prefix);
       return { kind: 's3', ref: object.ref };
+    },
+
+    async cloneAsset(asset, sourceContext, targetContext) {
+      assertScopedProviderRef(asset.provider.ref, sourceContext.gameId, config.prefix);
+      const targetRef = buildMediaObjectKey(
+        targetContext.gameId,
+        randomUuid(),
+        extensionForMime(asset.mimeType),
+        config.prefix,
+      );
+      await client.copy(asset.provider.ref, targetRef);
+      return { kind: 's3', ref: targetRef };
     },
 
     async getPlayback(asset, context) {

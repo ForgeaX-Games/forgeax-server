@@ -129,6 +129,11 @@ export interface VideoAssetProvider {
     input: { resourceId: string; name: string; durationMs?: number },
     context: VideoAssetRequestContext,
   ): Promise<ProviderMapping>;
+  cloneAsset?(
+    asset: VideoAsset,
+    sourceContext: VideoAssetRequestContext,
+    targetContext: VideoAssetRequestContext,
+  ): Promise<ProviderMapping>;
   getPlayback(
     asset: VideoAsset,
     context: VideoAssetRequestContext,

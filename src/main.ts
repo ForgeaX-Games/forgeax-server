@@ -74,6 +74,8 @@ import { createVideoAssetRuntime } from './video-assets/index';
 import { mountRuntimeCarrierApi } from './runtime-carrier/api';
 import { createRuntimeCarrierSupervisor } from './runtime-carrier/supervisor';
 import { createPlaywrightCarrierHost } from './runtime-carrier/playwright-host';
+import { CarrierGameplayAdapter } from './game/carrier-gameplay-adapter';
+import type { W1L1HEvidence } from './game/gameplay-dependency-gate';
 
 // ──────────────────────────────────────────────────────────────────────────
 // FaultBoundary — top-level process-wide exception backstop (perf-analysis-2
@@ -94,6 +96,17 @@ import { createPlaywrightCarrierHost } from './runtime-carrier/playwright-host';
 let serverReady = false;
 // Guards the shutdown handler against double-entry (SIGINT then SIGTERM, etc.).
 let shuttingDown = false;
+
+function readGameplayDependencyEvidence(): Partial<W1L1HEvidence> | undefined {
+  const raw = process.env.FORGEAX_W1L1H_EVIDENCE_JSON;
+  if (!raw) return undefined;
+  try {
+    const value: unknown = JSON.parse(raw);
+    return value && typeof value === 'object' ? value as Partial<W1L1HEvidence> : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function logFatal(kind: string, err: unknown): void {
   const e = err instanceof Error ? err : new Error(String(err));
@@ -239,6 +252,18 @@ const runtimeCarrierSupervisor = createRuntimeCarrierSupervisor({
     },
   }),
 });
+const gameplayAdapter = new CarrierGameplayAdapter({
+  // W1-L1H is an explicit release dependency. Operators may provide the
+  // closeout evidence as JSON; absent evidence keeps the public tool
+  // fail-closed without guessing that a carrier is safe for gameplay.
+  dependencyEvidence: () => readGameplayDependencyEvidence(),
+  supervisor: runtimeCarrierSupervisor,
+  gateway: {
+    execute: (operation, identity) => runtimeCarrierSupervisor.gameplay(identity.runtimeId)?.execute(operation) ?? Promise.resolve({ ok: false, error: { code: 'surface-unavailable', hint: 'The managed carrier has no gameplay transport.' } }),
+    capture: (identity) => runtimeCarrierSupervisor.gameplay(identity.runtimeId)?.capture() ?? Promise.reject(new Error('The managed carrier has no gameplay transport.')),
+    focus: (identity) => runtimeCarrierSupervisor.gameplay(identity.runtimeId)?.focus() ?? Promise.reject(new Error('The managed carrier has no gameplay transport.')),
+  },
+});
 const { app } = await createForgeaxApp({
   projectRoot,
   version: VERSION,
@@ -253,11 +278,16 @@ const { app } = await createForgeaxApp({
   // 游戏语义 host 工具由产品壳经 seam 注入(P1-7 落地阶段A §3 设计意图):
   // list_games / query_world / capture_frame 不再硬编码在 cli——声明 + 宿主侧执行体
   // 都在 src/game/host-tools.ts,cli 只提供通用感知往返(ctx.perception)与信任闸。
-  hostTools: studioHostTools(),
+  hostTools: studioHostTools(gameplayAdapter),
   // 游戏业务路由由产品壳注入(阶段A:原 cli 静态 mount 搬到此)。路由表逐条不变。
   routers: [
     { path: '/api/v1/kino', router: videoAssets.router },
-    { path: '/api/workbench', router: createWorkbenchRouter() },
+    {
+      path: '/api/workbench',
+      router: createWorkbenchRouter({
+        cloneTemplateAssets: (input) => videoAssets.service.cloneTemplateAssets(input),
+      }),
+    },
     { path: '/api/wb/character', router: createCharacterRouter({ projectRoot, env: shimEnv }) },
     { path: '/api/wb/bgm', router: createBgmRouter() },
     {
@@ -292,7 +322,13 @@ const { app } = await createForgeaxApp({
   // game-host 打版本前置钩子:wb-game-video 游戏把平台组件集同步进游戏仓(随版本携带)。
   // 通用 game-host(platform-io) 只调钩子,具体拷贝知识留产品壳(见 game/game-host-hooks.ts)。
   gameHostBeforeVersion,
-  gameHostSeedProvider,
+  gameHostSeedProvider: ({ slug }) => gameHostSeedProvider(
+    {
+      slug,
+      targetGameDir: resolve(defaultProjectRoot(), '.forgeax', 'games', slug),
+    },
+    (input) => videoAssets.service.cloneTemplateAssets(input),
+  ),
 });
 
 await activateServerModules({
