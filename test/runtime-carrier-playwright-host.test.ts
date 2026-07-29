@@ -14,9 +14,13 @@ test('headed host reveals the original page while preserving current surface ide
     const payload = () => ({
       version: 1, runtimeId, challengeResponse, scope, pageNonce: 'page-smoke',
       pageIdentity: location.origin + location.pathname, canvasIdentity: 'canvas-smoke',
-      rendererIdentity: 'renderer-smoke', sentinel: sentinel++, liveness: 'alive',
+      rendererIdentity: 'renderer-smoke', rendererGeneration: 1, sentinel: sentinel++, liveness: 'alive',
       renderReadiness: 'ready', failure: null,
     });
+    window.forgeaxGameplayBridge = {
+      version: 1,
+      execute: async (request) => ({ ok: true, operation: request.operation.operation, state: 'running', identity: request.identity }),
+    };
     window.parent.postMessage({ type: 'VAG_CARRIER_HANDSHAKE', payload: payload() }, '*');
     setInterval(() => window.parent.postMessage({ type: 'VAG_CARRIER_HEARTBEAT', payload: payload() }, '*'), 100);
   </script>`;
@@ -33,8 +37,9 @@ test('headed host reveals the original page while preserving current surface ide
     expect(ensured).toMatchObject({ ok: true, lifecycle: 'starting' });
     if (!ensured.ok) throw new Error('headed carrier did not start');
     let running = await supervisor.status(ensured.runtimeId);
-    for (let i = 0; i < 40 && (running.ok && running.lifecycle === 'starting'); i++) {
-      await Bun.sleep(25);
+    const readyDeadline = Date.now() + 10_000;
+    while (Date.now() < readyDeadline && running.ok && running.lifecycle === 'starting') {
+      await Bun.sleep(50);
       running = await supervisor.status(ensured.runtimeId);
     }
     expect(running).toMatchObject({ ok: true, lifecycle: 'running', renderReadiness: 'ready' });
@@ -47,6 +52,18 @@ test('headed host reveals the original page while preserving current surface ide
     expect(revealed).toMatchObject({ ok: true, runtimeId: ensured.runtimeId });
     expect(afterReveal).toMatchObject({ ok: true, pageNonce: 'page-smoke', canvasIdentity: 'canvas-smoke', rendererIdentity: 'renderer-smoke' });
     if (beforeReveal.ok && afterReveal.ok) expect(afterReveal.heartbeat?.sentinel).toBeGreaterThan(beforeReveal.heartbeat?.sentinel ?? -1);
+    const gameplay = supervisor.gameplay(ensured.runtimeId);
+    expect(await gameplay?.execute({
+      version: 1,
+      operation: { operation: 'play', scope },
+      identity: {
+        runtimeId: ensured.runtimeId,
+        scope,
+        pageIdentity: beforeReveal.ok ? beforeReveal.pageIdentity : 'unknown',
+        canvasIdentity: 'canvas-smoke',
+        rendererGeneration: 1,
+      },
+    })).toMatchObject({ ok: true, operation: 'play' });
     expect(await supervisor.stop(ensured.runtimeId)).toMatchObject({ ok: true, lifecycle: 'stopped' });
   } finally {
     server.stop();

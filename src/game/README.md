@@ -5,8 +5,9 @@ Forge actions against the existing managed Studio carrier:
 
 `Play → input → query → capture → reveal`
 
-The server owns the operation schema, dependency gate, readiness check, and
-provenance comparison. The live Editor Gateway owns dispatch to the World that
+The server owns the operation schema, current carrier readiness check, and
+provenance comparison. Release composition is validated outside the request
+path. The live Editor Gateway owns dispatch to the World that
 already renders in the real `:18920` Studio page. No operation creates a second
 World, renderer, browser page, or fallback `:15173` surface.
 
@@ -51,6 +52,6 @@ The latter is reserved for the managed host and must not be used as a gameplay
 fallback. A stale or tampered capture is rejected before focus or reveal, so a
 failed reveal leaves the current World and carrier intact.
 
-The W1-L1H dependency gate remains fail-closed. Release evidence must include
-the managed Studio server `:18900`, the real UI `:18920`, identity/readiness and
-heartbeat evidence, and continuity evidence showing one page and one renderer.
+Release evidence is a build and CI concern, not a gameplay request-time
+boolean. Each request checks the current carrier identity, readiness, liveness,
+and producer result before returning success.

@@ -69,6 +69,7 @@ describe("gameplay operation contract", () => {
       identity: provenance,
     };
     const error: GameplayError = {
+      owner: "application",
       code: "readiness-pending",
       phase: "ready",
       retryable: true,

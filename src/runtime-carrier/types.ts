@@ -67,6 +67,7 @@ export interface RuntimeSnapshot {
   readonly pageIdentity?: string;
   readonly canvasIdentity?: string;
   readonly rendererIdentity?: string;
+  readonly rendererGeneration?: number;
   readonly heartbeat?: {
     readonly sentinel: number;
     readonly at: string;
@@ -107,6 +108,7 @@ export interface CarrierHostObservation {
   readonly pageIdentity?: string;
   readonly canvasIdentity?: string;
   readonly rendererIdentity?: string;
+  readonly rendererGeneration?: number;
   readonly sentinel?: number;
   readonly at?: string;
   readonly lastFailure?: RuntimeFailure | null;
@@ -125,9 +127,7 @@ export interface CarrierHostHandle extends CarrierHostObservation {
 }
 
 export interface CarrierGameplayTransport {
-  execute(operation: unknown): Promise<unknown>;
-  capture(): Promise<{ dataUrl: string; bytes: number }>;
-  focus(): Promise<void>;
+  execute(request: unknown): Promise<unknown>;
 }
 
 export interface CarrierHost {

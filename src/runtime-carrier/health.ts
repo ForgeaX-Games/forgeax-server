@@ -27,6 +27,7 @@ export interface CarrierHealthObservation {
   readonly pageIdentity: string;
   readonly canvasIdentity: string;
   readonly rendererIdentity: string;
+  readonly rendererGeneration?: number;
   readonly sentinel: number;
   readonly liveness: RuntimeLiveness;
   readonly renderReadiness: RenderReadiness;
@@ -62,10 +63,12 @@ export function parseCarrierHealthMessage(value: unknown): CarrierHealthObservat
   const pageIdentity = nonEmptyString(payload.pageIdentity);
   const canvasIdentity = nonEmptyString(payload.canvasIdentity);
   const rendererIdentity = nonEmptyString(payload.rendererIdentity);
+  const rendererGeneration = payload.rendererGeneration;
   const sentinel = payload.sentinel;
   const liveness = payload.liveness;
   const renderReadiness = payload.renderReadiness;
   if (runtimeId === undefined || (payload.challengeResponse !== null && payload.challengeResponse !== undefined && !challengeResponse) || !pageNonce || !pageIdentity || !canvasIdentity || !rendererIdentity) return null;
+  if (rendererGeneration !== undefined && (typeof rendererGeneration !== 'number' || !Number.isInteger(rendererGeneration) || rendererGeneration < 0)) return null;
   if (typeof sentinel !== 'number' || !Number.isInteger(sentinel) || sentinel < 0) return null;
   if (typeof liveness !== 'string' || !LIVENESS.has(liveness)) return null;
   if (typeof renderReadiness !== 'string' || !READINESS.has(renderReadiness)) return null;
@@ -85,6 +88,7 @@ export function parseCarrierHealthMessage(value: unknown): CarrierHealthObservat
     pageIdentity,
     canvasIdentity,
     rendererIdentity,
+    ...(rendererGeneration === undefined ? {} : { rendererGeneration }),
     sentinel,
     liveness: liveness as RuntimeLiveness,
     renderReadiness: renderReadiness as RenderReadiness,

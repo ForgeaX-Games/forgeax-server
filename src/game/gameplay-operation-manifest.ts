@@ -6,22 +6,32 @@
  * dispatch. This manifest is descriptive; it does not create a second World,
  * renderer, or `/preview/` runtime.
  */
-import { GAMEPLAY_OPERATIONS, type GameplayOperationName } from "./gameplay-operation-contract";
+import {
+  GAMEPLAY_CONTRACT_VERSION,
+  GAMEPLAY_OPERATIONS,
+  GAMEPLAY_PROVENANCE_FIELDS,
+  type GameplayOperationName,
+} from "./gameplay-operation-contract";
 
 export type GameplayOperationManifest = {
+  version: typeof GAMEPLAY_CONTRACT_VERSION;
+  contract: {
+    version: typeof GAMEPLAY_CONTRACT_VERSION;
+    operations: readonly GameplayOperationName[];
+  };
   operations: readonly GameplayOperationName[];
   carrierLifecycle: readonly ["ensure", "status", "reveal", "stop"];
-  dependencyGate: "W1-L1H";
   requiresReadyIdentity: true;
-  provenance: readonly ["runtimeId", "scope", "pageIdentity", "canvasIdentity", "rendererGeneration"];
+  provenance: typeof GAMEPLAY_PROVENANCE_FIELDS;
   gameplayStopIsDistinctFromCarrierStop: true;
 };
 
 export const GAMEPLAY_OPERATION_MANIFEST: GameplayOperationManifest = {
+  version: GAMEPLAY_CONTRACT_VERSION,
+  contract: { version: GAMEPLAY_CONTRACT_VERSION, operations: GAMEPLAY_OPERATIONS },
   operations: GAMEPLAY_OPERATIONS,
   carrierLifecycle: ["ensure", "status", "reveal", "stop"],
-  dependencyGate: "W1-L1H",
   requiresReadyIdentity: true,
-  provenance: ["runtimeId", "scope", "pageIdentity", "canvasIdentity", "rendererGeneration"],
+  provenance: GAMEPLAY_PROVENANCE_FIELDS,
   gameplayStopIsDistinctFromCarrierStop: true,
 };

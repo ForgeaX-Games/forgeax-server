@@ -1,109 +1,84 @@
 import { describe, expect, test } from 'bun:test';
 import { CarrierGameplayAdapter } from '../src/game/carrier-gameplay-adapter';
 
-const evidence = {
-  merged: { sha: 'abc', ci: 'green' }, identity: true, readiness: true,
-  heartbeat: true, reload: true, shutdown: true,
-  studio: { server: '18900' as const, ui: '18920' as const, smoke: true },
+const scope = { projectId: 'project', gameId: 'game' };
+const identity = {
+  runtimeId: 'runtime-1',
+  scope,
+  pageIdentity: 'page-1',
+  canvasIdentity: 'canvas-1',
+  rendererGeneration: 1,
 };
 const ready = {
   ok: true as const, action: 'ensure' as const, runtimeId: 'runtime-1', lifecycle: 'running' as const,
   liveness: 'alive' as const, renderReadiness: 'ready' as const,
-  confirmedScope: { projectId: 'project', gameId: 'game' }, lastFailure: null,
-  pageIdentity: 'page-1', canvasIdentity: 'canvas-1', rendererIdentity: 'renderer-1',
+  confirmedScope: scope, lastFailure: null,
+  pageIdentity: 'page-1', canvasIdentity: 'canvas-1', rendererIdentity: 'renderer-1', rendererGeneration: 1,
 };
 
-describe('CarrierGameplayAdapter ready gate', () => {
-  test('does not dispatch while pending or when identity changes before dispatch', async () => {
-    let dispatches = 0;
-    let snapshot: any = { ...ready, renderReadiness: 'pending' };
-    const adapter = new CarrierGameplayAdapter({
-      dependencyEvidence: () => evidence,
-      supervisor: { ensure: async () => snapshot, status: async () => ({ ...ready, pageIdentity: 'page-2' }) } as never,
-      gateway: { execute: async () => { dispatches += 1; return { ok: true }; } },
-    });
-    await expect(adapter.execute({ operation: 'play', scope: { projectId: 'project', gameId: 'game' } })).resolves.toMatchObject({ ok: false });
-    expect(dispatches).toBe(0);
-    snapshot = { ...ready };
-    const result = await adapter.execute({ operation: 'play', scope: { projectId: 'project', gameId: 'game' } });
-    expect(result.ok).toBe(false);
-    expect(dispatches).toBe(0);
+function createAdapter(status: unknown, execute: (request: unknown) => Promise<unknown>) {
+  return new CarrierGameplayAdapter({
+    supervisor: { ensure: async () => ready, status: async () => status } as never,
+    gateway: { execute },
   });
+}
 
-  test('dispatches once for a confirmed ready identity', async () => {
+describe('CarrierGameplayAdapter ready gate', () => {
+  test('waits for a cold carrier before dispatching once', async () => {
     let dispatches = 0;
+    let statusCalls = 0;
     const adapter = new CarrierGameplayAdapter({
-      dependencyEvidence: () => evidence,
-      supervisor: { ensure: async () => ready, status: async () => ready } as never,
-      gateway: { execute: async () => { dispatches += 1; return { ok: true, state: 'running' }; } },
+      supervisor: {
+        ensure: async () => ({ ...ready, lifecycle: 'starting' as const, renderReadiness: 'pending' as const }),
+        status: async () => statusCalls++ === 0 ? { ...ready, lifecycle: 'starting' as const, renderReadiness: 'pending' as const } : ready,
+      } as never,
+      gateway: { execute: async () => { dispatches += 1; return { ok: true, operation: 'play', state: 'running', identity }; } },
     });
-    await expect(adapter.execute({ operation: 'play', scope: { projectId: 'project', gameId: 'game' } })).resolves.toMatchObject({ ok: true });
+    await expect(adapter.execute({ operation: 'play', scope })).resolves.toMatchObject({ ok: true, state: 'running' });
     expect(dispatches).toBe(1);
   });
 
-  test('returns health-stale without dispatching when the carrier heartbeat is stale', async () => {
+  test('does not dispatch when identity changes before dispatch', async () => {
+    let dispatches = 0;
+    let statusCalls = 0;
+    const changed = { ...ready, pageIdentity: 'page-2' };
+    const adapter = new CarrierGameplayAdapter({
+      supervisor: { ensure: async () => ready, status: async () => { statusCalls += 1; return changed; } } as never,
+      gateway: { execute: async () => { dispatches += 1; return { ok: true, operation: 'play', state: 'running', identity }; } },
+    });
+    await expect(adapter.execute({ operation: 'play', scope })).resolves.toMatchObject({
+      ok: false, error: { code: 'identity-mismatch', details: { mismatches: [{ field: 'pageIdentity' }] } },
+    });
+    expect(dispatches).toBe(0);
+  });
+
+  test('returns health-stale without dispatching', async () => {
     let dispatches = 0;
     const stale = {
       ...ready,
       liveness: 'unreachable' as const,
       renderReadiness: 'unavailable' as const,
-      lastFailure: { code: 'HEALTH_STALE', stage: 'heartbeat', retryable: true, hint: 'status', at: new Date().toISOString(), message: 'stale' },
+      lastFailure: { code: 'HEALTH_STALE', retryable: true, message: 'stale' },
     };
-    const adapter = new CarrierGameplayAdapter({
-      dependencyEvidence: () => evidence,
-      supervisor: { ensure: async () => stale, status: async () => stale } as never,
-      gateway: { execute: async () => { dispatches += 1; return { ok: true }; } },
-    });
-    await expect(adapter.execute({ operation: 'play', scope: { projectId: 'project', gameId: 'game' } })).resolves.toMatchObject({
-      ok: false, error: { code: 'health-stale', readiness: 'stale' },
-    });
+    const adapter = createAdapter(stale, async () => { dispatches += 1; return { ok: true, operation: 'play', state: 'running', identity }; });
+    await expect(adapter.execute({ operation: 'play', scope })).resolves.toMatchObject({ ok: false, error: { code: 'HEALTH_STALE' } });
     expect(dispatches).toBe(0);
   });
 
-  test('keeps ordinary unavailable carriers on surface-unavailable', async () => {
+  test('keeps ordinary unavailable carriers on a structured carrier error', async () => {
     const unavailable = { ...ready, liveness: 'terminated' as const, renderReadiness: 'unavailable' as const, lastFailure: null };
-    const adapter = new CarrierGameplayAdapter({
-      dependencyEvidence: () => evidence,
-      supervisor: { ensure: async () => unavailable, status: async () => unavailable } as never,
-      gateway: { execute: async () => ({ ok: true }) },
-    });
-    await expect(adapter.execute({ operation: 'play', scope: { projectId: 'project', gameId: 'game' } })).resolves.toMatchObject({
-      ok: false, error: { code: 'surface-unavailable', readiness: 'unavailable' },
-    });
+    const adapter = createAdapter(unavailable, async () => ({ ok: true, operation: 'play', state: 'running', identity }));
+    await expect(adapter.execute({ operation: 'play', scope })).resolves.toMatchObject({ ok: false, error: { owner: 'carrier', code: 'surface-unavailable' } });
   });
 
-  test('reveals a matching capture without dispatching an unsupported producer operation', async () => {
+  test('reveals a matching capture through the producer', async () => {
     let dispatches = 0;
-    let focuses = 0;
-    const provenance = {
-      runtimeId: 'runtime-1',
-      scope: { projectId: 'project', gameId: 'game' },
-      pageIdentity: 'page-1',
-      canvasIdentity: 'canvas-1',
-      rendererGeneration: 1,
-    };
-    const adapter = new CarrierGameplayAdapter({
-      dependencyEvidence: () => evidence,
-      supervisor: { ensure: async () => ({ ...ready, rendererIdentity: 'renderer-1-generation-1' }), status: async () => ({ ...ready, rendererIdentity: 'renderer-1-generation-1' }) } as never,
-      gateway: {
-        execute: async () => { dispatches += 1; return { ok: false, error: { code: 'operation-unsupported' } }; },
-        focus: async () => { focuses += 1; },
-      },
+    const artifact = { dataUrl: 'data:image/png;base64,AA==', bytes: 30, provenance: identity };
+    const adapter = createAdapter(ready, async () => {
+      dispatches += 1;
+      return { ok: true, operation: 'reveal', state: 'running', identity, data: artifact };
     });
-    await expect(adapter.execute({ operation: 'reveal', scope: provenance.scope, artifact: { dataUrl: 'data:image/png;base64,AA==', bytes: 30, provenance } })).resolves.toMatchObject({ ok: true, operation: 'reveal' });
-    expect(dispatches).toBe(0);
-    expect(focuses).toBe(1);
-  });
-
-  test('returns a structured failure for a malformed reveal artifact', async () => {
-    const adapter = new CarrierGameplayAdapter({
-      dependencyEvidence: () => evidence,
-      supervisor: { ensure: async () => ready, status: async () => ready } as never,
-      gateway: { execute: async () => ({ ok: true }) },
-    });
-    await expect(adapter.execute({ operation: 'reveal', scope: ready.confirmedScope, artifact: null })).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'operation-failed', phase: 'reveal', hint: { action: 'capture-again' } },
-    });
+    await expect(adapter.execute({ operation: 'reveal', scope, artifact })).resolves.toMatchObject({ ok: true, operation: 'reveal' });
+    expect(dispatches).toBe(1);
   });
 });

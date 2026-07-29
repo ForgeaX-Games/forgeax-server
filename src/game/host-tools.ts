@@ -181,6 +181,7 @@ export function gameplayHostTool(adapter?: CarrierGameplayAdapter): HostToolSpec
         return {
           ok: false,
           error: {
+            owner: 'contract',
             code: 'operation-unsupported',
             phase: 'dispatch',
             retryable: false,
@@ -191,7 +192,7 @@ export function gameplayHostTool(adapter?: CarrierGameplayAdapter): HostToolSpec
       }
       return adapter
         ? adapter.execute(operation)
-        : { ok: false, error: { code: 'dependency-gate-closed', phase: 'dependency', retryable: false, message: 'Gameplay adapter is not configured.', hint: { action: 'status' } } };
+        : { ok: false, error: { owner: 'application', code: 'surface-unavailable', phase: 'dispatch', retryable: false, message: 'Gameplay application service is not configured.', hint: { action: 'status' } } };
     },
   };
 }

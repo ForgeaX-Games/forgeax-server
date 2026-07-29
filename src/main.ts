@@ -75,7 +75,6 @@ import { mountRuntimeCarrierApi } from './runtime-carrier/api';
 import { createRuntimeCarrierSupervisor } from './runtime-carrier/supervisor';
 import { createPlaywrightCarrierHost } from './runtime-carrier/playwright-host';
 import { CarrierGameplayAdapter } from './game/carrier-gameplay-adapter';
-import type { W1L1HEvidence } from './game/gameplay-dependency-gate';
 
 // ──────────────────────────────────────────────────────────────────────────
 // FaultBoundary — top-level process-wide exception backstop (perf-analysis-2
@@ -96,17 +95,6 @@ import type { W1L1HEvidence } from './game/gameplay-dependency-gate';
 let serverReady = false;
 // Guards the shutdown handler against double-entry (SIGINT then SIGTERM, etc.).
 let shuttingDown = false;
-
-function readGameplayDependencyEvidence(): Partial<W1L1HEvidence> | undefined {
-  const raw = process.env.FORGEAX_W1L1H_EVIDENCE_JSON;
-  if (!raw) return undefined;
-  try {
-    const value: unknown = JSON.parse(raw);
-    return value && typeof value === 'object' ? value as Partial<W1L1HEvidence> : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 function logFatal(kind: string, err: unknown): void {
   const e = err instanceof Error ? err : new Error(String(err));
@@ -253,15 +241,9 @@ const runtimeCarrierSupervisor = createRuntimeCarrierSupervisor({
   }),
 });
 const gameplayAdapter = new CarrierGameplayAdapter({
-  // W1-L1H is an explicit release dependency. Operators may provide the
-  // closeout evidence as JSON; absent evidence keeps the public tool
-  // fail-closed without guessing that a carrier is safe for gameplay.
-  dependencyEvidence: () => readGameplayDependencyEvidence(),
   supervisor: runtimeCarrierSupervisor,
   gateway: {
-    execute: (operation, identity) => runtimeCarrierSupervisor.gameplay(identity.runtimeId)?.execute(operation) ?? Promise.resolve({ ok: false, error: { code: 'surface-unavailable', hint: 'The managed carrier has no gameplay transport.' } }),
-    capture: (identity) => runtimeCarrierSupervisor.gameplay(identity.runtimeId)?.capture() ?? Promise.reject(new Error('The managed carrier has no gameplay transport.')),
-    focus: (identity) => runtimeCarrierSupervisor.gameplay(identity.runtimeId)?.focus() ?? Promise.reject(new Error('The managed carrier has no gameplay transport.')),
+    execute: (request) => runtimeCarrierSupervisor.gameplay(request.identity.runtimeId)?.execute(request) ?? Promise.resolve({ ok: false, error: { owner: 'transport', code: 'surface-unavailable', phase: 'dispatch', retryable: true, message: 'The managed carrier has no gameplay transport.', hint: { action: 'status' } } }),
   },
 });
 const { app } = await createForgeaxApp({

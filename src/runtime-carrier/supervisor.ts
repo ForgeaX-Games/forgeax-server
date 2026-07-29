@@ -69,6 +69,7 @@ interface ActiveRuntime {
   pageIdentity?: string;
   canvasIdentity?: string;
   rendererIdentity?: string;
+  rendererGeneration?: number;
   heartbeat?: { sentinel: number; at: string };
   host?: CarrierHostHandle;
   stopRequested: boolean;
@@ -612,6 +613,7 @@ export class RuntimeCarrierSupervisor {
     if (observation.pageIdentity) active.pageIdentity = observation.pageIdentity;
     if (observation.canvasIdentity) active.canvasIdentity = observation.canvasIdentity;
     if (observation.rendererIdentity) active.rendererIdentity = observation.rendererIdentity;
+    if (observation.rendererGeneration !== undefined) active.rendererGeneration = observation.rendererGeneration;
     if (observation.sentinel !== undefined) {
       const previousSentinel = active.heartbeat?.sentinel;
       if (previousSentinel === undefined || observation.sentinel > previousSentinel) {
@@ -643,6 +645,7 @@ export class RuntimeCarrierSupervisor {
       pageIdentity: observation.pageIdentity,
       canvasIdentity: observation.canvasIdentity,
       rendererIdentity: observation.rendererIdentity,
+      rendererGeneration: observation.rendererGeneration,
       sentinel: observation.sentinel,
       lastFailure: observation.failure ? undefined : null,
     });
@@ -650,6 +653,7 @@ export class RuntimeCarrierSupervisor {
     active.pageIdentity = observation.pageIdentity;
     active.canvasIdentity = observation.canvasIdentity;
     active.rendererIdentity = observation.rendererIdentity;
+    active.rendererGeneration = observation.rendererGeneration;
     if (observation.failure) {
       const failure = runtimeFailure({
         code: observation.failure.code,
@@ -683,6 +687,7 @@ export class RuntimeCarrierSupervisor {
         pageIdentity: value.pageIdentity,
         canvasIdentity: value.canvasIdentity,
         rendererIdentity: value.rendererIdentity ? value.rendererIdentity : undefined,
+        rendererGeneration: value.rendererGeneration,
         heartbeat: value.heartbeat ? { ...value.heartbeat } : undefined,
       };
     }
