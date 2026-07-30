@@ -49,6 +49,10 @@ describe('video game host hooks', () => {
     const targetGameDir = await mkdtemp(join(tmpdir(), 'forgeax-video-seed-'));
     roots.push(targetGameDir);
     await mkdir(join(targetGameDir, 'assets'), { recursive: true });
+    const templateBlueprint = JSON.parse(await readFile(
+      join(import.meta.dir, '../../games/game-nodia-fighting/blueprint.json'),
+      'utf8',
+    ));
 
     const seed = await gameHostSeedProvider(
       { slug: 'target-game', targetGameDir },
@@ -79,24 +83,7 @@ describe('video game host hooks', () => {
         provider: { key: 'games/target-game/video/video-1.mp4' },
       }],
     });
-    expect(seed.blueprint).toEqual({
-      version: 'wb-game-video.graph.v1',
-      entities: {},
-      variables: {},
-      graph: { nodes: [], edges: [] },
-      manifest: {
-        version: 'wb-game-video.blueprint-manifest.v1',
-        mainPackId: 'bp-main',
-        packs: {
-          'bp-main': {
-            id: 'bp-main',
-            title: '主蓝图',
-            entry: 'entry',
-            graph: { nodes: [], edges: [] },
-          },
-        },
-      },
-    });
+    expect(seed.blueprint).toEqual(templateBlueprint);
   });
 
   test('stamps the game type when preparing the initial video version', async () => {

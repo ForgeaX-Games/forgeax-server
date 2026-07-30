@@ -109,28 +109,7 @@ type CloneTemplateAssets = (input: {
   targetGameId: string;
 }) => Promise<void>;
 
-/** A new video game starts with one editable main blueprint and no gameplay data. */
-function emptyVideoGameBlueprint(): Record<string, unknown> {
-  const main = {
-    id: 'bp-main',
-    title: '主蓝图',
-    entry: 'entry',
-    graph: { nodes: [], edges: [] },
-  };
-  return {
-    version: 'wb-game-video.graph.v1',
-    entities: {},
-    variables: {},
-    graph: main.graph,
-    manifest: {
-      version: 'wb-game-video.blueprint-manifest.v1',
-      mainPackId: main.id,
-      packs: { [main.id]: main },
-    },
-  };
-}
-
-/** Clone bundled Nodia media into the target scope, but start from an empty blueprint. */
+/** Load the bundled Nodia template and clone provider-backed media into the target scope. */
 export async function gameHostSeedProvider(
   args: { slug: string; targetGameDir: string },
   cloneTemplateAssets: CloneTemplateAssets,
@@ -140,8 +119,9 @@ export async function gameHostSeedProvider(
   assetsManifest: unknown;
 }> {
   const root = resolve(assetRoot(), 'games', 'game-nodia-fighting');
+  const blueprintPath = resolve(root, 'blueprint.json');
   const manifestPath = resolve(root, 'assets', 'manifest.json');
-  if (!(await exists(manifestPath))) {
+  if (!(await exists(blueprintPath)) || !(await exists(manifestPath))) {
     throw new Error('canonical game-nodia-fighting sample is missing');
   }
   await cloneTemplateAssets({
@@ -150,10 +130,10 @@ export async function gameHostSeedProvider(
     targetGameDir: args.targetGameDir,
     targetGameId: args.slug,
   });
-  const assetsManifest = await readFile(
-    resolve(args.targetGameDir, 'assets', 'manifest.json'),
-    'utf-8',
-  ).then(JSON.parse);
+  const [blueprint, assetsManifest] = await Promise.all([
+    readFile(blueprintPath, 'utf-8').then(JSON.parse),
+    readFile(resolve(args.targetGameDir, 'assets', 'manifest.json'), 'utf-8').then(JSON.parse),
+  ]);
   return {
     project: {
       id: args.slug,
@@ -162,7 +142,7 @@ export async function gameHostSeedProvider(
       platformVersion: '1',
       entry: { blueprint: 'blueprint.json', components: 'dist/components' },
     },
-    blueprint: emptyVideoGameBlueprint(),
+    blueprint,
     assetsManifest,
   };
 }

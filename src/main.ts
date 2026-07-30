@@ -57,6 +57,7 @@ import {
 import { createCeApiShimRouter } from './game/ce-api-shim';
 import { GameSystemPromptComposer } from './game/system-prompt-composer';
 import { studioHostTools } from './game/host-tools';
+import { createAssetCanvasInputsRouter } from './game/asset-canvas-inputs';
 import { gameHostBeforeVersion, gameHostSeedProvider } from './game/game-host-hooks';
 // 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
 import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
@@ -310,6 +311,15 @@ await activateServerModules({
   },
 });
 
+app.route(
+  '/api/asset-canvas-inputs',
+  createAssetCanvasInputsRouter(() => defaultProjectRoot()),
+);
+
+// projectRoot 必须每请求实时读 defaultProjectRoot():POST /api/workspaces/activate
+// 热切换只改 process.env.FORGEAX_PROJECT_ROOT,启动时固化的 const projectRoot 不会跟。
+// edit-runtime 的 Play 模式用这里的 projectRootAbs 拼游戏入口的 /@fs 绝对 URL——上报
+// 旧根会让切换后的 workspace 游戏入口 404 → 世界无相机 → 每帧 RhiError。
 // W1-L1 runtime carrier surface. The supervisor owns only a future revealable
 // :18920 carrier; the existing :15173 preview proxy remains unmanaged.
 mountRuntimeCarrierApi(app, runtimeCarrierSupervisor);
