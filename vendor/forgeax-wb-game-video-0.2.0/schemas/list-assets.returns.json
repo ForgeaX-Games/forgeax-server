@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "wb-game-video:list-assets returns",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["assets"],
+  "properties": {
+    "assets": { "type": "array", "items": { "type": "object" }, "description": "MediaAsset[] from the shared registry (optionally filtered)." },
+    "error": { "type": "string" }
+  }
+}

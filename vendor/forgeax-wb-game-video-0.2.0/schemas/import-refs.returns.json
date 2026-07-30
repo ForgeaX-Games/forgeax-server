@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "wb-game-video:import-*-refs returns",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["refs"],
+  "properties": {
+    "refs": { "type": "array", "items": { "type": "object" }, "description": "The read-only ref MediaAsset[] registered into the shared registry (externalPath points back to the source module's files)." },
+    "error": { "type": "string" }
+  }
+}

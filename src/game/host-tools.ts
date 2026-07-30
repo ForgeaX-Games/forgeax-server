@@ -77,6 +77,9 @@ const gameplayArtifactSchema = {
 } as const;
 
 export const GAMEPLAY_INPUT_SCHEMA = {
+  // Anthropic 的 tool input_schema 要求顶层必须有 `type`，即使用 oneOf 组合校验
+  // （每个分支已各自声明 type: 'object'，这里补顶层声明与之一致，不改变校验语义）。
+  type: 'object',
   oneOf: [
     ...(['play', 'gameplayStop', 'capture'] as const).map((operation) => ({
       type: 'object',

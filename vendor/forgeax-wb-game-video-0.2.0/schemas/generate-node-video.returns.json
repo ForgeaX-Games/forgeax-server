@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "wb-game-video:generate-node-video returns",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "assets": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "Generated video_clip MediaAssets in segment order (length 1 when duration <= 15s). Bind them to the node in order (multi-clip timeline) or use assets[0].id for a single clip."
+    },
+    "error": { "type": "string" }
+  }
+}

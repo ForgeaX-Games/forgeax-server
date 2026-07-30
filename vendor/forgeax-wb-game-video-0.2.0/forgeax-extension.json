@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "id": "@forgeax/wb-game-video",
+  "version": "0.2.0",
+  "kind": "workbench",
+  "displayName": { "zh": "视频游戏", "en": "Video Game Studio" },
+  "description": {
+    "zh": "视频游戏（玩法优先）蓝图编辑器与运行时 · 演出节点图 + Boss 战 / 血条 / QTE 闯关 / 限时·暂停选择 / 可点热点，新引擎 GameGraph 为唯一 SSOT",
+    "en": "Video-game (gameplay-on-video) blueprint editor & runtime — a graph of performance nodes with boss battles, HP bars, QTE, timed/pause choices, clickable hotspots. The GameGraph engine is the single source of truth."
+  },
+  "author": { "name": "forgeax", "email": "dev@forgeax.local" },
+  "icon": "🎮",
+  "keywords": [
+    "game-video",
+    "video-game",
+    "gameplay",
+    "boss",
+    "qte",
+    "blueprint",
+    "graph"
+  ],
+  "provides": {
+    "workbench": {
+      "id": "wb-game-video",
+      "lens": "by-category",
+      "icon": "🎮",
+      "position": 161,
+      "panelSize": "lg",
+      "surface": "split",
+      "panes": {
+        "left":   { "minWidth": 320, "scrollable": true },
+        "center": { "minHeight": 600, "scrollable": false }
+      },
+      "matchProduces": [
+        "**/blueprint.json",
+        "**/assets/manifest.json"
+      ],
+      "preferredAgent": "@forgeax-extension/agent-nodia"
+    },
+    "skills": [
+      {
+        "id": "wb-game-video:author-guide",
+        "entry": "./SKILL.md",
+        "trigger": "/wb-game-video"
+      }
+    ],
+    "tools": [
+      {
+        "id": "wb-game-video:get-graph",
+        "args": "./schemas/get-graph.args.json",
+        "returns": "./schemas/get-graph.returns.json",
+        "exposedToAI": true,
+        "description": {
+          "zh": "读取宿主绑定游戏的库文档（原 scenario 形状 + manifest.packs，含主蓝图）；无盘数据时返回 { project: null }。游戏身份由宿主上下文提供。改图前先调它拿现有蓝图与 nodes/edges。",
+          "en": "Read the host-bound game's library document (original scenario shape + manifest.packs including main), or { project: null } when there is no disk data. Game identity comes from the host context. Call before editing to get blueprints and their nodes/edges."
+        }
+      },
+      {
+        "id": "wb-game-video:save-graph",
+        "args": "./schemas/save-graph.args.json",
+        "returns": "./schemas/save-graph.returns.json",
+        "exposedToAI": true,
+        "description": {
+          "zh": "整本覆盖写宿主绑定游戏的 GraphLibraryDocument 到 blueprint.json；首次写入时补 project.json。游戏身份不由工具参数选择。title 当前忽略，成功固定返回 {ok:true, versions:[], gameSlug}；缺 project 时返回 {ok:false, errors}。",
+          "en": "Overwrite the host-bound game's GraphLibraryDocument in blueprint.json and create project.json on the first write. Tool arguments cannot select game identity. title is currently ignored. Success returns {ok:true, versions:[], gameSlug}; a missing project returns {ok:false, errors}."
+        }
+      },
+      {
+        "id": "wb-game-video:list-videos",
+        "args": "./schemas/list-videos.args.json",
+        "returns": "./schemas/list-videos.returns.json",
+        "exposedToAI": true,
+        "description": {
+          "zh": "列出内置演出视频库可用的 media.ref（basename）。编排节点绑视频前先调它看有哪些片段。",
+          "en": "List available built-in performance-video media.ref values (basenames). Call before binding videos to nodes."
+        }
+      },
+      {
+        "id": "wb-game-video:generate-shot-script",
+        "args": "./schemas/generate-shot-script.args.json",
+        "returns": "./schemas/generate-shot-script.returns.json",
+        "exposedToAI": true,
+        "description": {
+          "zh": "第1步·为一个演出节点生成 Seedance V2 镜头脚本（防字幕/一致性/POV 等 prompt IP，纯文本，不落素材层）。生成视频前先拿它作 seedancePrompt。",
+          "en": "Step 1: generate a Seedance V2 shot script for one node (anti-subtitle / consistency / POV prompt IP; text only, no registry write). Get it first as the seedancePrompt before generating video."
+        }
+      },
+      {
+        "id": "wb-game-video:generate-keyframe",
+        "args": "./schemas/generate-keyframe.args.json",
+        "returns": "./schemas/generate-keyframe.returns.json",
+        "exposedToAI": true,
+        "description": {
+          "zh": "第2步·生成一张分镜图/关键帧，落共享素材层。可传 character_ref/scene_ref 作只读参考图、styleAxes 覆盖风格三轴。mode='keyframe'（默认，单帧彩色关键帧→shot_image）或 'grid_storyboard'（6 面板黑白 previs 故事板→grid_storyboard，grid 里可给 nodeRole/endingKind/choiceRevealMoment）。返回 MediaAsset。",
+          "en": "Step 2: generate a keyframe/storyboard image into the shared registry. Pass character_ref/scene_ref as read-only refs and styleAxes to override the 3-axis style. mode='keyframe' (default, single colored keyframe -> shot_image) or 'grid_storyboard' (6-panel B&W previs storyboard -> grid_storyboard; grid.nodeRole/endingKind/choiceRevealMoment steer hard contracts). Returns a MediaAsset."
+        }
+      },
+      {
+        "id": "wb-game-video:generate-video",
+        "args": "./schemas/generate-video.args.json",
+        "returns": "./schemas/generate-video.returns.json",
+        "exposedToAI": true,
+        "description": {
+          "zh": "第3步·为一节点生成一段视频（≤15s 单段），落共享素材层（video_clip）。必传 characterRefIds+sceneRefIds（缺则报错，绝不静默降级）。可传 styleAxes 覆盖三轴、extend+transitionHint 做显式续接。把返回 asset.id 绑到 node.data.media.ref。超长节点用 wb-game-video:generate-node-video。",
+          "en": "Step 3: generate one video segment (<=15s) for a node into the shared registry (video_clip). REQUIRES characterRefIds + sceneRefIds (hard error if missing). Optional styleAxes (3-axis override) and extend+transitionHint (explicit continuation). Bind the returned asset.id to node.data.media.ref. For long nodes use wb-game-video:generate-node-video."
+        }
+      },
+      {
+        "id": "wb-game-video:generate-node-video",
+        "args": "./schemas/generate-node-video.args.json",
+        "returns": "./schemas/generate-node-video.returns.json",
+        "exposedToAI": true,
+        "description": {
+          "zh": "第3步(超长版)·为一节点生成成片，durationSeconds > 15s 时自动按 15s 拆段，第2段起前置 V-PROMPT-15 延长块 + 首帧续接。必传 character/scene 参考图。返回 assets[]（按段序，单段时长度为1）。",
+          "en": "Step 3 (long-form): generate a node's video; when durationSeconds > 15s it auto-splits into 15s segments, each 2nd+ segment prepends the V-PROMPT-15 extend header + first-frame seam. REQUIRES character/scene refs. Returns assets[] in segment order (length 1 when short)."
+        }
+      },
+      {
+        "id": "wb-game-video:list-assets",
+        "args": "./schemas/list-assets.args.json",
+        "returns": "./schemas/list-assets.returns.json",
+        "exposedToAI": true,
+        "description": {
+          "zh": "列出共享素材层的资产（可按 kind/productionType/sceneNodeId 过滤）。挑参考图或查生成产物时用。",
+          "en": "List shared-registry assets (filter by kind/productionType/sceneNodeId). Use to pick reference images or inspect generated outputs."
+        }
+      },
+      {
+        "id": "wb-game-video:get-asset",
+        "args": "./schemas/get-asset.args.json",
+        "returns": "./schemas/get-asset.returns.json",
+        "exposedToAI": true,
+        "description": {
+          "zh": "取单条素材资产（含 status/file/error 等），轮询生成进度或校验绑定用。",
+          "en": "Fetch a single registry asset (status/file/error, etc.) for polling generation progress or verifying a binding."
+        }
+      },
+      {
+        "id": "wb-game-video:import-character-refs",
+        "args": "./schemas/import-character-refs.args.json",
+        "returns": "./schemas/import-refs.returns.json",
+        "exposedToAI": true,
+        "description": {
+          "zh": "跨模块只读拿料·读取 wb-character 已产出的角色立绘，通过宿主 media capability 持久化副本并登记成 character_ref；不改角色源目录。生成视频前先备齐角色参考图。",
+          "en": "Cross-module read-only intake: read wb-character portraits, persist copies through the host media capability, and register them as character_ref without modifying the source directory. Call before video generation to stock character references."
+        }
+      },
+      {
+        "id": "wb-game-video:import-scene-refs",
+        "args": "./schemas/import-scene-refs.args.json",
+        "returns": "./schemas/import-refs.returns.json",
+        "exposedToAI": true,
+        "description": {
+          "zh": "跨模块只读拿料·读取场景模块发布到 textures/ 的贴图，通过宿主 media capability 持久化副本并登记成 scene_ref；不改场景源目录。生成视频前先备齐场景参考图。",
+          "en": "Cross-module read-only intake: read scene textures from textures/, persist copies through the host media capability, and register them as scene_ref without modifying the source directory. Call before video generation to stock scene references."
+        }
+      }
+    ]
+  },
+  "entry": {
+    "frontend": "./dist/index.html",
+    "backend": "./dist/server/host.js",
+    "standalone": {
+      "start": "bun run dev",
+      "port": 15185,
+      "readyProbe": "/",
+      "embeddedAlso": false
+    }
+  },
+  "permissions": [
+    "fs:read:{gameRoot}/blueprint.json",
+    "fs:write:{gameRoot}/blueprint.json",
+    "fs:read:{gameRoot}/project.json",
+    "fs:write:{gameRoot}/project.json",
+    "fs:read:{gameRoot}/assets/**",
+    "fs:write:{gameRoot}/assets/**",
+    "fs:read:{gameRoot}/characters/**",
+    "fs:read:{gameRoot}/textures/**",
+    "model:text:reasoning",
+    "model:image:still",
+    "model:video:kinetic"
+  ],
+  "requestedEnv": [],
+  "experimental": true
+}

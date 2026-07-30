@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "wb-game-video:generate-video args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sceneNodeId", "nodeName", "characterRefIds", "sceneRefIds"],
+  "properties": {
+    "sceneNodeId": { "type": "string", "description": "Owning GameGraph node id; the resulting video_clip is meant for node.data.media.ref." },
+    "nodeName": { "type": "string" },
+    "seedancePrompt": { "type": "string", "description": "Reviewed shot script (preferred main sequence)." },
+    "storyText": { "type": "string", "description": "Fallback node story text when seedancePrompt is absent." },
+    "durationSeconds": { "type": "number", "minimum": 1, "maximum": 60, "description": "Video duration in seconds (default 8)." },
+    "artStyle": { "type": "string" },
+    "styleKeywords": { "type": "array", "items": { "type": "string" } },
+    "characterRefIds": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "REQUIRED: >=1 character_ref registry id. Missing -> hard error (no silent degrade)." },
+    "sceneRefIds": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "REQUIRED: >=1 scene_ref registry id. Missing -> hard error." },
+    "continuityFirstFrameId": { "type": "string", "description": "Optional keyframe registry id used as first_frame for shot-to-shot continuity." },
+    "label": { "type": "string" },
+    "generateAudio": { "type": "boolean", "description": "Whether to ask the gateway to generate audio (default false)." },
+    "styleAxes": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-node style-axis override (wb-reel 3-axis). Falls back to game-level manifest.styleAxes.",
+      "properties": {
+        "artMedia": { "type": "string" },
+        "director": { "type": "string" },
+        "filmLook": { "type": "string" }
+      }
+    },
+    "extend": { "type": "boolean", "description": "Extend segment: prepend the V-PROMPT-15 video-extend header (7 continuity rules) so this clip seamlessly continues the previous one." },
+    "transitionHint": { "type": "string", "description": "Seam description appended to the extend header (e.g. 'continue from the previous segment tail')." }
+  }
+}

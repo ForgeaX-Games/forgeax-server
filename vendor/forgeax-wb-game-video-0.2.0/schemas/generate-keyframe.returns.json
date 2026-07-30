@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "wb-game-video:generate-keyframe returns",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "asset": { "type": ["object", "null"], "description": "The generated shot_image MediaAsset (status=ready), or null on failure." },
+    "error": { "type": "string" }
+  }
+}

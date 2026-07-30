@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "wb-game-video:generate-video returns",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "asset": { "type": ["object", "null"], "description": "The generated video_clip MediaAsset (status=ready), or null on failure. Bind node.data.media.ref to asset.id." },
+    "error": { "type": "string" }
+  }
+}

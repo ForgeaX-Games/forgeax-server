@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "wb-game-video:save-graph returns",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["ok"],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "errors": { "type": "array", "items": { "type": "string" }, "description": "Error messages when the save could not be performed, e.g. invalid game root/slug or missing project; non-empty ⇒ ok=false, nothing written." },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "versions": {
+      "type": "array",
+      "description": "Reserved compatibility field. Successful saves currently return an empty array.",
+      "maxItems": 0,
+      "items": false
+    },
+    "gameSlug": { "type": ["string", "null"] }
+  }
+}

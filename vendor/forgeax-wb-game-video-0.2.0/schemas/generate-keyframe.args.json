@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "wb-game-video:generate-keyframe args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sceneNodeId", "nodeName", "beat"],
+  "properties": {
+    "sceneNodeId": { "type": "string", "description": "Owning GameGraph node id." },
+    "nodeName": { "type": "string", "description": "Stable node name." },
+    "beat": { "type": "string", "description": "Story beat / visual intent for the frame (the picture core instruction)." },
+    "variant": { "enum": ["video_first_frame", "choice_pressure_frame"], "description": "Keyframe purpose (default video_first_frame)." },
+    "perspective": { "enum": ["first", "third"], "description": "first = POV (triggers first-person framing), third = cinematic." },
+    "characters": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": { "name": { "type": "string" }, "desc": { "type": "string" } } }
+    },
+    "location": { "type": "string" },
+    "refAssetIds": { "type": "array", "items": { "type": "string" }, "description": "character_ref / scene_ref registry ids used as read-only reference images." },
+    "label": { "type": "string" },
+    "styleAxes": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-node style-axis override (wb-reel 3-axis). Falls back to game-level manifest.styleAxes. artMedia+filmLook compose the uiStylePrompt.",
+      "properties": {
+        "artMedia": { "type": "string" },
+        "director": { "type": "string" },
+        "filmLook": { "type": "string" }
+      }
+    },
+    "mode": {
+      "enum": ["keyframe", "grid_storyboard"],
+      "description": "keyframe (default) = single colored keyframe -> shot_image. grid_storyboard = 6-panel black-and-white previs storyboard -> grid_storyboard."
+    },
+    "grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Extra inputs when mode=grid_storyboard (all optional). originalPrompt/referenceCount/sceneRefReady are derived internally.",
+      "properties": {
+        "panelLabels": { "type": "boolean", "description": "Render panel numbers + shot notes inside each panel (default true)." },
+        "nodeRole": { "enum": ["ending", "key-choice", "multi-choice", "regular"], "description": "Node semantic role; ending / key-choice inject extra freeze-frame hard contracts." },
+        "endingKind": { "enum": ["good", "bad", "neutral"], "description": "Ending type (nodeRole=ending)." },
+        "choiceRevealMoment": { "type": "string", "description": "Choice-pressure focus text (nodeRole=key-choice)." },
+        "atmosphereOverride": { "type": "string" },
+        "nodeTimeOfDay": { "type": "string" }
+      }
+    }
+  }
+}

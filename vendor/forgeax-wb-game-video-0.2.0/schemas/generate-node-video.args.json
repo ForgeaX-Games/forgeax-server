@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "wb-game-video:generate-node-video args",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sceneNodeId", "nodeName", "characterRefIds", "sceneRefIds"],
+  "properties": {
+    "sceneNodeId": { "type": "string", "description": "Owning GameGraph node id." },
+    "nodeName": { "type": "string" },
+    "seedancePrompt": { "type": "string", "description": "Reviewed shot script (preferred main sequence)." },
+    "storyText": { "type": "string", "description": "Fallback node story text when seedancePrompt is absent." },
+    "durationSeconds": { "type": "number", "minimum": 1, "maximum": 120, "description": "Total node duration. > 15s auto-splits into 15s segments; segment 2+ becomes an extend continuation." },
+    "artStyle": { "type": "string" },
+    "styleKeywords": { "type": "array", "items": { "type": "string" } },
+    "characterRefIds": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "REQUIRED: >=1 character_ref registry id." },
+    "sceneRefIds": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "REQUIRED: >=1 scene_ref registry id." },
+    "continuityFirstFrameId": { "type": "string", "description": "Keyframe registry id used as first_frame seam for extend segments (no mp4 tail extraction in headless)." },
+    "label": { "type": "string" },
+    "generateAudio": { "type": "boolean" },
+    "transitionHint": { "type": "string", "description": "Seam description for extend segments; a default is used when omitted." },
+    "styleAxes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artMedia": { "type": "string" },
+        "director": { "type": "string" },
+        "filmLook": { "type": "string" }
+      }
+    }
+  }
+}
