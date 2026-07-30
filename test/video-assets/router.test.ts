@@ -296,6 +296,45 @@ describe('createVideoAssetRouter local flow', () => {
     expect(new Uint8Array(await content.arrayBuffer())).toEqual(FIXTURE);
   });
 
+  test('prepare → PUT → create persists a local font directly under components', async () => {
+    const prepared = await json<PrepareUploadResponse>(app, '/api/v1/kino/image-assets/upload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        game_id: gameId,
+        file_name: 'title.woff2',
+        mime_type: 'font/woff2',
+        bytes: FIXTURE.byteLength,
+      }),
+    });
+    expect(prepared.body.error_code).toBeUndefined();
+    expect(prepared.status).toBe(200);
+
+    const putUrl = new URL(prepared.body.data.upload.url);
+    expect(await app.request(putUrl.pathname + putUrl.search, {
+      method: 'PUT',
+      headers: { 'content-type': 'font/woff2' },
+      body: FIXTURE,
+    })).toHaveProperty('status', 200);
+
+    const created = await json<KinoResourceDTO>(app, '/api/v1/kino/resources', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        game_id: gameId,
+        media_type: 'font',
+        url: prepared.body.data.object_url,
+        name: 'Title',
+      }),
+    });
+    expect(created.body.error_code).toBeUndefined();
+    expect(created.status).toBe(200);
+    expect(created.body.data.media_type).toBe('font');
+    expect(readFileSync(
+      resolve(projectRoot, '.forgeax', 'games', gameId, 'components', `${created.body.data.resource_id}.woff2`),
+    )).toEqual(Buffer.from(FIXTURE));
+  });
+
   test('prepare → PUT → create persists and serves an image reference', async () => {
     const prepared = await json<PrepareUploadResponse>(
       app,

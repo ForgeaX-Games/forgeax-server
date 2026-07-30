@@ -15,17 +15,26 @@ export const AUDIO_UPLOAD_MIMES = [
   'audio/mp4',
   'audio/aac',
 ] as const;
+export const FONT_UPLOAD_MIMES = [
+  'font/woff2',
+  'font/woff',
+  'font/ttf',
+  'font/otf',
+] as const;
 
 export type ImageUploadMime = (typeof IMAGE_UPLOAD_MIMES)[number];
 export type AudioUploadMime = (typeof AUDIO_UPLOAD_MIMES)[number];
-export type SupportedUploadMime = typeof VIDEO_UPLOAD_MIME | ImageUploadMime | AudioUploadMime;
+export type FontUploadMime = (typeof FONT_UPLOAD_MIMES)[number];
+export type SupportedUploadMime = typeof VIDEO_UPLOAD_MIME | ImageUploadMime | AudioUploadMime | FontUploadMime;
 
 export const MAX_VIDEO_UPLOAD_BYTES = 100 * 1024 * 1024;
 export const MAX_AUDIO_UPLOAD_BYTES = MAX_VIDEO_UPLOAD_BYTES;
 export const MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024;
+export const MAX_FONT_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 const IMAGE_MIME_SET = new Set<string>(IMAGE_UPLOAD_MIMES);
 const AUDIO_MIME_SET = new Set<string>(AUDIO_UPLOAD_MIMES);
+const FONT_MIME_SET = new Set<string>(FONT_UPLOAD_MIMES);
 const EXTENSION_BY_MIME: Record<SupportedUploadMime, string> = {
   [VIDEO_UPLOAD_MIME]: 'mp4',
   'image/png': 'png',
@@ -37,13 +46,18 @@ const EXTENSION_BY_MIME: Record<SupportedUploadMime, string> = {
   'audio/ogg': 'ogg',
   'audio/mp4': 'm4a',
   'audio/aac': 'aac',
+  'font/woff2': 'woff2',
+  'font/woff': 'woff',
+  'font/ttf': 'ttf',
+  'font/otf': 'otf',
 };
 
 export function mediaTypeForMime(mimeType: unknown): KinoMediaType | null {
   if (mimeType === VIDEO_UPLOAD_MIME) return 'video';
   if (typeof mimeType !== 'string') return null;
   if (IMAGE_MIME_SET.has(mimeType)) return 'image';
-  return AUDIO_MIME_SET.has(mimeType) ? 'audio' : null;
+  if (AUDIO_MIME_SET.has(mimeType)) return 'audio';
+  return FONT_MIME_SET.has(mimeType) ? 'font' : null;
 }
 
 export function assertUploadMime(
@@ -56,7 +70,9 @@ export function assertUploadMime(
 }
 
 export function maxUploadBytes(mediaType: KinoMediaType): number {
-  return mediaType === 'image' ? MAX_IMAGE_UPLOAD_BYTES : MAX_VIDEO_UPLOAD_BYTES;
+  if (mediaType === 'image') return MAX_IMAGE_UPLOAD_BYTES;
+  if (mediaType === 'font') return MAX_FONT_UPLOAD_BYTES;
+  return MAX_VIDEO_UPLOAD_BYTES;
 }
 
 export function assertUploadSize(mediaType: KinoMediaType, bytes: unknown): asserts bytes is number {

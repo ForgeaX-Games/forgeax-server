@@ -8,7 +8,7 @@ import {
   statSync,
 } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import type {
   ProviderPrepareUploadInput,
   UploadedObject,
@@ -17,7 +17,7 @@ import type {
   VideoAssetRequestContext,
 } from '../contracts';
 import type { ProjectRootResolver } from '../game-path';
-import { resolveVideoAssetsDir } from '../game-path';
+import { resolveGameDir, resolveVideoAssetsDir } from '../game-path';
 import { KinoApiError } from '../kino-api';
 import {
   assertUploadMime,
@@ -30,14 +30,14 @@ import {
 
 const PREPARE_TTL_MS = 10 * 60 * 1000;
 const LOCAL_BLOB_REF_RE =
-  /^blobs\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:mp4|png|jpe?g|webp|gif|mp3|wav|ogg|m4a|aac)$/;
+  /^(?:blobs\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:mp4|png|jpe?g|webp|gif|mp3|wav|ogg|m4a|aac)|[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:woff2?|ttf|otf))$/;
 const TEMP_UPLOAD_REF_RE =
   /^\.uploads\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.part$/i;
 
 interface LocalUploadState {
   ref: string;
   bytes: number;
-  mediaType: 'audio' | 'image' | 'video';
+  mediaType: 'audio' | 'image' | 'video' | 'font';
   mimeType: SupportedUploadMime;
 }
 
@@ -55,6 +55,16 @@ export interface LocalVideoAssetProviderOptions {
 
 function assetsDirFor(context: VideoAssetRequestContext, getProjectRoot: ProjectRootResolver): string {
   return resolveVideoAssetsDir(context.gameId, getProjectRoot);
+}
+
+function storageDirFor(
+  context: VideoAssetRequestContext,
+  getProjectRoot: ProjectRootResolver,
+  mediaType: LocalUploadState['mediaType'],
+): string {
+  return mediaType === 'font'
+    ? join(resolveGameDir(context.gameId, getProjectRoot), 'components')
+    : assetsDirFor(context, getProjectRoot);
 }
 
 function assertSafeRelativeRef(ref: string): void {
@@ -80,7 +90,7 @@ function parseUploadState(state: Record<string, unknown>): LocalUploadState {
     throw new KinoApiError('Invalid upload session', 400, 'invalid_upload_session');
   }
   const mediaType = state.mediaType ?? (mimeType === 'video/mp4' ? 'video' : undefined);
-  if (mediaType !== 'audio' && mediaType !== 'image' && mediaType !== 'video') {
+  if (mediaType !== 'audio' && mediaType !== 'image' && mediaType !== 'video' && mediaType !== 'font') {
     throw new KinoApiError('Invalid upload session', 400, 'invalid_upload_session');
   }
   assertUploadMime(mediaType, mimeType);
@@ -226,7 +236,7 @@ export function createLocalVideoAssetProvider(
       createWriteStream(path, { flags: 'wx' }) as LocalUploadWriter);
   return {
     kind: 'local',
-    supportedMediaTypes: ['video', 'image', 'audio'],
+    supportedMediaTypes: ['video', 'image', 'audio', 'font'],
 
     async prepareUpload(input: ProviderPrepareUploadInput, context: VideoAssetRequestContext) {
       assetsDirFor(context, getProjectRoot);
@@ -298,9 +308,11 @@ export function createLocalVideoAssetProvider(
       });
       const assetsDir = assetsDirFor(context, getProjectRoot);
       const tempPath = resolve(assetsDir, upload.ref);
-      const blobRef = `blobs/${input.resourceId}.${extensionForMime(upload.mimeType)}`;
+      const blobRef = upload.mediaType === 'font'
+        ? `${input.resourceId}.${extensionForMime(upload.mimeType)}`
+        : `blobs/${input.resourceId}.${extensionForMime(upload.mimeType)}`;
       assertSafeBlobRef(blobRef);
-      const blobPath = resolve(assetsDir, blobRef);
+      const blobPath = resolve(storageDirFor(context, getProjectRoot, upload.mediaType), blobRef);
 
       if (existsSync(blobPath)) {
         const existingBytes = blobSize(blobPath);
@@ -354,7 +366,7 @@ export function createLocalVideoAssetProvider(
     async cloneAsset(asset, _sourceContext, targetContext) {
       assertSafeBlobRef(asset.provider.ref);
       const targetPath = resolve(
-        assetsDirFor(targetContext, getProjectRoot),
+        storageDirFor(targetContext, getProjectRoot, asset.kind),
         asset.provider.ref,
       );
       if (!existsSync(targetPath) || blobSize(targetPath) !== asset.bytes) {
@@ -369,8 +381,7 @@ export function createLocalVideoAssetProvider(
 
     async getPlayback(asset, context) {
       assertSafeBlobRef(asset.provider.ref);
-      const assetsDir = assetsDirFor(context, getProjectRoot);
-      const filePath = resolve(assetsDir, asset.provider.ref);
+      const filePath = resolve(storageDirFor(context, getProjectRoot, asset.kind), asset.provider.ref);
       if (!existsSync(filePath)) {
         throw new KinoApiError('Resource content not found', 404, 'resource_content_not_found');
       }
@@ -389,8 +400,7 @@ export function createLocalVideoAssetProvider(
 
     async delete(asset, context) {
       assertSafeBlobRef(asset.provider.ref);
-      const assetsDir = assetsDirFor(context, getProjectRoot);
-      const blobPath = resolve(assetsDir, asset.provider.ref);
+      const blobPath = resolve(storageDirFor(context, getProjectRoot, asset.kind), asset.provider.ref);
       removeIfExists(blobPath);
     },
   };

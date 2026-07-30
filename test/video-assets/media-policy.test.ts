@@ -5,6 +5,7 @@ import {
   assertUploadSize,
   extensionForMime,
   MAX_AUDIO_UPLOAD_BYTES,
+  MAX_FONT_UPLOAD_BYTES,
   mediaTypeForMime,
 } from '../../src/video-assets/media-policy';
 
@@ -29,5 +30,22 @@ describe('audio upload media policy', () => {
     expect(() => assertUploadSize('audio', MAX_AUDIO_UPLOAD_BYTES + 1)).toThrow(
       'Invalid upload size',
     );
+  });
+});
+
+const FONT_MIMES = [
+  ['font/woff2', 'woff2'],
+  ['font/woff', 'woff'],
+  ['font/ttf', 'ttf'],
+  ['font/otf', 'otf'],
+] as const;
+
+describe('font upload media policy', () => {
+  test.each(FONT_MIMES)('accepts %s with .%s', (mimeType, extension) => {
+    expect(mediaTypeForMime(mimeType)).toBe('font');
+    expect(extensionForMime(mimeType)).toBe(extension);
+    expect(() => assertUploadMime('font', mimeType)).not.toThrow();
+    expect(() => assertUploadFileName(`title.${extension}`, mimeType)).not.toThrow();
+    expect(() => assertUploadSize('font', MAX_FONT_UPLOAD_BYTES)).not.toThrow();
   });
 });

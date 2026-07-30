@@ -413,7 +413,7 @@ export function createVideoAssetRouter(service: VideoAssetService): Hono {
     return handleServiceCall(c, async () => {
       const gameId = requireGameIdFromQuery(c);
       const mediaType = c.req.query('media_type') ?? 'video';
-      if (mediaType !== 'video' && mediaType !== 'image' && mediaType !== 'audio') {
+      if (mediaType !== 'video' && mediaType !== 'image' && mediaType !== 'audio' && mediaType !== 'font') {
         throw new KinoApiError('Invalid media type', 400, 'invalid_media_type');
       }
       const page = parseStrictInteger(c.req.query('page'), 'page');

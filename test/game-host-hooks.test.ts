@@ -45,7 +45,7 @@ describe('syncComponentsExcludingTests', () => {
 });
 
 describe('video game host hooks', () => {
-  test('clones the canonical media into the target game before returning the seed', async () => {
+  test('clones the canonical media but returns an empty blueprint', async () => {
     const targetGameDir = await mkdtemp(join(tmpdir(), 'forgeax-video-seed-'));
     roots.push(targetGameDir);
     await mkdir(join(targetGameDir, 'assets'), { recursive: true });
@@ -78,6 +78,24 @@ describe('video game host hooks', () => {
       assets: [{
         provider: { key: 'games/target-game/video/video-1.mp4' },
       }],
+    });
+    expect(seed.blueprint).toEqual({
+      version: 'wb-game-video.graph.v1',
+      entities: {},
+      variables: {},
+      graph: { nodes: [], edges: [] },
+      manifest: {
+        version: 'wb-game-video.blueprint-manifest.v1',
+        mainPackId: 'bp-main',
+        packs: {
+          'bp-main': {
+            id: 'bp-main',
+            title: '主蓝图',
+            entry: 'entry',
+            graph: { nodes: [], edges: [] },
+          },
+        },
+      },
     });
   });
 

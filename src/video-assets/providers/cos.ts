@@ -37,7 +37,7 @@ export interface CosObjectClient {
 interface CloudUploadState {
   ref: string;
   bytes: number;
-  mediaType: 'audio' | 'image' | 'video';
+  mediaType: 'audio' | 'image' | 'video' | 'font';
   mimeType: SupportedUploadMime;
 }
 
@@ -86,7 +86,7 @@ function parseUploadState(
   assertScopedProviderRef(ref, gameId, prefix);
 
   const mediaType = state.mediaType ?? (mimeType === 'video/mp4' ? 'video' : undefined);
-  if (mediaType !== 'audio' && mediaType !== 'image' && mediaType !== 'video') {
+  if (mediaType !== 'audio' && mediaType !== 'image' && mediaType !== 'video' && mediaType !== 'font') {
     throw new KinoApiError('Invalid upload session', 400, 'invalid_upload_session');
   }
   assertUploadMime(mediaType, mimeType);
@@ -246,7 +246,7 @@ export function createCosVideoAssetProvider(
 
   return {
     kind: 'cos',
-    supportedMediaTypes: ['video', 'image', 'audio'],
+    supportedMediaTypes: ['video', 'image', 'audio', 'font'],
 
     async prepareUpload(input: ProviderPrepareUploadInput, context: VideoAssetRequestContext) {
       const key = buildMediaObjectKey(

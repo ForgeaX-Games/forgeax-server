@@ -15,6 +15,9 @@ import { access, copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:
 import { resolve, join } from 'node:path';
 import { mp, assetRoot } from '@forgeax/platform-io';
 
+/** User-uploaded fonts live directly in the game component package. */
+const USER_COMPONENT_FONT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:woff2?|ttf|otf)$/;
+
 async function exists(path: string): Promise<boolean> {
   try {
     await access(path, constants.F_OK);
@@ -43,6 +46,7 @@ export async function syncComponentsExcludingTests(src: string, dest: string): P
 
   for (const destEntry of destEntries) {
     const sourceEntry = sourceEntries.find((entry) => entry.name === destEntry.name);
+    if (USER_COMPONENT_FONT_RE.test(destEntry.name) && !sourceEntry) continue;
     const sameShape = sourceEntry
       && sourceEntry.isDirectory() === destEntry.isDirectory();
     if (sourceNames.has(destEntry.name) && sameShape) continue;
@@ -105,7 +109,28 @@ type CloneTemplateAssets = (input: {
   targetGameId: string;
 }) => Promise<void>;
 
-/** Load the bundled nodia sample and clone provider-backed media into the target scope. */
+/** A new video game starts with one editable main blueprint and no gameplay data. */
+function emptyVideoGameBlueprint(): Record<string, unknown> {
+  const main = {
+    id: 'bp-main',
+    title: '主蓝图',
+    entry: 'entry',
+    graph: { nodes: [], edges: [] },
+  };
+  return {
+    version: 'wb-game-video.graph.v1',
+    entities: {},
+    variables: {},
+    graph: main.graph,
+    manifest: {
+      version: 'wb-game-video.blueprint-manifest.v1',
+      mainPackId: main.id,
+      packs: { [main.id]: main },
+    },
+  };
+}
+
+/** Clone bundled Nodia media into the target scope, but start from an empty blueprint. */
 export async function gameHostSeedProvider(
   args: { slug: string; targetGameDir: string },
   cloneTemplateAssets: CloneTemplateAssets,
@@ -115,9 +140,8 @@ export async function gameHostSeedProvider(
   assetsManifest: unknown;
 }> {
   const root = resolve(assetRoot(), 'games', 'game-nodia-fighting');
-  const blueprintPath = resolve(root, 'blueprint.json');
   const manifestPath = resolve(root, 'assets', 'manifest.json');
-  if (!(await exists(blueprintPath)) || !(await exists(manifestPath))) {
+  if (!(await exists(manifestPath))) {
     throw new Error('canonical game-nodia-fighting sample is missing');
   }
   await cloneTemplateAssets({
@@ -126,10 +150,10 @@ export async function gameHostSeedProvider(
     targetGameDir: args.targetGameDir,
     targetGameId: args.slug,
   });
-  const [blueprint, assetsManifest] = await Promise.all([
-    readFile(blueprintPath, 'utf-8').then(JSON.parse),
-    readFile(resolve(args.targetGameDir, 'assets', 'manifest.json'), 'utf-8').then(JSON.parse),
-  ]);
+  const assetsManifest = await readFile(
+    resolve(args.targetGameDir, 'assets', 'manifest.json'),
+    'utf-8',
+  ).then(JSON.parse);
   return {
     project: {
       id: args.slug,
@@ -138,7 +162,7 @@ export async function gameHostSeedProvider(
       platformVersion: '1',
       entry: { blueprint: 'blueprint.json', components: 'dist/components' },
     },
-    blueprint,
+    blueprint: emptyVideoGameBlueprint(),
     assetsManifest,
   };
 }
