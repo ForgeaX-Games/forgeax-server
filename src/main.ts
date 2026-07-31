@@ -78,7 +78,6 @@ import { mountRuntimeCarrierApi } from './runtime-carrier/api';
 import { createRuntimeCarrierSupervisor } from './runtime-carrier/supervisor';
 import { createPlaywrightCarrierHost } from './runtime-carrier/playwright-host';
 import { CarrierGameplayAdapter } from './game/carrier-gameplay-adapter';
-import { getForgeaxWorkbenchHost } from './workbench/runtime';
 
 // ──────────────────────────────────────────────────────────────────────────
 // FaultBoundary — top-level process-wide exception backstop (perf-analysis-2
@@ -244,20 +243,9 @@ const gameplayAdapter = new CarrierGameplayAdapter({
     execute: (request) => runtimeCarrierSupervisor.gameplay(request.identity.runtimeId)?.execute(request) ?? Promise.resolve({ ok: false, error: { owner: 'transport', code: 'surface-unavailable', phase: 'dispatch', retryable: true, message: 'The managed carrier has no gameplay transport.', hint: { action: 'status' } } }),
   },
 });
-const ceApiRouter = createCeApiShimRouter({
-  projectRoot: instanceRoot,
-  env: shimEnv,
-  uiAssetCleanup: { inspectUiAssetCanvas, normalizeStandaloneUiAsset },
-});
-const workbenchHost = await getForgeaxWorkbenchHost({
-  projectRoot: instanceRoot,
-  mediaService: videoAssets.service,
-  modelRouter: ceApiRouter,
-});
 const { app, npcRuntime } = await createForgeaxApp({
   instanceRoot,
   version: VERSION,
-  workbenchHost,
   // system-prompt charter/environment/note 由产品壳提供(阶段A §3.2)——编排层经
   // 注入的 composer 取,cli 自身不再硬编码游戏宪章。ports 取自 env(与原 cli 顶层常量一致)。
   systemPromptComposer: new GameSystemPromptComposer({
@@ -287,7 +275,12 @@ const { app, npcRuntime } = await createForgeaxApp({
     },
     {
       path: '/__ce-api__',
-      router: ceApiRouter,
+      router: createCeApiShimRouter({
+        projectRoot: instanceRoot,
+        env: shimEnv,
+        // marketplace UI 资产清洗能力直接交给业务 router(不再经 cli ProductContext 中转)。
+        uiAssetCleanup: { inspectUiAssetCanvas, normalizeStandaloneUiAsset },
+      }),
     },
   ],
   // Session 状态树落**绑定 game 下** <instanceRoot>/.forgeax/games/<slug>/sessions/<sid>/
