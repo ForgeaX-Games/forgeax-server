@@ -11,6 +11,7 @@
 
 import { existsSync, readFileSync, mkdirSync, cpSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { IGamePackager, PackageOptions, PackageResult } from '../IGamePackager';
 import { friendlyPath, assetRoot } from '@forgeax/platform-io';
 import { buildWasmCore } from '../shell/toolchain';
@@ -30,6 +31,27 @@ function isReelGame(gameDir: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Serialize export builds per engine root. Unique scratch dirs already stop
+ * concurrent runs from corrupting each other's files, but two heavy vite+wasm
+ * builds hammering the same engine root (shared vite cache, CPU/memory) is
+ * wasteful and historically flaky — queue them so exports run one-at-a-time per
+ * engine root. Each task waits for the previous to settle; a rejection is
+ * swallowed for the chain so it never leaks into the next waiter.
+ */
+const exportChains = new Map<string, Promise<unknown>>();
+
+function runExclusive<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const prev = exportChains.get(key) ?? Promise.resolve();
+  const next = prev.then(task, task);
+  const link = next.then(() => undefined, () => undefined);
+  exportChains.set(key, link);
+  void link.then(() => {
+    if (exportChains.get(key) === link) exportChains.delete(key);
+  });
+  return next;
 }
 
 export class WebPackager implements IGamePackager {
@@ -116,7 +138,11 @@ export class WebPackager implements IGamePackager {
       return { ok: false, slug, platform: 'web', error: `game not found: ${friendlyPath(gameDir)}` };
     }
 
-    const exportTmpDir = join(engineRoot, '.forgeax-export');
+    // Unique per-run scratch dir: concurrent exports (Web/Windows/Mac, or two
+    // slugs at once) must NOT share `<engineRoot>/.forgeax-export`, else one
+    // run's `finally` rmSync deletes the game copy + script another run's vite
+    // is still resolving → "Rollup failed to resolve import <slug>/main.ts".
+    const exportTmpDir = join(engineRoot, `.forgeax-export-${randomUUID()}`);
     const scriptDst = join(exportTmpDir, 'build-standalone.ts');
     // Copy the game physically under the engine root so its bare imports
     // (@forgeax/*) resolve from the engine root's node_modules.
@@ -124,43 +150,46 @@ export class WebPackager implements IGamePackager {
 
     onProgress?.('web-build', `bundling static site (engine root: ${friendlyPath(engineRoot)}) …`);
     const bunBin = process.execPath || 'bun';
-    try {
-      mkdirSync(exportTmpDir, { recursive: true });
-      cpSync(scriptSrc, scriptDst);
-      mkdirSync(join(exportTmpDir, 'games'), { recursive: true });
-      cpSync(gameDir, gameDst, { recursive: true, dereference: true });
+    // Serialize per engine root so concurrent exports queue instead of racing.
+    return runExclusive(engineRoot, async (): Promise<PackageResult> => {
+      try {
+        mkdirSync(exportTmpDir, { recursive: true });
+        cpSync(scriptSrc, scriptDst);
+        mkdirSync(join(exportTmpDir, 'games'), { recursive: true });
+        cpSync(gameDir, gameDst, { recursive: true, dereference: true });
 
-      const proc = Bun.spawn({
-        cmd: [bunBin, scriptDst, slug, outDir],
-        cwd: engineRoot,
-        env: { ...process.env, FORGEAX_ENGINE_ROOT: engineRoot, FORGEAX_GAME_DIR: gameDst },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-      if (code !== 0) {
-        const tailLog = (stderr || stdout).split('\n').slice(-40).join('\n');
-        onProgress?.('web-build', `build failed (exit ${code}):\n${tailLog}`);
-        return { ok: false, slug, platform: 'web', error: 'standalone build failed', detail: tailLog };
+        const proc = Bun.spawn({
+          cmd: [bunBin, scriptDst, slug, outDir],
+          cwd: engineRoot,
+          env: { ...process.env, FORGEAX_ENGINE_ROOT: engineRoot, FORGEAX_GAME_DIR: gameDst },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        const [stdout, stderr, code] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        if (code !== 0) {
+          const tailLog = (stderr || stdout).split('\n').slice(-40).join('\n');
+          onProgress?.('web-build', `build failed (exit ${code}):\n${tailLog}`);
+          return { ok: false, slug, platform: 'web', error: 'standalone build failed', detail: tailLog };
+        }
+        onProgress?.('web-build', 'done');
+        return {
+          ok: true,
+          slug,
+          platform: 'web',
+          outDir: friendlyPath(outDir),
+          rebuiltEngine: !!rebuildEngine,
+          runHint: `cd ${friendlyPath(outDir)} && ./serve.sh   # then open http://localhost:8123`,
+        };
+      } catch (e) {
+        return { ok: false, slug, platform: 'web', error: e instanceof Error ? e.message : String(e) };
+      } finally {
+        rmSync(exportTmpDir, { recursive: true, force: true });
       }
-      onProgress?.('web-build', 'done');
-      return {
-        ok: true,
-        slug,
-        platform: 'web',
-        outDir: friendlyPath(outDir),
-        rebuiltEngine: !!rebuildEngine,
-        runHint: `cd ${friendlyPath(outDir)} && ./serve.sh   # then open http://localhost:8123`,
-      };
-    } catch (e) {
-      return { ok: false, slug, platform: 'web', error: e instanceof Error ? e.message : String(e) };
-    } finally {
-      rmSync(exportTmpDir, { recursive: true, force: true });
-    }
+    });
   }
 
   /** Reel (interactive-film) export — uses the legacy reel-src path as-is. */

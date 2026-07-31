@@ -26,7 +26,7 @@ import { resolve, join } from 'node:path';
 
 import { serveStatic } from 'hono/bun';
 // 产品壳:初始化编排层(@forgeax/orchestrator)并注入产品相关内容,自己只负责进程/服务/代理。
-import { createForgeaxApp } from '@forgeax/orchestrator';
+import { createForgeaxApp, createNpcWebSocketHandler } from '@forgeax/orchestrator';
 import { getVersion } from '@forgeax/platform-io';
 import { loadBrand } from '@forgeax/orchestrator/brand';
 import { defaultProjectRoot } from '@forgeax/platform-io';
@@ -59,6 +59,8 @@ import { GameSystemPromptComposer } from './game/system-prompt-composer';
 import { studioHostTools } from './game/host-tools';
 import { createAssetCanvasInputsRouter } from './game/asset-canvas-inputs';
 import { gameHostBeforeVersion, gameHostSeedProvider } from './game/game-host-hooks';
+import { resolveLlmTestRequestSource } from './game/llm-test-source';
+import { createNpcSettingsRouter } from './game/npc-settings';
 // 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
 import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from './kernel/telemetry-file-sink';
@@ -252,7 +254,7 @@ const workbenchHost = await getForgeaxWorkbenchHost({
   mediaService: videoAssets.service,
   modelRouter: ceApiRouter,
 });
-const { app } = await createForgeaxApp({
+const { app, npcRuntime } = await createForgeaxApp({
   instanceRoot,
   version: VERSION,
   workbenchHost,
@@ -266,9 +268,11 @@ const { app } = await createForgeaxApp({
   // list_games / query_world / capture_frame 不再硬编码在 cli——声明 + 宿主侧执行体
   // 都在 src/game/host-tools.ts,cli 只提供通用感知往返(ctx.perception)与信任闸。
   hostTools: studioHostTools(gameplayAdapter),
+  resolveLlmTestRequestSource,
   // 游戏业务路由由产品壳注入(阶段A:原 cli 静态 mount 搬到此)。路由表逐条不变。
   routers: [
     { path: '/api/v1/kino', router: videoAssets.router },
+    { path: '/api/npc-settings', router: createNpcSettingsRouter({ getProjectRoot: defaultProjectRoot }) },
     {
       path: '/api/workbench',
       router: createWorkbenchRouter({
@@ -655,6 +659,12 @@ if (SERVE_SPA) {
 // /ws proxy，不经此处。
 const WB_SCENE_WS_PATHS = new Set(['/ws/render', '/ws/editor', '/ws/log']);
 const baseWsHandler = createWsHandler(hub);
+const npcWsHandler = createNpcWebSocketHandler(npcRuntime);
+// Must match npc-brain/runtime.ts server-side frame guard. Keep the public
+// /api/npc/ws channel bounded before delegating to the NPC handler; the handler
+// also enforces per-connection message-rate limits and owns all NPC cleanup.
+const NPC_WS_MAX_MESSAGE_BYTES = 256 * 1024;
+const activeNpcWsConnections = new Set<import('bun').ServerWebSocket<WsClientData>>();
 const maxFluxRtRelaySessions = boundedPositiveEnv('FORGEAX_FLUXRT_MAX_RELAY_SESSIONS', 2, 8);
 const maxFluxRtMessageBytes = boundedPositiveEnv('FORGEAX_FLUXRT_MAX_MESSAGE_BYTES', 2 * 1024 * 1024, 8 * 1024 * 1024);
 const maxFluxRtMessagesPerSecond = boundedPositiveEnv('FORGEAX_FLUXRT_MAX_MESSAGES_PER_SECOND', 20, 60);
@@ -674,6 +684,40 @@ function boundedPositiveEnv(name: string, fallback: number, maximum: number): nu
 }
 
 type WsProxyPayload = Parameters<WebSocket['send']>[0];
+function originHeaderAllowed(req: Request, url: URL): boolean {
+  const origin = req.headers.get('origin');
+  if (!origin) return true;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  const originPort = parsed.port || (parsed.protocol === 'https:' ? '443' : parsed.protocol === 'http:' ? '80' : '');
+  const requestPort = url.port || (url.protocol === 'https:' ? '443' : url.protocol === 'http:' ? '80' : '');
+  if (parsed.hostname === url.hostname && originPort === requestPort) return true;
+  // Interface Vite dev proxy is same-origin to the browser (:18920) but forwards
+  // the original Origin to this server (:18900). Accept only the known local
+  // interface origin so cross-site pages cannot spend an NPC session capability.
+  const interfacePort = process.env.FORGEAX_INTERFACE_PORT ?? '18920';
+  const localHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
+  return originPort === interfacePort && localHosts.has(parsed.hostname);
+}
+
+function readNpcWsCapability(req: Request, url: URL): { sessionId: string; token: string } | undefined {
+  const sessionId = url.searchParams.get('sessionId')
+    ?? req.headers.get('x-forgeax-npc-session-id')
+    ?? req.headers.get('x-npc-session-id')
+    ?? undefined;
+  const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.get('authorization') ?? '')?.[1];
+  const token = url.searchParams.get('token')
+    ?? req.headers.get('x-forgeax-npc-token')
+    ?? req.headers.get('x-npc-token')
+    ?? bearer
+    ?? undefined;
+  if (!sessionId || !token) return undefined;
+  return { sessionId, token };
+}
 const wsProxies = new WeakMap<import('bun').ServerWebSocket<WsClientData>, {
   upstream: WebSocket;
   pending: WsProxyPayload[];
@@ -682,10 +726,17 @@ const wsProxies = new WeakMap<import('bun').ServerWebSocket<WsClientData>, {
   messagesInWindow: number;
 }>();
 const wsHandler: import('bun').WebSocketHandler<WsClientData | PartyWsData> = {
+  maxPayloadLength: Math.max(NPC_WS_MAX_MESSAGE_BYTES, maxFluxRtMessageBytes),
+  closeOnBackpressureLimit: true,
   open(ws) {
     if (isPartyWsData(ws.data)) {
       handlePartyOpen(ws as import('bun').ServerWebSocket<PartyWsData>);
       return;
+    }
+    const clientWs = ws as import('bun').ServerWebSocket<WsClientData>;
+    if (clientWs.data.npc) {
+      activeNpcWsConnections.add(clientWs);
+      return npcWsHandler.open?.(clientWs as any);
     }
     const generativeVisuals = ws.data as GenerativeVisualsWsData;
     if (generativeVisuals.accessDenied) {
@@ -750,7 +801,16 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData | PartyWsData> = {
       handlePartyMessage(ws as import('bun').ServerWebSocket<PartyWsData>, message as string | ArrayBuffer | Uint8Array);
       return;
     }
-    const entry = wsProxies.get(ws as import('bun').ServerWebSocket<WsClientData>);
+    const clientWs = ws as import('bun').ServerWebSocket<WsClientData>;
+    if (clientWs.data.npc) {
+      const byteLength = typeof message === 'string' ? Buffer.byteLength(message) : message.byteLength;
+      if (byteLength > NPC_WS_MAX_MESSAGE_BYTES) {
+        clientWs.close(1009, 'NPC frame exceeds limit');
+        return;
+      }
+      return npcWsHandler.message?.(clientWs as any, message);
+    }
+    const entry = wsProxies.get(clientWs);
     if (entry) {
       const generativeVisuals = (ws.data as GenerativeVisualsWsData).generativeVisuals;
       if (generativeVisuals) {
@@ -784,7 +844,12 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData | PartyWsData> = {
       handlePartyClose(ws as import('bun').ServerWebSocket<PartyWsData>);
       return;
     }
-    const entry = wsProxies.get(ws as import('bun').ServerWebSocket<WsClientData>);
+    const clientWs = ws as import('bun').ServerWebSocket<WsClientData>;
+    if (clientWs.data.npc) {
+      activeNpcWsConnections.delete(clientWs);
+      return npcWsHandler.close?.(clientWs as any, code, reason);
+    }
+    const entry = wsProxies.get(clientWs);
     if (entry) {
       try { entry.upstream.close(); } catch { /* ignore */ }
       wsProxies.delete(ws);
@@ -808,6 +873,23 @@ try {
     const connectionAddress = srv.requestIP(req)?.address;
     if (url.pathname === PARTY_WS_PATH) {
       const data: PartyWsData = { id: crypto.randomUUID(), kind: 'party' };
+      const upgraded = srv.upgrade(req, { data });
+      if (upgraded) return undefined;
+      return new Response('upgrade required', { status: 426 });
+    }
+    if (url.pathname === '/api/npc/ws') {
+      if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
+        return new Response('upgrade required', { status: 426 });
+      }
+      if (!originHeaderAllowed(req, url)) return new Response('forbidden origin', { status: 403 });
+      const capability = readNpcWsCapability(req, url);
+      if (!capability || !npcRuntime.authorize(capability.sessionId, capability.token)) {
+        return new Response('unauthorized', { status: 401 });
+      }
+      const data: WsClientData = {
+        id: crypto.randomUUID(),
+        npc: { sessionId: capability.sessionId, token: capability.token },
+      };
       const upgraded = srv.upgrade(req, { data });
       if (upgraded) return undefined;
       return new Response('upgrade required', { status: 426 });
@@ -968,6 +1050,13 @@ const shutdown = async (sig: string) => {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[forgeax-server] received ${sig}, stopping...`);
+  // Ensure NPC WS handler-owned WeakMaps are torn down even if Bun.stop() does
+  // not synchronously deliver close callbacks for every upgraded socket.
+  for (const ws of activeNpcWsConnections) {
+    try { ws.close(1001, 'server shutting down'); } catch { /* ignore */ }
+    try { npcWsHandler.close?.(ws as any, 1001, 'server shutting down'); } catch { /* handler cleanup is best-effort during shutdown */ }
+  }
+  activeNpcWsConnections.clear();
   // Stop accepting new connections first so nothing new spawns mid-teardown.
   try { server?.stop(); } catch { /* server may not have started */ }
   await watcher.stop();

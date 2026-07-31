@@ -190,7 +190,7 @@ test('main activates modules after app creation and before product routes', () =
     /import \{ activateServerModules \} from '\.\/composition-host';/g,
   );
   const runtimeImport = source.includes("from './video-assets/index'");
-  const createStart = source.indexOf('const { app } = await createForgeaxApp({');
+  const createStart = source.indexOf('await createForgeaxApp({');
   const createEnd = source.indexOf('\n});', createStart);
   const activation = source.indexOf('await activateServerModules({');
   const healthRoute = source.indexOf("app.get('/api/health'");

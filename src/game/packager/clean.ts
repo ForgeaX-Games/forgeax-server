@@ -67,16 +67,29 @@ function targetPaths(): string[] {
     join(base, 'cache', 'player-shell'),
   ]);
 
-  // `.forgeax-export` scratch dir lives under each engine root candidate
-  // (and, defensively, the studio root itself).
+  // `.forgeax-export*` scratch dirs live under each engine root candidate (and,
+  // defensively, the studio root itself). Names now carry a per-run unique
+  // suffix (`.forgeax-export-<uuid>`), so match by prefix instead of the exact
+  // legacy `.forgeax-export` name to reclaim leftovers from interrupted builds.
   const root = studioRoot();
-  paths.add(join(root, '.forgeax-export'));
+  const scanDirs = new Set<string>([root]);
   try {
     for (const cand of detectEngineRoots(root)) {
-      paths.add(join(cand.path, '.forgeax-export'));
+      scanDirs.add(cand.path);
     }
   } catch {
     /* engine-root detection failed — toolchain/cache cleanup still proceeds */
+  }
+  for (const dir of scanDirs) {
+    try {
+      for (const entry of readdirSync(dir)) {
+        if (entry === '.forgeax-export' || entry.startsWith('.forgeax-export-')) {
+          paths.add(join(dir, entry));
+        }
+      }
+    } catch {
+      /* dir unreadable — skip */
+    }
   }
 
   return [...paths];

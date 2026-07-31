@@ -22,6 +22,7 @@ describe('editorGatewayHostTools', () => {
   test('is included in the Studio host-tool registration', () => {
     expect(studioHostTools().map((tool) => tool.name)).toEqual([
       'list_games',
+      'npc_wire',
       'query_world',
       'capture_frame',
       'editor_gateway_eval',

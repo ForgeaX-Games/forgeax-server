@@ -44,6 +44,7 @@ import {
   registerKernel,
 } from '@forgeax/agent-runtime';
 import { connect, type RpcConnection } from '@forgeax/agent-host';
+import { NATIVE_KERNEL_PROFILE } from '@forgeax/orchestrator/kernel/kernel-profile';
 import { ensureSidecar } from '@forgeax/orchestrator/kernel/sidecar-singleton';
 import { loadGatewayCatalog, gatewayCatalogToKernelModels } from '@forgeax/orchestrator/lib/llm-gateway/gateway-catalog';
 import { makeInProcessExecuteTool, type HostExecuteToolFn } from '@forgeax/orchestrator/kernel/host-tool-bridge';
@@ -244,6 +245,11 @@ function serveSessionId(key: string): string {
 class ForgeaxCoreServeKernel implements AgentKernel {
   readonly id = 'forgeax-core' as const;
   readonly displayName = 'forgeax-core · native kernel · gateway metering';
+  // 缺了这个字段,`orchestrationProfileOf()` 会静默兜底成 RENTED_KERNEL_PROFILE
+  // (hostOwnedHistory:false),导致 compose-turn-request.ts 永远不给这个内核装
+  // history —— 每轮都从零开始,账本里存的历史轮次全部形同不存在。与 orchestrator
+  // 自带那份 forgeax-core-kernel.ts 对齐,补回这个声明。
+  readonly orchestrationProfile = NATIVE_KERNEL_PROFILE;
   readonly capabilities = CAPS;
 
   /** 模型目录 = LLM gateway 目录(disk models.json ∩ LiteLLM live)。原生内核
