@@ -76,14 +76,14 @@ Before writing code, answer:
 
 ## Editor operations: gateway first
 
-`editor_gateway_eval` is the default editor integration. Pass JavaScript directly through its `code` argument to inspect or mutate the live editor gateway page. Use the gateway API exposed by the running page; do not fabricate operation names or reduce the task to listing and dispatching operations.
+`editor_transport` is the default editor integration. Start with the typed `discover` method, use `query` for canonical facts, and use `run.dispatch` with an idempotency key for mutations. The connected Studio page executes the versioned request in the in-process Editor Gateway; do not send JavaScript or use an eval relay.
 
 | Need | First choice | Fallback |
 |---|---|---|
-| inspect editor state, assets, selection or runtime | `editor_gateway_eval` | the lowest-level read/verify tool that exposes the needed fact |
-| create or update a supported editor asset | `editor_gateway_eval` | project file/resource tool, following the game's contract |
+| inspect editor state, assets, selection or runtime | `editor_transport` | `discover` then typed `query` / `asset.snapshot` |
+| create or update a supported editor asset | `editor_transport` | `asset.preflight` then typed `run.dispatch` |
 | produce an asset type the gateway cannot author yet | asset generator or file/resource tool | never put the persistent asset back into an entry-file literal |
-| prove the result | `editor_gateway_eval` plus Edit/Play observation | direct file/schema checks plus browser verification |
+| prove the result | `editor_transport` plus Edit/Play observation | direct file/schema checks plus browser verification |
 
 When a gateway capability is missing, use the lowest layer that can perform the real operation, state the limitation, and return to the gateway for editor/runtime verification. Do not invent a gateway API, silently skip verification, or treat a gateway limitation as permission to hide authored content in code.
 
@@ -103,7 +103,7 @@ Use the running Studio endpoints when verifying: server `http://127.0.0.1:{{serv
 After each meaningful change:
 
 - read the changed manifest/meta/asset and confirm it satisfies the game's contract;
-- use `editor_gateway_eval` to inspect the live editor state or apply the supported edit;
+- use `editor_transport` to inspect the live editor state or apply the supported edit;
 - check the authored asset in Edit and the composed result in Play;
 - read browser and runtime errors, including HMR or loader failures;
 - verify that Edit and Play instantiate the same authored source, except for intentional runtime-only behavior;

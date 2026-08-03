@@ -19,7 +19,7 @@ import {
   type NpcDecisionDeadline,
 } from '@forgeax/types/npc-protocol';
 import { NPC_TOOL_CONTRACTS } from '@forgeax/types/npc-tools';
-import { editorGatewayHostTools } from './editor-gateway-host-tools';
+import { editorTransportHostTools, type EditorTransportHostToolsDeps } from './editor-transport-host-tools';
 import type { CarrierGameplayAdapter } from './carrier-gameplay-adapter';
 import { parseGameplayOperation } from './gameplay-operation-contract';
 
@@ -529,8 +529,11 @@ export function gameHostTools(): HostToolSpec[] {
 /** Product-shell registration point for host tools. Keeping this composition
  * named and testable prevents a new editor capability from being implemented
  * but accidentally omitted at `createForgeaxApp` boot. */
-export function studioHostTools(adapter?: CarrierGameplayAdapter): HostToolSpec[] {
-  return [...gameHostTools(), ...editorGatewayHostTools(), gameplayHostTool(adapter)];
+export function studioHostTools(
+  adapter?: CarrierGameplayAdapter,
+  editorTransport?: EditorTransportHostToolsDeps,
+): HostToolSpec[] {
+  return [...gameHostTools(), ...editorTransportHostTools(editorTransport), gameplayHostTool(adapter)];
 }
 
 export function gameplayHostTool(adapter?: CarrierGameplayAdapter): HostToolSpec {

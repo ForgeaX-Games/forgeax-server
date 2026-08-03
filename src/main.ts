@@ -78,6 +78,7 @@ import { mountRuntimeCarrierApi } from './runtime-carrier/api';
 import { createRuntimeCarrierSupervisor } from './runtime-carrier/supervisor';
 import { createPlaywrightCarrierHost } from './runtime-carrier/playwright-host';
 import { CarrierGameplayAdapter } from './game/carrier-gameplay-adapter';
+import { EDITOR_TRANSPORT_WS_SID, createEditorTransportCarrier } from './game/editor-transport-carrier';
 
 // ──────────────────────────────────────────────────────────────────────────
 // FaultBoundary — top-level process-wide exception backstop (perf-analysis-2
@@ -243,6 +244,7 @@ const gameplayAdapter = new CarrierGameplayAdapter({
     execute: (request) => runtimeCarrierSupervisor.gameplay(request.identity.runtimeId)?.execute(request) ?? Promise.resolve({ ok: false, error: { owner: 'transport', code: 'surface-unavailable', phase: 'dispatch', retryable: true, message: 'The managed carrier has no gameplay transport.', hint: { action: 'status' } } }),
   },
 });
+const editorTransportCarrier = createEditorTransportCarrier();
 const { app, npcRuntime } = await createForgeaxApp({
   instanceRoot,
   version: VERSION,
@@ -255,7 +257,7 @@ const { app, npcRuntime } = await createForgeaxApp({
   // 游戏语义 host 工具由产品壳经 seam 注入(P1-7 落地阶段A §3 设计意图):
   // list_games / query_world / capture_frame 不再硬编码在 cli——声明 + 宿主侧执行体
   // 都在 src/game/host-tools.ts,cli 只提供通用感知往返(ctx.perception)与信任闸。
-  hostTools: studioHostTools(gameplayAdapter),
+  hostTools: studioHostTools(gameplayAdapter, { dispatch: editorTransportCarrier.dispatch }),
   resolveLlmTestRequestSource,
   // 游戏业务路由由产品壳注入(阶段A:原 cli 静态 mount 搬到此)。路由表逐条不变。
   routers: [
@@ -314,6 +316,12 @@ await activateServerModules({
     videoAssets: videoAssets.providerControl,
   },
 });
+
+// Typed Editor transport: the Studio page owns the in-process Gateway and
+// executes requests over the registered WebSocket carrier. The server only
+// exposes the HTTP door and forwards opaque versioned envelopes; it never
+// creates a document/world replica.
+app.route('/', editorTransportCarrier.app);
 
 app.route(
   '/api/asset-canvas-inputs',
@@ -727,6 +735,10 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData | PartyWsData> = {
       return;
     }
     const clientWs = ws as import('bun').ServerWebSocket<WsClientData>;
+    if (editorTransportCarrier.isSocket(clientWs)) {
+      editorTransportCarrier.open(clientWs);
+      return;
+    }
     if (clientWs.data.npc) {
       activeNpcWsConnections.add(clientWs);
       return npcWsHandler.open?.(clientWs as any);
@@ -795,6 +807,10 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData | PartyWsData> = {
       return;
     }
     const clientWs = ws as import('bun').ServerWebSocket<WsClientData>;
+    if (editorTransportCarrier.isSocket(clientWs)) {
+      editorTransportCarrier.message(clientWs, message);
+      return;
+    }
     if (clientWs.data.npc) {
       const byteLength = typeof message === 'string' ? Buffer.byteLength(message) : message.byteLength;
       if (byteLength > NPC_WS_MAX_MESSAGE_BYTES) {
@@ -838,6 +854,10 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData | PartyWsData> = {
       return;
     }
     const clientWs = ws as import('bun').ServerWebSocket<WsClientData>;
+    if (editorTransportCarrier.isSocket(clientWs)) {
+      editorTransportCarrier.close(clientWs);
+      return;
+    }
     if (clientWs.data.npc) {
       activeNpcWsConnections.delete(clientWs);
       return npcWsHandler.close?.(clientWs as any, code, reason);
@@ -882,6 +902,15 @@ try {
       const data: WsClientData = {
         id: crypto.randomUUID(),
         npc: { sessionId: capability.sessionId, token: capability.token },
+      };
+      const upgraded = srv.upgrade(req, { data });
+      if (upgraded) return undefined;
+      return new Response('upgrade required', { status: 426 });
+    }
+    if (url.pathname === '/ws/editor/transport') {
+      const data: WsClientData = {
+        id: crypto.randomUUID(),
+        sid: EDITOR_TRANSPORT_WS_SID,
       };
       const upgraded = srv.upgrade(req, { data });
       if (upgraded) return undefined;
