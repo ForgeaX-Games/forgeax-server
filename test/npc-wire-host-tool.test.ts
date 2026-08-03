@@ -20,7 +20,13 @@ describe('npc_wire host tool', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'fx-npc-wire-'));
     try {
       mkdirSync(join(projectRoot, '.forgeax', 'games', 'village'), { recursive: true });
-      const args = { game: 'village', npcId: 'guide.01', soulId: 'village.guide.01', affordances };
+      const args = {
+        game: 'village',
+        npcId: 'guide.01',
+        soulId: 'village.guide.01',
+        decisionDeadline: { preset: 'patient' },
+        affordances,
+      };
       const tool = npcWireTool();
       const first = await tool.run!(args, { projectRoot, agentId: 'forge' }) as Record<string, unknown>;
       const second = await tool.run!(args, { projectRoot, agentId: 'forge' }) as Record<string, unknown>;
@@ -54,11 +60,14 @@ describe('npc_wire host tool', () => {
         adapterPath,
       });
       expect(source).toContain('soulId: "village.guide.01"');
+      expect(source).toContain('decisionDeadline: {');
+      expect(source).toContain('"preset": "patient"');
       expect(source).toContain('affordances: [');
       expect(registry).toContain("from './guide.01'");
       expect(adapter).toContain("from '@forgeax/npc-client'");
       expect(adapter).toContain('export interface NpcBodyExecutor');
       expect(adapter).toContain('export function installNpcBrainSystem');
+      expect(adapter).toContain('npcs: npcBrainConfig.npcs.map');
       expect(adapter).toContain("world.addSystem(Update");
       expect(adapter).toContain("callbacks.onFallback(npcId, 'NPC intent expired')");
       expect(JSON.parse(readFileSync(join(projectRoot, '.forgeax/games/village/package.json'), 'utf8')))
@@ -92,6 +101,46 @@ describe('npc_wire host tool', () => {
       expect(source).toContain("export const userHook = 'keep'");
       expect(source).toContain('soulId: "village.elder"');
       expect(source).not.toContain('soulId: "village.guide"');
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('upgrades a previously generated adapter with per-NPC session bindings', async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'fx-npc-wire-upgrade-'));
+    try {
+      mkdirSync(join(projectRoot, '.forgeax', 'games', 'village'), { recursive: true });
+      const tool = npcWireTool();
+      const args = {
+        game: 'village',
+        npcId: 'guide',
+        soulId: 'village.guide',
+        decisionDeadline: { preset: 'patient' },
+        affordances,
+      };
+      await tool.run!(args, { projectRoot, agentId: 'forge' });
+
+      const adapterPath = join(projectRoot, '.forgeax', 'games', 'village', 'src', 'npc-brain.ts');
+      const bindings = `
+  npcs: npcBrainConfig.npcs.map((npc) => ({
+    npcId: npc.npcId,
+    soulId: npc.soulId,
+    ...(npc.decisionDeadline ? { decisionDeadline: npc.decisionDeadline } : {}),
+  })),`;
+      const legacyAdapter = readFileSync(adapterPath, 'utf8').replace(bindings, '');
+      writeFileSync(adapterPath, `${legacyAdapter}\nexport const userHook = 'keep';\n`);
+
+      const result = await tool.run!(args, { projectRoot, agentId: 'forge' }) as Record<string, unknown>;
+      const upgraded = readFileSync(adapterPath, 'utf8');
+
+      expect(result).toMatchObject({
+        ok: true,
+        created: false,
+        changedPaths: ['.forgeax/games/village/src/npc-brain.ts'],
+      });
+      expect(upgraded).toContain('npcs: npcBrainConfig.npcs.map');
+      expect(upgraded).toContain('decisionDeadline: npc.decisionDeadline');
+      expect(upgraded).toContain("export const userHook = 'keep'");
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }

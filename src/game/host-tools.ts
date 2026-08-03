@@ -16,6 +16,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import type { HostToolSpec, HostToolRunCtx } from '@forgeax/orchestrator/orchestration-seams';
 import {
   type Affordance,
+  type NpcDecisionDeadline,
 } from '@forgeax/types/npc-protocol';
 import { NPC_TOOL_CONTRACTS } from '@forgeax/types/npc-tools';
 import { editorGatewayHostTools } from './editor-gateway-host-tools';
@@ -232,8 +233,16 @@ function managedBrainConfig(game: string): string {
   return `${CONFIG_START}\nexport const npcBrainConfig = {\n  game: ${serialize(game)},\n  npcs: npcDefinitions,\n} as const;\n${CONFIG_END}`;
 }
 
-function managedNpcDefinition(npcId: string, soulId: string, affordances: Affordance[]): string {
-  return `${CONFIG_START}\nexport const npcBrainWiring: Pick<NpcDefinition, 'npcId' | 'soulId' | 'affordances'> = {\n  npcId: ${serialize(npcId)},\n  soulId: ${serialize(soulId)},\n  affordances: ${serialize(affordances)},\n};\n${CONFIG_END}`;
+function managedNpcDefinition(
+  npcId: string,
+  soulId: string,
+  affordances: Affordance[],
+  decisionDeadline?: NpcDecisionDeadline,
+): string {
+  const deadline = decisionDeadline
+    ? `\n  decisionDeadline: ${serialize(decisionDeadline)},`
+    : '';
+  return `${CONFIG_START}\nexport const npcBrainWiring: Pick<NpcDefinition, 'npcId' | 'soulId' | 'decisionDeadline' | 'affordances'> = {\n  npcId: ${serialize(npcId)},\n  soulId: ${serialize(soulId)},${deadline}\n  affordances: ${serialize(affordances)},\n};\n${CONFIG_END}`;
 }
 
 function initialNpcDefinition(config: string): string {
@@ -249,11 +258,11 @@ function managedNpcRegistry(npcIds: readonly string[]): string {
 }
 
 function initialNpcRegistry(registry: string): string {
-  return `import type { Affordance } from '@forgeax/npc-client';\n\nexport interface NpcDefinition {\n  readonly npcId: string;\n  readonly soulId: string;\n  readonly displayName: string;\n  readonly body: Readonly<{ binding: string; [key: string]: unknown }>;\n  readonly affordances: readonly Affordance[];\n  readonly behavior?: Readonly<Record<string, unknown>>;\n}\n\n${registry}\n\nexport const npcDefinitionById: ReadonlyMap<string, NpcDefinition> = new Map(\n  npcDefinitions.map((definition) => [definition.npcId, definition]),\n);\n`;
+  return `import type { Affordance, NpcDecisionDeadline } from '@forgeax/npc-client';\n\nexport interface NpcDefinition {\n  readonly npcId: string;\n  readonly soulId: string;\n  readonly decisionDeadline?: NpcDecisionDeadline;\n  readonly displayName: string;\n  readonly body: Readonly<{ binding: string; [key: string]: unknown }>;\n  readonly affordances: readonly Affordance[];\n  readonly behavior?: Readonly<Record<string, unknown>>;\n}\n\n${registry}\n\nexport const npcDefinitionById: ReadonlyMap<string, NpcDefinition> = new Map(\n  npcDefinitions.map((definition) => [definition.npcId, definition]),\n);\n`;
 }
 
 function initialNpcBrainFile(config: string): string {
-  return `import { NpcClient, NPC_PROTOCOL_VERSION, type NpcDecision, type PerceptionSnapshot } from '@forgeax/npc-client';\nimport { Time, Update, type World } from '@forgeax/engine-ecs';\nimport { npcDefinitions } from './npcs';\n\n${config}\n\nexport interface NpcBodyExecutor {\n  execute(npcId: string, action: string, params: Readonly<Record<string, string>>): boolean;\n  fallback(npcId: string, reason: string): void;\n}\n\nlet executor: NpcBodyExecutor | undefined;\n\nexport const callbacks = {\n  onUtterance(npcId: string, lines: readonly string[]) { void npcId; void lines; },\n  onEmotion(npcId: string, mood: string) { void npcId; void mood; },\n  onFallback(npcId: string, reason: string) { executor?.fallback(npcId, reason); },\n};\n\nconst brain = await NpcClient.connect({\n  game: npcBrainConfig.game,\n  npcIds: npcBrainConfig.npcs.map((npc) => npc.npcId),\n  onIntentExpired: (npcId) => callbacks.onFallback(npcId, 'NPC intent expired'),\n});\nfor (const npc of npcBrainConfig.npcs) {\n  brain.declareAffordances(npc.npcId, [...npc.affordances]);\n  brain.onDecision(npc.npcId, applyNpcDecision);\n  brain.onFallback(npc.npcId, (error) => callbacks.onFallback(npc.npcId, error.message));\n}\n\nexport function attachNpcBody(body: NpcBodyExecutor): void {\n  executor = body;\n}\n\n/** Register the low-frequency Brain sampler in the game ECS update schedule. */\nexport function installNpcBrainSystem(\n  world: World,\n  sampleWorld: (npcId: string) => PerceptionSnapshot | undefined,\n): void {\n  world.addSystem(Update, {\n    name: 'forgeax-npc-brain',\n    queries: [],\n    resources: ['Time'],\n    fn: () => tickNpcBrain(world.getResource(Time).delta, sampleWorld),\n  });\n}\n\nexport function makeNpcSnapshot(\n  npcId: string,\n  input: Omit<PerceptionSnapshot, 'v' | 'game' | 'npcId' | 'affordances'>,\n): PerceptionSnapshot {\n  const npc = npcDefinitions.find((definition) => definition.npcId === npcId);\n  if (!npc) throw new Error(\`Unknown NPC: \${npcId}\`);\n  return {\n    ...input,\n    v: NPC_PROTOCOL_VERSION,\n    game: npcBrainConfig.game,\n    npcId,\n    affordances: [...npc.affordances],\n  };\n}\n\nexport function tickNpcBrain(\n  dt: number,\n  sampleWorld: (npcId: string) => PerceptionSnapshot | undefined,\n): void {\n  brain.tick(dt, sampleWorld);\n}\n\nexport async function requestNpcDecision(snapshot: PerceptionSnapshot): Promise<void> {\n  await brain.emit(snapshot);\n}\n\nfunction applyNpcDecision(decision: NpcDecision): void {\n  if (decision.utterance) callbacks.onUtterance(decision.npcId, decision.utterance.lines);\n  if (decision.emotion) callbacks.onEmotion(decision.npcId, decision.emotion.mood);\n  const intent = decision.intent;\n  if (!intent) return;\n  const npc = npcDefinitions.find((definition) => definition.npcId === decision.npcId);\n  const declared = npc?.affordances.some((item) => item.action === intent.action) ?? false;\n  if (!declared || !executor?.execute(decision.npcId, intent.action, intent.params ?? {})) {\n    callbacks.onFallback(decision.npcId, 'NPC Body rejected intent');\n  }\n}\n`;
+  return `import { NpcClient, NPC_PROTOCOL_VERSION, type NpcDecision, type PerceptionSnapshot } from '@forgeax/npc-client';\nimport { Time, Update, type World } from '@forgeax/engine-ecs';\nimport { npcDefinitions } from './npcs';\n\n${config}\n\nexport interface NpcBodyExecutor {\n  execute(npcId: string, action: string, params: Readonly<Record<string, string>>): boolean;\n  fallback(npcId: string, reason: string): void;\n}\n\nlet executor: NpcBodyExecutor | undefined;\n\nexport const callbacks = {\n  onUtterance(npcId: string, lines: readonly string[]) { void npcId; void lines; },\n  onEmotion(npcId: string, mood: string) { void npcId; void mood; },\n  onFallback(npcId: string, reason: string) { executor?.fallback(npcId, reason); },\n};\n\nconst brain = await NpcClient.connect({\n  game: npcBrainConfig.game,\n  npcIds: npcBrainConfig.npcs.map((npc) => npc.npcId),\n  npcs: npcBrainConfig.npcs.map((npc) => ({\n    npcId: npc.npcId,\n    soulId: npc.soulId,\n    ...(npc.decisionDeadline ? { decisionDeadline: npc.decisionDeadline } : {}),\n  })),\n  onIntentExpired: (npcId) => callbacks.onFallback(npcId, 'NPC intent expired'),\n});\nfor (const npc of npcBrainConfig.npcs) {\n  brain.declareAffordances(npc.npcId, [...npc.affordances]);\n  brain.onDecision(npc.npcId, applyNpcDecision);\n  brain.onFallback(npc.npcId, (error) => callbacks.onFallback(npc.npcId, error.message));\n}\n\nexport function attachNpcBody(body: NpcBodyExecutor): void {\n  executor = body;\n}\n\n/** Register the low-frequency Brain sampler in the game ECS update schedule. */\nexport function installNpcBrainSystem(\n  world: World,\n  sampleWorld: (npcId: string) => PerceptionSnapshot | undefined,\n): void {\n  world.addSystem(Update, {\n    name: 'forgeax-npc-brain',\n    queries: [],\n    resources: ['Time'],\n    fn: () => tickNpcBrain(world.getResource(Time).delta, sampleWorld),\n  });\n}\n\nexport function makeNpcSnapshot(\n  npcId: string,\n  input: Omit<PerceptionSnapshot, 'v' | 'game' | 'npcId' | 'affordances'>,\n): PerceptionSnapshot {\n  const npc = npcDefinitions.find((definition) => definition.npcId === npcId);\n  if (!npc) throw new Error(\`Unknown NPC: \${npcId}\`);\n  return {\n    ...input,\n    v: NPC_PROTOCOL_VERSION,\n    game: npcBrainConfig.game,\n    npcId,\n    affordances: [...npc.affordances],\n  };\n}\n\nexport function tickNpcBrain(\n  dt: number,\n  sampleWorld: (npcId: string) => PerceptionSnapshot | undefined,\n): void {\n  brain.tick(dt, sampleWorld);\n}\n\nexport async function requestNpcDecision(snapshot: PerceptionSnapshot): Promise<void> {\n  await brain.emit(snapshot);\n}\n\nfunction applyNpcDecision(decision: NpcDecision): void {\n  if (decision.utterance) callbacks.onUtterance(decision.npcId, decision.utterance.lines);\n  if (decision.emotion) callbacks.onEmotion(decision.npcId, decision.emotion.mood);\n  const intent = decision.intent;\n  if (!intent) return;\n  const npc = npcDefinitions.find((definition) => definition.npcId === decision.npcId);\n  const declared = npc?.affordances.some((item) => item.action === intent.action) ?? false;\n  if (!declared || !executor?.execute(decision.npcId, intent.action, intent.params ?? {})) {\n    callbacks.onFallback(decision.npcId, 'NPC Body rejected intent');\n  }\n}\n`;
 }
 
 function hasNpcClientImport(source: string): boolean {
@@ -278,6 +287,22 @@ function ensureNpcRegistryImport(current: string): string {
   return injectManagedConfig(current, "import { npcDefinitions } from './npcs';");
 }
 
+/** Upgrade the adapter emitted before per-NPC session bindings existed. */
+function ensureNpcSessionBindings(current: string): string {
+  if (/^\s*npcs:\s*npcBrainConfig\.npcs\.map\(/m.test(current)) return current;
+  const legacyNpcIds = '  npcIds: npcBrainConfig.npcs.map((npc) => npc.npcId),';
+  const offset = current.indexOf(legacyNpcIds);
+  if (offset < 0) return current;
+  const insertAt = offset + legacyNpcIds.length;
+  const bindings = `
+  npcs: npcBrainConfig.npcs.map((npc) => ({
+    npcId: npc.npcId,
+    soulId: npc.soulId,
+    ...(npc.decisionDeadline ? { decisionDeadline: npc.decisionDeadline } : {}),
+  })),`;
+  return `${current.slice(0, insertAt)}${bindings}${current.slice(insertAt)}`;
+}
+
 function upsertManagedRegion(
   current: string,
   content: string,
@@ -294,7 +319,7 @@ function upsertManagedRegion(
 function wireNpc(args: Record<string, unknown>, ctx: HostToolRunCtx): unknown {
   const parsed = NPC_TOOL_CONTRACTS.npc_wire.input.safeParse(args);
   if (!parsed.success) return { ok: false, error: `npc_wire: invalid input: ${parsed.error.message}` };
-  const { game, npcId, soulId, affordances } = parsed.data;
+  const { game, npcId, soulId, affordances, decisionDeadline } = parsed.data;
   if (!NPC_PATH_ID.test(npcId) || npcId.includes('..')) {
     return { ok: false, error: 'npc_wire: npcId is not a safe directory name' };
   }
@@ -363,7 +388,7 @@ function wireNpc(args: Record<string, unknown>, ctx: HostToolRunCtx): unknown {
   } catch (error) {
     return { ok: false, error: (error as Error).message, changedPaths: [] };
   }
-  const npcConfig = managedNpcDefinition(npcId, soulId, affordances);
+  const npcConfig = managedNpcDefinition(npcId, soulId, affordances, decisionDeadline);
   let npcCreated = false;
 
   if (!existsSync(npcFile)) {
@@ -439,6 +464,7 @@ function wireNpc(args: Record<string, unknown>, ctx: HostToolRunCtx): unknown {
       next = updated;
     }
     next = ensureNpcRegistryImport(next);
+    next = ensureNpcSessionBindings(next);
     if (next !== current) {
       writeFileSync(brainFile, next);
       changedPaths.push(relativePath(brainFile));
