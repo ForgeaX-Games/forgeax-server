@@ -20,98 +20,6 @@ import {
 } from '@forgeax/types/npc-protocol';
 import { NPC_TOOL_CONTRACTS } from '@forgeax/types/npc-tools';
 import { editorTransportHostTools, type EditorTransportHostToolsDeps } from './editor-transport-host-tools';
-import type { CarrierGameplayAdapter } from './carrier-gameplay-adapter';
-import { parseGameplayOperation } from './gameplay-operation-contract';
-
-const gameplayScopeSchema = {
-  type: 'object',
-  required: ['projectId', 'gameId'],
-  properties: {
-    projectId: { type: 'string', minLength: 1 },
-    gameId: { type: 'string', minLength: 1 },
-  },
-  additionalProperties: false,
-} as const;
-
-const gameplayInputActionSchema = {
-  oneOf: [
-    {
-      type: 'object',
-      required: ['type', 'key', 'phase'],
-      properties: {
-        type: { const: 'key' },
-        key: { type: 'string', minLength: 1 },
-        phase: { enum: ['down', 'up'] },
-      },
-      additionalProperties: false,
-    },
-    {
-      type: 'object',
-      required: ['type', 'x', 'y'],
-      properties: {
-        type: { const: 'pointer' },
-        x: { type: 'number' },
-        y: { type: 'number' },
-        button: { enum: ['left', 'middle', 'right'] },
-      },
-      additionalProperties: false,
-    },
-  ],
-} as const;
-
-const gameplayArtifactSchema = {
-  type: 'object',
-  required: ['dataUrl', 'bytes', 'provenance'],
-  properties: {
-    dataUrl: { type: 'string', minLength: 1 },
-    bytes: { type: 'number', minimum: 1 },
-    provenance: {
-      type: 'object',
-      required: ['runtimeId', 'scope', 'pageIdentity', 'canvasIdentity', 'rendererGeneration'],
-      properties: {
-        runtimeId: { type: 'string', minLength: 1 },
-        scope: gameplayScopeSchema,
-        pageIdentity: { type: 'string', minLength: 1 },
-        canvasIdentity: { type: 'string', minLength: 1 },
-        rendererGeneration: { type: 'integer', minimum: 0 },
-      },
-      additionalProperties: false,
-    },
-  },
-  additionalProperties: false,
-} as const;
-
-export const GAMEPLAY_INPUT_SCHEMA = {
-  // Anthropic 的 tool input_schema 要求顶层必须有 `type`，即使用 oneOf 组合校验
-  // （每个分支已各自声明 type: 'object'，这里补顶层声明与之一致，不改变校验语义）。
-  type: 'object',
-  oneOf: [
-    ...(['play', 'gameplayStop', 'capture'] as const).map((operation) => ({
-      type: 'object',
-      required: ['operation', 'scope'],
-      properties: { operation: { const: operation }, scope: gameplayScopeSchema },
-      additionalProperties: false,
-    })),
-    {
-      type: 'object',
-      required: ['operation', 'scope', 'action'],
-      properties: { operation: { const: 'input' }, scope: gameplayScopeSchema, action: gameplayInputActionSchema },
-      additionalProperties: false,
-    },
-    {
-      type: 'object',
-      required: ['operation', 'scope', 'query'],
-      properties: { operation: { const: 'query' }, scope: gameplayScopeSchema, query: { type: 'string' } },
-      additionalProperties: false,
-    },
-    {
-      type: 'object',
-      required: ['operation', 'scope', 'artifact'],
-      properties: { operation: { const: 'reveal' }, scope: gameplayScopeSchema, artifact: gameplayArtifactSchema },
-      additionalProperties: false,
-    },
-  ],
-} as const;
 
 const GAME_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u;
 const NPC_BRAIN_FILE = 'src/npc-brain.ts';
@@ -530,37 +438,7 @@ export function gameHostTools(): HostToolSpec[] {
  * named and testable prevents a new editor capability from being implemented
  * but accidentally omitted at `createForgeaxApp` boot. */
 export function studioHostTools(
-  adapter?: CarrierGameplayAdapter,
   editorTransport?: EditorTransportHostToolsDeps,
 ): HostToolSpec[] {
-  return [...gameHostTools(), ...editorTransportHostTools(editorTransport), gameplayHostTool(adapter)];
-}
-
-export function gameplayHostTool(adapter?: CarrierGameplayAdapter): HostToolSpec {
-  return {
-    name: 'gameplay',
-    description: 'Run a typed gameplay operation on the existing live carrier.',
-    inputSchema: GAMEPLAY_INPUT_SCHEMA,
-    run: async (args) => {
-      let operation;
-      try {
-        operation = parseGameplayOperation(args);
-      } catch (error) {
-        return {
-          ok: false,
-          error: {
-            owner: 'contract',
-            code: 'operation-unsupported',
-            phase: 'dispatch',
-            retryable: false,
-            message: error instanceof Error ? error.message : 'Invalid gameplay operation payload.',
-            hint: { action: 'status' },
-          },
-        };
-      }
-      return adapter
-        ? adapter.execute(operation)
-        : { ok: false, error: { owner: 'application', code: 'surface-unavailable', phase: 'dispatch', retryable: false, message: 'Gameplay application service is not configured.', hint: { action: 'status' } } };
-    },
-  };
+  return [...gameHostTools(), ...editorTransportHostTools(editorTransport)];
 }

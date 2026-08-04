@@ -16,6 +16,7 @@ import { assetRoot } from '@forgeax/platform-io';
 import { friendlyPath } from '@forgeax/platform-io';
 import { addKnownGame } from '@forgeax/platform-io';
 import { getActiveGame, setActiveGame, clearActiveGameIf } from './active-game';
+import { GAME_SLUG_RE } from './game-slug';
 import { findMarketplaceManifest } from '@forgeax/orchestrator/api/lib/marketplace-manifest';
 import { computeAgentNaming, pickPersonName, type AgentNaming } from '@forgeax/orchestrator/api/lib/agent-naming';
 import { getPathManager } from '@forgeax/orchestrator/fs/path-manager';
@@ -27,14 +28,6 @@ import { BLACKBOARD_KEYS } from '@forgeax/orchestrator/defaults/blackboard-vars'
 import type { FileActivityRecord } from '@forgeax/orchestrator/ledger/file-activity-ledger';
 import { registry, listHistory, deleteHistory, cleanPackagingEnv, createJob, getJob, updateJob, makeProgressFn, detectEngineRoots } from './packager';
 import type { TargetPlatform } from './packager';
-
-/**
- * Valid game slug: 1-41 chars, [a-z0-9] first then [a-z0-9-]*. No
- * underscores are intentionally excluded to keep URL/path/import-specifier ergonomics
- * uniform — e.g. /preview/?slug=<x> + .forgeax/games/<x>/). Exported
- * for tests (cc-game/20).
- */
-export const GAME_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 /** Content types for the `/play/:slug/*` static route. Bun.file infers most
  *  types, but the engine is strict about `.wasm` (must be `application/wasm`
@@ -192,6 +185,8 @@ async function regenerateGameGuids(gameDir: string): Promise<void> {
 function resolveGameTemplate(projectRoot: string): string | null {
   const userOverride = resolve(projectRoot, '.forgeax/games/_template');
   if (existsSync(userOverride)) return userOverride;
+  const minimal = resolve(assetRoot(), 'server', 'templates', 'game-minimal');
+  if (existsSync(minimal)) return minimal;
   // Use assetRoot() to locate the builtin template across all platforms/modes
   // (dev source tree, or packaged app). assetRoot() points to the 'packages' level.
   // Engine is now the editor's nested submodule (top-level packages/engine removed).
@@ -367,17 +362,40 @@ export interface WorkbenchRouterOptions {
     targetGameDir: string;
     targetGameId: string;
   }) => Promise<void>;
+  ensureSessionForGame?: (slug: string) => Promise<{ sid: string; created: boolean }>;
 }
 
 export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hono {
   const router = new Hono();
 
-  // ── GET /active-slug — single-field, low-cost. Polled every 5s by
-  // PreviewMode, so it must NOT touch marketplace manifest, listAgents(), or
-  // produces[] glob resolution. Just one readdir + statSync per .forgeax/games/.
-  router.get('/active-slug', (c) => {
+  // ── Active game — one authoritative read/write contract ──
+  router.get('/active-game', (c) => {
     const projectRoot = defaultProjectRoot();
     return c.json({ activeSlug: getActiveGame(projectRoot) ?? null });
+  });
+
+  router.put('/active-game', async (c) => {
+    const body = await c.req.json().catch(() => null) as { slug?: unknown } | null;
+    if (!GAME_SLUG_RE.test(typeof body?.slug === 'string' ? body.slug : '')) {
+      return c.json({ error: 'invalid slug' }, 400);
+    }
+    const projectRoot = defaultProjectRoot();
+    const gameDir = resolve(projectRoot, '.forgeax/games', body!.slug as string);
+    if (!existsSync(gameDir)) {
+      return c.json({ error: `.forgeax/games/${body!.slug as string} not found`, slug: body!.slug }, 404);
+    }
+    try {
+      // Prepare dependent state before publishing the selection event. Pages
+      // can then react as projections instead of racing to create sessions.
+      const session = await options.ensureSessionForGame?.(body!.slug as string);
+      return c.json({
+        ok: true,
+        ...setActiveGame(projectRoot, body!.slug as string),
+        ...(session ? { session } : {}),
+      });
+    } catch (e) {
+      return c.json({ error: `failed to prepare game session: ${(e as Error).message}` }, 500);
+    }
   });
 
   // ── GET /games — list all games + current ──
@@ -446,8 +464,8 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
       // If the deleted game was the explicitly-pinned active game, drop the
       // binding so getActiveGame re-derives from the remaining games instead of
       // staying pinned to a now-missing dir.
-      clearActiveGameIf(defaultProjectRoot(), slug!);
-      return c.json({ ok: true, slug });
+      const selection = clearActiveGameIf(defaultProjectRoot(), slug!);
+      return c.json({ ok: true, slug, ...selection });
     } catch (e) {
       return c.json({ error: (e as Error).message }, 500);
     }
@@ -509,7 +527,7 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
 
   router.get('/agents', async (c) => {
     const lang = (c.req.query('lang') ?? 'en') as 'zh' | 'en';
-    const pinnedSlug = c.req.query('slug') ?? undefined;
+    const requestedSlug = c.req.query('slug') ?? undefined;
     // `?include=files` opts into per-agent files[] resolution. Default skips
     // it: most callers (PreviewMode, FilesPanel, Composer, agent-role, etc.)
     // only read activeSlug/role/name/avatar, and resolving files was the
@@ -539,7 +557,7 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
 
     // TTL cache only for include=files (the expensive path). sid + slug both
     // baked in so different sessions/games don't poison each other's view.
-    const cacheKey = includeFiles ? `${lang}:${pinnedSlug ?? '_auto'}:${sid ?? '_nosid'}` : null;
+    const cacheKey = includeFiles ? `${lang}:${requestedSlug ?? '_auto'}:${sid ?? '_nosid'}` : null;
     if (cacheKey) {
       const hit = agentsCache.get(cacheKey);
       if (hit && Date.now() - hit.ts < AGENTS_TTL_MS) return c.json(hit.resp);
@@ -561,7 +579,7 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
       const raw = await readFile(manifestPath, 'utf-8');
       const manifest = JSON.parse(raw) as { agents?: MarketplaceAgent[] };
       const autoSlug = getActiveGame(root);
-      const slug = pinnedSlug ?? autoSlug;
+      const slug = requestedSlug ?? autoSlug;
 
       // ADR-0019: 为 legacy manifest.json agents 也注入 avatarRules. 字典 key 是
       // plugin 自报 id (def.id, e.g. "arin"/"iori"). legacy "forge" 视觉上是 Arin
@@ -726,7 +744,7 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
       templateDir = resolveGameTemplate(projectRoot);
     }
     if (!templateDir) {
-      return c.json({ error: 'game template not found — expected .forgeax/games/_template/ or packages/editor/packages/engine/templates/game-default/' }, 500);
+      return c.json({ error: 'game template not found — expected .forgeax/games/_template/, packages/server/templates/game-minimal/, or the legacy engine game-default/' }, 500);
     }
     try {
       // Skip per-instance state when copying (built-in templates like spin-cube
@@ -765,11 +783,13 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
           targetGameId: slug,
         });
       }
-      // A freshly-created game is what the user wants to work on next — record
-      // it as the explicit active game and relocate live sessions' cli there,
-      // so the agent's shell stops resolving against the previous game.
-      setActiveGame(projectRoot, slug);
-      return c.json({ ok: true, slug, gameDir: friendlyPath(gameDir) });
+      const session = await options.ensureSessionForGame?.(slug);
+      return c.json({
+        ok: true,
+        slug,
+        gameDir: friendlyPath(gameDir),
+        ...(session ? { session } : {}),
+      });
     } catch (e) {
       await rm(gameDir, { recursive: true, force: true });
       return c.json({ error: (e as Error).message }, 500);
@@ -866,12 +886,11 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
     if (linkExists) {
       // Selecting `.forgeax/games/<slug>` itself used to be treated as a name
       // collision. Compare canonical paths before rejecting: same game means
-      // bind-and-activate, while a different game with the same slug remains a
+      // an idempotent bind, while a different game with the same slug remains a
       // real conflict.
       try {
         if (realpathSync(linkPath) === realpathSync(abs)) {
           addKnownGame(abs, slug);
-          setActiveGame(projectRoot, slug);
           return c.json({
             ok: true,
             slug,
@@ -889,7 +908,6 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
       // 'junction' on Windows: links a dir without admin rights (unlike 'dir').
       symlinkSync(abs, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
       addKnownGame(abs, slug);
-      setActiveGame(projectRoot, slug);
       return c.json({
         ok: true,
         slug,
@@ -900,24 +918,6 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
     } catch (e) {
       return c.json({ error: (e as Error).message }, 500);
     }
-  });
-
-  // ── POST /games/:slug/activate — make a game the explicit active game ──
-  // Called by the TopBar game switcher when the user picks a game. Records the
-  // choice (active-game.json) AND relocates every live session's cli into the
-  // game dir, so "session 拉起的 cli 的默认工作目录就是对应的激活 game".
-  router.post('/games/:slug/activate', async (c) => {
-    const slug = c.req.param('slug');
-    if (!GAME_SLUG_RE.test(slug ?? '')) {
-      return c.json({ error: 'invalid slug' }, 400);
-    }
-    const projectRoot = defaultProjectRoot();
-    const gameDir = resolve(projectRoot, '.forgeax/games', slug);
-    if (!existsSync(gameDir)) {
-      return c.json({ error: `.forgeax/games/${slug} not found`, slug }, 404);
-    }
-    setActiveGame(projectRoot, slug);
-    return c.json({ ok: true, activeSlug: slug });
   });
 
   // ── POST /games/:slug/verify — build/import preflight (closed-loop check) ──

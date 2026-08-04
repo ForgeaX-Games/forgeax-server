@@ -19,10 +19,7 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-
-// Mirror of GAME_SLUG_RE / character id grammar used elsewhere. Duplicated to
-// keep this module dependency-light (no circular imports).
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
+import { GAME_SLUG_RE } from './game-slug';
 const CHAR_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
 export type ActiveCharacterRole = 'hero' | 'npc' | 'monster' | 'vehicle';
@@ -55,7 +52,7 @@ export function getActiveCharacter(
   root: string,
   slug: string,
 ): { charId: string; role: ActiveCharacterRole } | null {
-  if (!SLUG_RE.test(slug)) return null;
+  if (!GAME_SLUG_RE.test(slug)) return null;
   const file = activeCharacterFile(root, slug);
   if (!existsSync(file)) return null;
   try {
@@ -83,7 +80,7 @@ export function setActiveCharacter(
   charId: string,
   role: ActiveCharacterRole = 'hero',
 ): void {
-  if (!SLUG_RE.test(slug) || !CHAR_ID_RE.test(charId)) return;
+  if (!GAME_SLUG_RE.test(slug) || !CHAR_ID_RE.test(charId)) return;
   const file = activeCharacterFile(root, slug);
   mkdirSync(dirname(file), { recursive: true });
   const store: ActiveCharacterStore = {

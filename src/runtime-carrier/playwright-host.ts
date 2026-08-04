@@ -3,17 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrowserContext, Page } from 'playwright';
 import { parseCarrierHealthMessage, type CarrierHealthObservation } from './health';
-import {
-  GAMEPLAY_BRIDGE_VERSION,
-  parseGameplayBridgeRequest,
-  type GameplayBridgeRequest,
-} from '../game/gameplay-operation-contract';
 import type {
   CarrierHost,
   CarrierHostHandle,
   CarrierHostObservation,
   CarrierHostStartInput,
-  CarrierGameplayTransport,
   RuntimeScope,
 } from './types';
 
@@ -79,11 +73,10 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
         // A managed carrier must mount the Studio editor viewport immediately;
         // a fresh persistent profile would otherwise stop at onboarding before
         // the in-process ViewportComponent can publish its carrier handshake.
-        await context.addInitScript((scope) => {
+        await context.addInitScript(() => {
           const storage = (globalThis as unknown as { localStorage: { setItem: (key: string, value: string) => void } }).localStorage;
           storage.setItem('forgeax.onboarding.v2', JSON.stringify({ v: 2, phase: 'done', done: { tour: true, firstChat: true } }));
-          if (scope.gameId) storage.setItem('forgeax.pinnedSlug', scope.gameId);
-        }, actualScope);
+        });
         await page.goto(carrierUrl(baseUrl, input.runtimeId, actualScope, input.ownerToken), {
           waitUntil: 'domcontentloaded',
           timeout: timeoutMs,
@@ -111,7 +104,6 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
             await page.bringToFront();
             await page.evaluate(() => (globalThis as unknown as CarrierEventWindow).focus());
           },
-          gameplay: createGameplayTransport(() => page),
           stop: async () => { await closeHost(); },
           observe: async () => {
             if (navigationCount > initialNavigationCount) {
@@ -160,73 +152,6 @@ export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOption
       userDataDir = null;
     }
   }
-}
-
-function createGameplayTransport(getPage: () => Page | null): CarrierGameplayTransport {
-  const withPage = (): Page => {
-    const current = getPage();
-    if (!current || current.isClosed()) throw new Error('Managed carrier page is closed.');
-    return current;
-  };
-
-  return {
-    async execute(request: unknown): Promise<unknown> {
-      const current = withPage();
-      let bridgeRequest: GameplayBridgeRequest;
-      try {
-        bridgeRequest = parseGameplayBridgeRequest(request);
-      } catch (error) {
-        return {
-          ok: false,
-          error: {
-            owner: 'contract',
-            code: 'operation-unsupported',
-            phase: 'dispatch',
-            retryable: false,
-            message: error instanceof Error ? error.message : 'Invalid gameplay bridge request.',
-            hint: { action: 'status' },
-          },
-        };
-      }
-      return await current.evaluate(async ({ payload, expectedVersion }) => {
-        const bridge = (globalThis as unknown as {
-          forgeaxGameplayBridge?: {
-            version?: unknown;
-            execute?: (request: unknown) => unknown;
-          };
-        }).forgeaxGameplayBridge;
-        if (!bridge || bridge.version !== expectedVersion || typeof bridge.execute !== 'function') {
-          return {
-            ok: false,
-            error: {
-              owner: 'transport',
-              code: 'bridge-unavailable',
-              phase: 'dispatch',
-              retryable: true,
-              message: 'The versioned Editor gameplay bridge is unavailable.',
-              hint: { action: 'status' },
-            },
-          };
-        }
-        try {
-          return await bridge.execute(payload);
-        } catch (error) {
-          return {
-            ok: false,
-            error: {
-              owner: 'producer',
-              code: 'producer-exception',
-              phase: 'dispatch',
-              retryable: true,
-              message: error instanceof Error ? error.message : 'The Editor gameplay producer threw an unknown error.',
-              hint: { action: 'status' },
-              details: { name: error instanceof Error ? error.name : typeof error },
-            },
-          };
-        }
-      }, { payload: bridgeRequest, expectedVersion: GAMEPLAY_BRIDGE_VERSION });
-    },
-  };
 }
 
 function carrierUrl(baseUrl: string, runtimeId: string, scope: RuntimeScope, ownerToken: string): string {

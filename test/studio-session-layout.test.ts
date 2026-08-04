@@ -48,6 +48,22 @@ describe('GameSessionLayout — new sessions', () => {
     expect(l.sessionRoot('new1')).toBe(sessionRoot);
     expect(l.isLegacySession('new1')).toBe(false);
   });
+
+  test('explicit scope binds an inactive game without changing the active game', () => {
+    makeGame('active-game');
+    makeGame('new-game');
+    const l = layout();
+    const { sessionRoot, workDir } = l.allocate('new2', 'new-game');
+    expect(sessionRoot).toBe(join(proj, '.forgeax', 'games', 'new-game', 'sessions', 'new2'));
+    expect(workDir).toBe(join(proj, '.forgeax', 'games', 'new-game'));
+    expect(l.resolveScope('new2')).toBe('new-game');
+    expect(l.resolveScope()).toBe('active-game');
+  });
+
+  test('explicit scope must name an existing game', () => {
+    makeGame('active-game');
+    expect(() => layout().allocate('new3', 'missing-game')).toThrow('scope does not exist');
+  });
 });
 
 describe('GameSessionLayout — read-compat for legacy sessions', () => {

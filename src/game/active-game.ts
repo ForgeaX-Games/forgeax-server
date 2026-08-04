@@ -19,12 +19,15 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { getEventBus } from '@forgeax/orchestrator/events/bus';
 import { detectActiveSlug } from './active-slug';
+import { isGameSlug } from './game-slug';
 
-// Mirror of workbench.ts GAME_SLUG_RE. Duplicated (not imported) to avoid a
-// circular import: workbench.ts imports this module, and importing its slug
-// regex back would close the cycle. Keep the two in sync.
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
+export const ACTIVE_GAME_CHANGED_TOPIC = 'workbench.active-game.changed';
+
+export interface ActiveGameSelection {
+  activeSlug: string | null;
+}
 
 interface ActiveGameStore {
   version: 1;
@@ -47,7 +50,7 @@ function readExplicit(root: string): string | undefined {
     const parsed = JSON.parse(readFileSync(file, 'utf-8')) as Partial<ActiveGameStore>;
     if (parsed.version !== 1) return undefined;
     const slug = typeof parsed.slug === 'string' ? parsed.slug : undefined;
-    if (!slug || !SLUG_RE.test(slug)) return undefined;
+    if (!isGameSlug(slug)) return undefined;
     return slug;
   } catch {
     return undefined;
@@ -68,16 +71,26 @@ function readExplicit(root: string): string | undefined {
 export function getActiveGame(root: string): string | undefined {
   const explicit = readExplicit(root);
   if (explicit && gameDirExists(root, explicit)) return explicit;
-  return detectActiveSlug(root);
+  const detected = detectActiveSlug(root);
+  if (detected) writeSelection(root, detected);
+  return detected;
 }
 
 /**
- * Record the user's explicit active-game choice. Called when a game is created
- * or picked in the switcher. No-op-safe: invalid slugs are ignored rather than
- * throwing (callers validate first; this is a defensive last line).
+ * Record the explicit active-game choice and publish its derived notification.
+ * Invalid or missing games fail at the authority boundary.
  */
-export function setActiveGame(root: string, slug: string): void {
-  if (!SLUG_RE.test(slug)) return;
+export function setActiveGame(root: string, slug: string): ActiveGameSelection {
+  if (!isGameSlug(slug)) throw new Error(`invalid game slug: ${slug}`);
+  if (!gameDirExists(root, slug)) throw new Error(`game not found: ${slug}`);
+  const previous = getActiveGame(root) ?? null;
+  writeSelection(root, slug);
+  const selection = { activeSlug: slug } as const;
+  if (previous !== slug) getEventBus().emit(ACTIVE_GAME_CHANGED_TOPIC, selection);
+  return selection;
+}
+
+function writeSelection(root: string, slug: string): void {
   const file = activeGameFile(root);
   mkdirSync(dirname(file), { recursive: true });
   const store: ActiveGameStore = { version: 1, slug };
@@ -92,11 +105,14 @@ export function setActiveGame(root: string, slug: string): void {
  * `getActiveGame` re-derives from the remaining games via the mtime heuristic.
  * No-op when the binding is absent or points elsewhere.
  */
-export function clearActiveGameIf(root: string, slug: string): void {
-  if (readExplicit(root) !== slug) return;
+export function clearActiveGameIf(root: string, slug: string): ActiveGameSelection {
+  if (readExplicit(root) !== slug) return { activeSlug: getActiveGame(root) ?? null };
   try {
     rmSync(activeGameFile(root));
   } catch {
     /* already gone — fine */
   }
+  const selection = { activeSlug: getActiveGame(root) ?? null };
+  getEventBus().emit(ACTIVE_GAME_CHANGED_TOPIC, selection);
+  return selection;
 }

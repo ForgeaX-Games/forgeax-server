@@ -41,6 +41,7 @@ import { WsHub, createWsHandler, type WsClientData } from '@forgeax/orchestrator
 import { getSessionManager } from '@forgeax/orchestrator/core/session-manager';
 import { getActiveGame } from './game/active-game';
 import { GameSessionLayout } from './studio-session-layout';
+import { ensureSessionWithBootstrap } from '@forgeax/orchestrator/api/lib/session-create';
 // 游戏业务路由(阶段A:从 @forgeax/orchestrator 搬入产品壳)—— 经 ctx.routers 注入编排层。
 import { createWorkbenchRouter } from './game/workbench';
 import {
@@ -81,7 +82,6 @@ import { createVideoAssetRuntime } from './video-assets/index';
 import { mountRuntimeCarrierApi } from './runtime-carrier/api';
 import { createRuntimeCarrierSupervisor } from './runtime-carrier/supervisor';
 import { createPlaywrightCarrierHost } from './runtime-carrier/playwright-host';
-import { CarrierGameplayAdapter } from './game/carrier-gameplay-adapter';
 import { EDITOR_TRANSPORT_WS_SID, createEditorTransportCarrier } from './game/editor-transport-carrier';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -242,13 +242,19 @@ const runtimeCarrierSupervisor = createRuntimeCarrierSupervisor({
     },
   }),
 });
-const gameplayAdapter = new CarrierGameplayAdapter({
-  supervisor: runtimeCarrierSupervisor,
-  gateway: {
-    execute: (request) => runtimeCarrierSupervisor.gameplay(request.identity.runtimeId)?.execute(request) ?? Promise.resolve({ ok: false, error: { owner: 'transport', code: 'surface-unavailable', phase: 'dispatch', retryable: true, message: 'The managed carrier has no gameplay transport.', hint: { action: 'status' } } }),
+const editorTransportCarrier = createEditorTransportCarrier({
+  ensureScope: async (scope) => {
+    const prefix = 'game:';
+    if (!scope.startsWith(prefix) || scope.length === prefix.length) {
+      throw new Error(`Unsupported Editor transport scope: ${scope}`);
+    }
+    const result = await runtimeCarrierSupervisor.ensure({
+      projectId: defaultProjectRoot(),
+      gameId: scope.slice(prefix.length),
+    });
+    if (!result.ok) throw new Error(result.error.message);
   },
 });
-const editorTransportCarrier = createEditorTransportCarrier();
 const { app, npcRuntime } = await createForgeaxApp({
   instanceRoot,
   version: VERSION,
@@ -261,7 +267,7 @@ const { app, npcRuntime } = await createForgeaxApp({
   // 游戏语义 host 工具由产品壳经 seam 注入(P1-7 落地阶段A §3 设计意图):
   // list_games / query_world / capture_frame 不再硬编码在 cli——声明 + 宿主侧执行体
   // 都在 src/game/host-tools.ts,cli 只提供通用感知往返(ctx.perception)与信任闸。
-  hostTools: studioHostTools(gameplayAdapter, { dispatch: editorTransportCarrier.dispatch }),
+  hostTools: studioHostTools({ dispatch: editorTransportCarrier.dispatch }),
   resolveLlmTestRequestSource,
   // 游戏业务路由由产品壳注入(阶段A:原 cli 静态 mount 搬到此)。路由表逐条不变。
   routers: [
@@ -271,6 +277,10 @@ const { app, npcRuntime } = await createForgeaxApp({
       path: '/api/workbench',
       router: createWorkbenchRouter({
         cloneTemplateAssets: (input) => videoAssets.service.cloneTemplateAssets(input),
+        ensureSessionForGame: async (slug) => {
+          const session = await ensureSessionWithBootstrap({ scope: slug, autoStart: true });
+          return { sid: session.sid, created: session.created };
+        },
       }),
     },
     { path: '/api/wb/character', router: createCharacterRouter({ projectRoot: instanceRoot, env: shimEnv }) },

@@ -14,4 +14,5 @@ test('main composes the runtime carrier without replacing the existing preview p
   expect(mainSource).toContain("process.env.FORGEAX_ENGINE_PORT ?? '15173'");
   expect(mainSource).not.toContain('runtimeCarrierSupervisor.play');
   expect(mainSource).not.toContain('runtimeCarrierSupervisor.capture');
+  expect(mainSource).not.toContain('CarrierGameplayAdapter');
 });

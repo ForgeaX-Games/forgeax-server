@@ -1,8 +1,8 @@
 /** Regression: opening the already-mounted game directory is idempotent.
  *
  * The file browser returns the canonical game path, which for an internal game
- * is already `.forgeax/games/<slug>`. Re-posting that path must activate the
- * existing mount instead of reporting a slug collision.
+ * is already `.forgeax/games/<slug>`. Re-posting that path must return the
+ * existing mount instead of reporting a slug collision or changing selection.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -42,7 +42,7 @@ afterEach(() => {
 });
 
 describe('POST /api/workbench/games/link', () => {
-  test('re-opening the mounted game activates it instead of returning a collision', async () => {
+  test('re-opening the mounted game is idempotent without changing selection', async () => {
     const gameDir = resolve(instanceRoot, '.forgeax', 'games', 'pong');
     mkdirSync(gameDir, { recursive: true });
     writeFileSync(resolve(gameDir, 'forge.json'), JSON.stringify({ id: 'pong', name: 'Pong' }), 'utf-8');

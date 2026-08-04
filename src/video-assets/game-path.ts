@@ -1,8 +1,9 @@
 import { statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { KinoApiError } from './kino-api';
+import { GAME_SLUG_RE } from '../game/game-slug';
 
-export const VIDEO_ASSET_GAME_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
+export const VIDEO_ASSET_GAME_SLUG_RE = GAME_SLUG_RE;
 export type ProjectRootResolver = () => string;
 
 function assertValidSlug(slug: string): void {

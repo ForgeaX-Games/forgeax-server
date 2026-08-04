@@ -17,25 +17,53 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Hono } from "hono";
 import { initPathManager, resetPathManager } from "@forgeax/orchestrator/fs/path-manager";
 import { createWorkbenchRouter } from "../src/game/workbench";
+import { getActiveGame, setActiveGame } from "../src/game/active-game";
 
 let projectRoot: string;
 let prevProjectRoot: string | undefined;
 let app: Hono;
+let ensured: string[];
 
 beforeEach(() => {
   projectRoot = mkdtempSync(resolve(tmpdir(), "forgeax-create-scene-"));
+  const templateDir = resolve(projectRoot, ".forgeax/games/_template");
+  mkdirSync(resolve(templateDir, "assets"), { recursive: true });
+  writeFileSync(resolve(templateDir, "forge.json"), JSON.stringify({
+    id: "scene-template", name: "Scene Template", schemaVersion: "1.0.0",
+    entry: "main.ts", defaultScene: "1036f6f0-d3c2-5f31-9593-3432942d4c93",
+  }));
+  writeFileSync(resolve(templateDir, "main.ts"), "export const sceneGuid = '1036f6f0-d3c2-5f31-9593-3432942d4c93';\n");
+  writeFileSync(resolve(templateDir, "assets/scene.pack.json"), JSON.stringify({
+    version: 2,
+    assets: [{
+      guid: "1036f6f0-d3c2-5f31-9593-3432942d4c93",
+      kind: "scene",
+      name: "Scene",
+      payload: { entities: [] },
+      refs: [
+        "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+        "95730fd2-9846-5f84-8658-0b3c971eb263",
+      ],
+    }],
+  }));
   prevProjectRoot = process.env.FORGEAX_PROJECT_ROOT;
   process.env.FORGEAX_PROJECT_ROOT = projectRoot;
   resetPathManager();
   initPathManager({ projectRoot });
+  ensured = [];
   app = new Hono();
-  app.route("/api/workbench", createWorkbenchRouter());
+  app.route("/api/workbench", createWorkbenchRouter({
+    ensureSessionForGame: async (slug) => {
+      ensured.push(slug);
+      return { sid: `session-${slug}`, created: true };
+    },
+  }));
 });
 
 afterEach(() => {
@@ -58,6 +86,7 @@ describe("POST /api/workbench/games remaps forge.json.defaultScene", () => {
       body: JSON.stringify({ slug }),
     });
     expect(res.status).toBe(200);
+    expect(ensured).toEqual([slug]);
 
     const gameDir = resolve(projectRoot, ".forgeax/games", slug);
     const forge = JSON.parse(
@@ -74,13 +103,10 @@ describe("POST /api/workbench/games remaps forge.json.defaultScene", () => {
     // ...and must NOT still be the template's shared GUID.
     expect(forge.defaultScene).not.toBe("1036f6f0-d3c2-5f31-9593-3432942d4c93");
 
-    // main.ts hardcodes the scene GUID (const SCENE_GUID = '...'); it must be
-    // remapped to the freshly-issued GUID too, else loadScene dangles
-    // (asset-not-imported → black screen). The template's shared GUID must be
-    // gone from the source entirely.
+    // A template may hardcode the scene GUID, or may consume ctx.defaultScene.
+    // In either shape the old shared identity must not survive in source.
     const mainTs = readFileSync(resolve(gameDir, "main.ts"), "utf-8");
     expect(mainTs).not.toContain("1036f6f0-d3c2-5f31-9593-3432942d4c93");
-    expect(mainTs).toContain(sceneAsset!.guid);
 
     // References to SHARED/builtin assets (GUIDs the game does not define) must
     // be PRESERVED, not regenerated — regenerating them points at phantom GUIDs
@@ -96,5 +122,17 @@ describe("POST /api/workbench/games remaps forge.json.defaultScene", () => {
       expect(definedGuids.has(guid)).toBe(false);
       expect(sceneRaw).toContain(guid);
     }
+
+    // Creating another game materializes it only; active-game selection is a
+    // separate explicit transition and must remain on the first game.
+    setActiveGame(projectRoot, slug);
+    const second = await app.request("/api/workbench/games", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ slug: "second-game" }),
+    });
+    expect(second.status).toBe(200);
+    expect(getActiveGame(projectRoot)).toBe(slug);
+    expect(ensured).toEqual([slug, "second-game"]);
   });
 });

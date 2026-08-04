@@ -17,10 +17,6 @@ test('headless host preserves current surface identity across reveal', async () 
       rendererIdentity: 'renderer-smoke', rendererGeneration: 1, sentinel: sentinel++, liveness: 'alive',
       renderReadiness: 'ready', failure: null,
     });
-    window.forgeaxGameplayBridge = {
-      version: 1,
-      execute: async (request) => ({ ok: true, operation: request.operation.operation, state: 'running', identity: request.identity }),
-    };
     window.__forgeax_carrier_health = payload();
     setInterval(() => { window.__forgeax_carrier_health = payload(); }, 100);
   </script>`;
@@ -56,18 +52,6 @@ test('headless host preserves current surface identity across reveal', async () 
     expect(revealed).toMatchObject({ ok: true, runtimeId: ensured.runtimeId });
     expect(afterReveal).toMatchObject({ ok: true, pageNonce: 'page-smoke', canvasIdentity: 'canvas-smoke', rendererIdentity: 'renderer-smoke' });
     if (beforeReveal.ok && afterReveal.ok) expect(afterReveal.heartbeat?.sentinel).toBeGreaterThan(beforeReveal.heartbeat?.sentinel ?? -1);
-    const gameplay = supervisor.gameplay(ensured.runtimeId);
-    expect(await gameplay?.execute({
-      version: 1,
-      operation: { operation: 'play', scope },
-      identity: {
-        runtimeId: ensured.runtimeId,
-        scope,
-        pageIdentity: beforeReveal.ok ? beforeReveal.pageIdentity : 'unknown',
-        canvasIdentity: 'canvas-smoke',
-        rendererGeneration: 1,
-      },
-    })).toMatchObject({ ok: true, operation: 'play' });
     expect(await supervisor.stop(ensured.runtimeId)).toMatchObject({ ok: true, lifecycle: 'stopped' });
   } finally {
     server.stop();

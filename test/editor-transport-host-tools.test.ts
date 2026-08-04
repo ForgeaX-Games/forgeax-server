@@ -12,7 +12,6 @@ describe('editorTransportHostTools', () => {
       'query_world',
       'capture_frame',
       'editor_transport',
-      'gameplay',
     ]);
   });
 
@@ -32,6 +31,7 @@ describe('editorTransportHostTools', () => {
       version: 'editor-transport/v1',
       id: 'id-1',
       correlationId: 'id-2',
+      scope: 'game:spin-cube',
       method: 'discover',
       params: {
         scope: 'game:spin-cube',

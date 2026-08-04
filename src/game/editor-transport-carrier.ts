@@ -12,12 +12,25 @@ interface EditorTransportSocketData {
 
 interface PendingRequest {
   readonly request: JsonRecord;
+  readonly socket: ServerWebSocket<EditorTransportSocketData>;
+  readonly scope: string;
   readonly resolve: (response: JsonRecord) => void;
   readonly timer: ReturnType<typeof setTimeout>;
 }
 
+type EditorTransportRole = 'interactive' | 'managed';
+type EditorTransportVisibility = 'visible' | 'hidden';
+
+interface EditorTransportPresence {
+  readonly visibility: EditorTransportVisibility;
+  readonly focused: boolean;
+  readonly engaged: boolean;
+  readonly activity: number;
+}
+
 export interface EditorTransportCarrierOptions {
   readonly timeoutMs?: number;
+  readonly ensureScope?: (scope: string) => Promise<void>;
 }
 
 export interface EditorTransportCarrier {
@@ -48,6 +61,8 @@ function requestShape(value: unknown): JsonRecord | null {
     || value.version !== EDITOR_TRANSPORT_VERSION
     || typeof value.id !== 'string'
     || typeof value.correlationId !== 'string'
+    || typeof value.scope !== 'string'
+    || value.scope.length === 0
     || typeof value.method !== 'string'
     || !Object.prototype.hasOwnProperty.call(value, 'params')
   ) return null;
@@ -96,6 +111,10 @@ function responseShape(value: unknown): JsonRecord | null {
   return value;
 }
 
+function pendingKey(scope: string, id: string, correlationId: string): string {
+  return JSON.stringify([scope, id, correlationId]);
+}
+
 /**
  * Thin server-side carrier for the public Editor transport.
  *
@@ -108,25 +127,92 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
   const timeoutMs = options.timeoutMs ?? 15_000;
   const app = new Hono();
   const pending = new Map<string, PendingRequest>();
-  let current: ServerWebSocket<EditorTransportSocketData> | null = null;
-  let ready = false;
+  const connectionScopes = new Map<ServerWebSocket<EditorTransportSocketData>, string | null>();
+  const connectionRoles = new Map<ServerWebSocket<EditorTransportSocketData>, EditorTransportRole | null>();
+  const connectionPresence = new Map<ServerWebSocket<EditorTransportSocketData>, EditorTransportPresence>();
+  const socketsByScope = new Map<string, Set<ServerWebSocket<EditorTransportSocketData>>>();
+  let activitySequence = 0;
 
-  const failPending = (hint: string): void => {
-    for (const [id, entry] of pending) {
+  const presenceFrom = (value: JsonRecord): EditorTransportPresence | null => {
+    if ((value.visibility !== 'visible' && value.visibility !== 'hidden') || typeof value.focused !== 'boolean') return null;
+    return {
+      visibility: value.visibility,
+      focused: value.focused,
+      engaged: value.engaged === true,
+      activity: ++activitySequence,
+    };
+  };
+
+  const priorityOf = (socket: ServerWebSocket<EditorTransportSocketData>): readonly [number, number] => {
+    const role = connectionRoles.get(socket);
+    const presence = connectionPresence.get(socket);
+    if (role === 'interactive') {
+      if (presence?.focused && presence.engaged) return [5, presence.activity];
+      if (presence?.focused) return [4, presence.activity];
+      if (presence?.visibility === 'visible' && presence.engaged) return [3, presence.activity];
+      if (presence?.visibility === 'visible') return [2, presence.activity];
+      if (presence?.engaged) return [1, presence.activity];
+      return [0, presence?.activity ?? 0];
+    }
+    return [-1, presence?.activity ?? 0];
+  };
+
+  const activeSocket = (scope: string): ServerWebSocket<EditorTransportSocketData> | undefined => {
+    const group = socketsByScope.get(scope);
+    if (group === undefined) return undefined;
+    let selected: ServerWebSocket<EditorTransportSocketData> | undefined;
+    let selectedPriority: readonly [number, number] = [-1, -1];
+    for (const socket of group) {
+      if (socket.readyState === 1) {
+        const priority = priorityOf(socket);
+        if (priority[0] > selectedPriority[0] || (priority[0] === selectedPriority[0] && priority[1] > selectedPriority[1])) {
+          selected = socket;
+          selectedPriority = priority;
+        }
+      }
+      else group.delete(socket);
+    }
+    if (group.size === 0) socketsByScope.delete(scope);
+    return selected;
+  };
+
+  const failPending = (socket: ServerWebSocket<EditorTransportSocketData>, hint: string): void => {
+    for (const [key, entry] of pending) {
+      if (entry.socket !== socket) continue;
       clearTimeout(entry.timer);
-      pending.delete(id);
+      pending.delete(key);
       entry.resolve(unavailable(entry.request, hint));
     }
   };
 
-  const dispatch = (request: JsonRecord): Promise<JsonRecord> => {
-    const parsed = requestShape(request);
-    if (parsed === null) return Promise.resolve(protocolError(isRecord(request) ? request : {}));
-    if (current === null || !ready || current.readyState !== 1) {
-      return Promise.resolve(unavailable(parsed, 'Connect a live Studio editor page before using the Editor transport.'));
+  const acquireSocket = async (scope: string): Promise<ServerWebSocket<EditorTransportSocketData> | undefined> => {
+    const connected = activeSocket(scope);
+    if (connected !== undefined || options.ensureScope === undefined) return connected;
+    try {
+      await options.ensureScope(scope);
+    } catch {
+      return undefined;
     }
-    if (pending.has(parsed.id as string)) {
-      return Promise.resolve({
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const ready = activeSocket(scope);
+      if (ready !== undefined) return ready;
+      await Bun.sleep(25);
+    }
+    return undefined;
+  };
+
+  const dispatch = async (request: JsonRecord): Promise<JsonRecord> => {
+    const parsed = requestShape(request);
+    if (parsed === null) return protocolError(isRecord(request) ? request : {});
+    const scope = parsed.scope as string;
+    const key = pendingKey(scope, parsed.id as string, parsed.correlationId as string);
+    const target = await acquireSocket(scope);
+    if (target === undefined) {
+      return unavailable(parsed, `Connect or start a Studio Editor page for scope "${scope}" before using the Editor transport.`);
+    }
+    if (pending.has(key)) {
+      return {
         ...protocolError(parsed),
         error: {
           code: 'request-duplicate',
@@ -134,19 +220,19 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
           retryable: true,
           recoveryActions: ['run.get', 'request.retry'],
         },
-      });
+      };
     }
     return new Promise<JsonRecord>((resolve) => {
       const timer = setTimeout(() => {
-        pending.delete(parsed.id as string);
+        pending.delete(key);
         resolve(unavailable(parsed, `The connected Studio editor page did not answer within ${timeoutMs}ms.`));
       }, timeoutMs);
-      pending.set(parsed.id as string, { request: parsed, resolve, timer });
+      pending.set(key, { request: parsed, socket: target, scope, resolve, timer });
       try {
-        current!.send(JSON.stringify({ type: 'editor-transport/request', request: parsed }));
+        target.send(JSON.stringify({ type: 'editor-transport/request', request: parsed }));
       } catch {
         clearTimeout(timer);
-        pending.delete(parsed.id as string);
+        pending.delete(key);
         resolve(unavailable(parsed, 'The Studio editor transport connection closed while sending the request.'));
       }
     });
@@ -154,7 +240,26 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
 
   app.get('/api/editor/transport/health', (c) => c.json({
     ok: true,
-    connected: current !== null && ready && current.readyState === 1,
+    connected: [...socketsByScope.keys()].some((scope) => activeSocket(scope) !== undefined),
+    scopes: [...socketsByScope.keys()].filter((scope) => activeSocket(scope) !== undefined).sort(),
+    carriers: [...socketsByScope.entries()].map(([scope, sockets]) => {
+      const selected = activeSocket(scope);
+      return {
+        scope,
+        selected: selected === undefined ? null : {
+          role: connectionRoles.get(selected),
+          visibility: connectionPresence.get(selected)?.visibility ?? 'hidden',
+          focused: connectionPresence.get(selected)?.focused ?? false,
+          engaged: connectionPresence.get(selected)?.engaged ?? false,
+        },
+        candidates: [...sockets].filter((socket) => socket.readyState === 1).map((socket) => ({
+          role: connectionRoles.get(socket),
+          visibility: connectionPresence.get(socket)?.visibility ?? 'hidden',
+          focused: connectionPresence.get(socket)?.focused ?? false,
+          engaged: connectionPresence.get(socket)?.engaged ?? false,
+        })),
+      };
+    }).sort((left, right) => left.scope.localeCompare(right.scope)),
     version: EDITOR_TRANSPORT_VERSION,
   }));
 
@@ -172,12 +277,9 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
 
   const open = (socket: ServerWebSocket<EditorTransportSocketData>): void => {
     if (!isSocket(socket)) return;
-    if (current !== null && current !== socket) {
-      try { current.close(); } catch { /* the old page is already gone */ }
-      failPending('The previous Studio editor transport page was replaced.');
-    }
-    current = socket;
-    ready = false;
+    connectionScopes.set(socket, null);
+    connectionRoles.set(socket, null);
+    connectionPresence.set(socket, { visibility: 'hidden', focused: false, engaged: false, activity: ++activitySequence });
     socket.send(JSON.stringify({ type: 'editor-transport/hello', version: EDITOR_TRANSPORT_VERSION }));
   };
 
@@ -187,26 +289,66 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     try { value = JSON.parse(String(messageValue)); } catch { return; }
     if (!isRecord(value)) return;
     if (value.type === 'editor-transport/ready') {
-      if (current === socket) ready = true;
+      if (
+        value.version !== EDITOR_TRANSPORT_VERSION
+        || (value.role !== 'interactive' && value.role !== 'managed')
+        || typeof value.scope !== 'string'
+        || value.scope.length === 0
+      ) return;
+      if (!connectionScopes.has(socket)) return;
+      const previousScope = connectionScopes.get(socket);
+      if (previousScope === undefined) return;
+      if (previousScope !== null && previousScope !== value.scope) {
+        const previousGroup = socketsByScope.get(previousScope);
+        previousGroup?.delete(socket);
+        if (previousGroup?.size === 0) socketsByScope.delete(previousScope);
+      }
+      connectionScopes.set(socket, value.scope);
+      connectionRoles.set(socket, value.role);
+      const presence = presenceFrom(value);
+      if (presence !== null) connectionPresence.set(socket, presence);
+      const group = socketsByScope.get(value.scope) ?? new Set();
+      group.delete(socket);
+      group.add(socket);
+      socketsByScope.set(value.scope, group);
+      return;
+    }
+    if (value.type === 'editor-transport/presence') {
+      const scope = connectionScopes.get(socket);
+      const presence = presenceFrom(value);
+      if (scope !== undefined && scope !== null && presence !== null) connectionPresence.set(socket, presence);
       return;
     }
     if (value.type !== 'editor-transport/response') return;
     const response = responseShape(value.response);
-    if (response === null || current !== socket) return;
-    const id = response.id as string;
-    const entry = pending.get(id);
-    if (entry === undefined || response.correlationId !== entry.request.correlationId) return;
+    if (response === null) return;
+    const scope = connectionScopes.get(socket);
+    if (scope === undefined || scope === null) return;
+    const key = pendingKey(scope, response.id as string, response.correlationId as string);
+    const entry = pending.get(key);
+    if (entry === undefined || entry.socket !== socket || response.correlationId !== entry.request.correlationId) return;
     clearTimeout(entry.timer);
-    pending.delete(id);
+    pending.delete(key);
     entry.resolve(response);
   };
 
   const close = (socket: ServerWebSocket<EditorTransportSocketData>): void => {
-    if (!isSocket(socket) || current !== socket) return;
-    current = null;
-    ready = false;
-    failPending('The Studio editor transport page disconnected; retry after the page is ready.');
+    if (!isSocket(socket)) return;
+    const scope = connectionScopes.get(socket);
+    if (scope === undefined) return;
+    connectionScopes.delete(socket);
+    connectionRoles.delete(socket);
+    connectionPresence.delete(socket);
+    if (scope !== null) {
+      const group = socketsByScope.get(scope);
+      group?.delete(socket);
+      if (group?.size === 0) socketsByScope.delete(scope);
+    }
+    failPending(socket, `The Editor page for scope "${scope ?? 'unregistered'}" disconnected; retry after it is ready.`);
   };
 
-  return { app, open, message, close, isSocket, dispatch, connected: () => current !== null && ready && current.readyState === 1 };
+  return {
+    app, open, message, close, isSocket, dispatch,
+    connected: () => [...socketsByScope.keys()].some((scope) => activeSocket(scope) !== undefined),
+  };
 }

@@ -3,8 +3,9 @@
  *
  *  Canonical layout (new sessions): a session lives under its permanently-bound
  *  game at  <instanceRoot>/.forgeax/games/<slug>/sessions/<sid>/ . The binding is
- *  set once at allocate() against the current active game and is recoverable from
- *  the on-disk path (path-as-SSOT); no defaultDir is persisted. A sid→slug cache
+ *  set once at allocate() against an explicit scope or the current active game,
+ *  and is recoverable from the on-disk path (path-as-SSOT); no defaultDir is
+ *  persisted. A sid→slug cache
  *  makes resolution O(1); binding is permanent so the cache never invalidates.
  *
  *  Backward compat (pre-PR2 sessions live in legacy roots):
@@ -59,8 +60,11 @@ export class GameSessionLayout implements SessionLayout {
 
   // ── canonical (new sessions) ──────────────────────────────────────────────
 
-  allocate(sid: string): { sessionRoot: string; workDir: string } {
-    const slug = safeSegment(this.getActiveGame() || 'default');
+  allocate(sid: string, scope?: string): { sessionRoot: string; workDir: string } {
+    const slug = safeSegment(scope || this.getActiveGame() || 'default');
+    if (scope && !this.gameExists(slug)) {
+      throw new Error(`GameSessionLayout: scope does not exist: ${slug}`);
+    }
     safeSegment(sid);
     this.slugCache.set(sid, slug);
     this.projectIndex?.set(sid, slug);

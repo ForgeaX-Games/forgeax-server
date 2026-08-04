@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const packageRoot = join(import.meta.dir, '..');
@@ -18,10 +18,19 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe('workbench host dependency boundary', () => {
-  test('pins shared host and game-video releases exactly', () => {
+  test('pins shared host and game-video releases exactly to their vendored artifacts', () => {
     const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
-    expect(manifest.dependencies?.['@forgeax/workbench-host']).toBe('0.1.0');
-    expect(manifest.dependencies?.['@forgeax/wb-game-video']).toBe('0.2.0');
+    for (const [packageName, artifactName] of [
+      ['@forgeax/workbench-host', 'forgeax-workbench-host'],
+      ['@forgeax/wb-game-video', 'forgeax-wb-game-video'],
+    ] as const) {
+      const version = manifest.dependencies?.[packageName];
+      expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+
+      const artifact = `vendor/${artifactName}-${version}.tgz`;
+      expect(manifest.overrides?.[packageName]).toBe(`file:${artifact}`);
+      expect(existsSync(join(packageRoot, artifact))).toBeTrue();
+    }
   });
 
   test('imports only contracts and node subpaths', () => {

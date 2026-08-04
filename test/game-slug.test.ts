@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { GAME_SLUG_RE } from '../src/game/workbench';
+import { GAME_SLUG_RE } from '../src/game/game-slug';
 
 // Locks the workbench game-slug validation regex used by both
 // POST /api/workbench/games (create) and DELETE /api/workbench/games/:slug.

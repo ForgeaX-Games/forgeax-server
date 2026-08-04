@@ -63,6 +63,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
         version: EDITOR_TRANSPORT_VERSION,
         id: id('editor-request', deps.idFactory),
         correlationId: id('editor-correlation', deps.idFactory),
+        scope,
         method,
         params: {
           ...params,
