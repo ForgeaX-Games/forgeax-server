@@ -339,6 +339,10 @@ function withGameScope() {
 export function createVideoAssetRouter(service: VideoAssetService): Hono {
   const router = new Hono();
 
+  router.get('/capabilities', async (c) => {
+    return handleServiceCall(c, async () => service.getProviderCapabilities());
+  });
+
   router.post('/image-assets/upload', async (c) => {
     return handleServiceCall(c, async () => {
       const body = await readJsonObject(c);

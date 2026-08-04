@@ -29,7 +29,10 @@ function context(): ServerCompositionContext {
   const registry = new VideoAssetProviderRegistry(provider('local'));
   return {
     app: new Hono(),
-    services: { videoAssets: registry.control },
+    services: {
+      videoAssets: registry.control,
+      capabilities: { registerProvider() {} },
+    },
   };
 }
 
@@ -238,7 +241,10 @@ test('public composition wrapper registers a module without exposing host APIs',
     const app = new Hono();
     await activateServerModules({
       app,
-      services: { videoAssets: registry.control },
+      services: {
+        videoAssets: registry.control,
+        capabilities: { registerProvider() {} },
+      },
     });
     const response = await app.request('/module-level-seam');
     if (response.status !== 200 || await response.text() !== 'active') {

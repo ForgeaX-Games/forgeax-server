@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import type {
   PlaybackSource,
+  VideoAssetProviderCapabilities,
   VideoAssetRequestContext,
 } from '../../src/video-assets/contracts';
 import type {
@@ -146,6 +147,37 @@ describe('createVideoAssetRouter list', () => {
       'm-narr-open',
     ]);
     expect(JSON.parse(readFileSync(resolve(assetsDir, 'manifest.json'), 'utf-8')).version).toBe(1);
+  });
+});
+
+describe('createVideoAssetRouter capabilities', () => {
+  test('reports the active Local provider media and MIME capabilities', async () => {
+    const result = await json<VideoAssetProviderCapabilities>(
+      app,
+      '/api/v1/kino/capabilities',
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.body.data).toEqual({
+      provider: 'local',
+      media_types: ['video', 'image', 'audio', 'font'],
+      upload_mimes: [
+        'video/mp4',
+        'image/png',
+        'image/jpeg',
+        'image/webp',
+        'image/gif',
+        'audio/mpeg',
+        'audio/wav',
+        'audio/ogg',
+        'audio/mp4',
+        'audio/aac',
+        'font/woff2',
+        'font/woff',
+        'font/ttf',
+        'font/otf',
+      ],
+    });
   });
 });
 

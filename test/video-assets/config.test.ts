@@ -1,8 +1,36 @@
 import { describe, expect, test } from 'bun:test';
 import {
   VideoAssetConfigError,
+  parseOptionalCosVideoStorageConfig,
   parseVideoStorageConfig,
 } from '../../src/video-assets/config';
+
+describe('parseOptionalCosVideoStorageConfig', () => {
+  test('resolves a COS template source without selecting COS as active storage', () => {
+    expect(parseOptionalCosVideoStorageConfig({
+      FORGEAX_KINO_API_BASE_URL: 'https://kino.example.test',
+      FORGEAX_VIDEO_COS_BUCKET: 'template-bucket',
+      FORGEAX_VIDEO_COS_REGION: 'ap-guangzhou',
+      FORGEAX_VIDEO_COS_SECRET_ID: 'AKIDEXAMPLE',
+      FORGEAX_VIDEO_COS_SECRET_KEY: 'template-secret',
+      FORGEAX_VIDEO_COS_PREFIX: '/forgeax/videos/',
+    })).toEqual({
+      kind: 'cos',
+      bucket: 'template-bucket',
+      region: 'ap-guangzhou',
+      secretId: 'AKIDEXAMPLE',
+      secretKey: 'template-secret',
+      prefix: 'forgeax/videos',
+    });
+  });
+
+  test('returns undefined only when no COS source setting is present', () => {
+    expect(parseOptionalCosVideoStorageConfig({})).toBeUndefined();
+    expect(() => parseOptionalCosVideoStorageConfig({
+      FORGEAX_VIDEO_COS_BUCKET: 'partial-bucket',
+    })).toThrow('Missing required COS configuration');
+  });
+});
 
 describe('parseVideoStorageConfig', () => {
   test('defaults to local when FORGEAX_VIDEO_STORAGE is unset', () => {

@@ -121,6 +121,13 @@ function missingRequiredKeys(
   return keys.filter((key) => readEnvValue(env, key) === undefined);
 }
 
+const COS_REQUIRED_CONFIG_KEYS = [
+  'FORGEAX_VIDEO_COS_BUCKET',
+  'FORGEAX_VIDEO_COS_REGION',
+  'FORGEAX_VIDEO_COS_SECRET_ID',
+  'FORGEAX_VIDEO_COS_SECRET_KEY',
+] as const;
+
 const DNS_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 function isPrivateOrLocalHost(hostname: string): boolean {
@@ -212,6 +219,44 @@ export function normalizeCosVideoEndpoint(
   return hostname;
 }
 
+/**
+ * Resolve COS credentials independently from the active public storage provider.
+ * Kino uses this read-only source to migrate provider-backed template videos.
+ */
+export function parseOptionalCosVideoStorageConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): CosVideoStorageConfig | undefined {
+  const configuredKeys = COS_REQUIRED_CONFIG_KEYS.filter(
+    (key) => readEnvValue(env, key) !== undefined,
+  );
+  if (configuredKeys.length === 0) {
+    return undefined;
+  }
+
+  const missing = missingRequiredKeys(env, COS_REQUIRED_CONFIG_KEYS);
+  if (missing.length > 0) {
+    throw new VideoAssetConfigError(
+      `Missing required COS configuration: ${missing.join(', ')}`,
+    );
+  }
+
+  return {
+    kind: 'cos',
+    bucket: readEnvValue(env, 'FORGEAX_VIDEO_COS_BUCKET')!,
+    region: readEnvValue(env, 'FORGEAX_VIDEO_COS_REGION')!,
+    secretId: readEnvValue(env, 'FORGEAX_VIDEO_COS_SECRET_ID')!,
+    secretKey: readEnvValue(env, 'FORGEAX_VIDEO_COS_SECRET_KEY')!,
+    endpoint: normalizeCosVideoEndpoint(
+      readEnvValue(env, 'FORGEAX_VIDEO_COS_ENDPOINT'),
+      'FORGEAX_VIDEO_COS_ENDPOINT',
+    ),
+    prefix: normalizeVideoObjectPrefix(
+      env.FORGEAX_VIDEO_COS_PREFIX,
+      'FORGEAX_VIDEO_COS_PREFIX',
+    ),
+  };
+}
+
 export function parseVideoStorageConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): VideoStorageConfig {
@@ -249,33 +294,13 @@ export function parseVideoStorageConfig(
   }
 
   if (storage === 'cos') {
-    const missing = missingRequiredKeys(env, [
-      'FORGEAX_VIDEO_COS_BUCKET',
-      'FORGEAX_VIDEO_COS_REGION',
-      'FORGEAX_VIDEO_COS_SECRET_ID',
-      'FORGEAX_VIDEO_COS_SECRET_KEY',
-    ]);
-    if (missing.length > 0) {
+    const config = parseOptionalCosVideoStorageConfig(env);
+    if (!config) {
       throw new VideoAssetConfigError(
-        `Missing required COS configuration: ${missing.join(', ')}`,
+        `Missing required COS configuration: ${COS_REQUIRED_CONFIG_KEYS.join(', ')}`,
       );
     }
-
-    return {
-      kind: 'cos',
-      bucket: readEnvValue(env, 'FORGEAX_VIDEO_COS_BUCKET')!,
-      region: readEnvValue(env, 'FORGEAX_VIDEO_COS_REGION')!,
-      secretId: readEnvValue(env, 'FORGEAX_VIDEO_COS_SECRET_ID')!,
-      secretKey: readEnvValue(env, 'FORGEAX_VIDEO_COS_SECRET_KEY')!,
-      endpoint: normalizeCosVideoEndpoint(
-        readEnvValue(env, 'FORGEAX_VIDEO_COS_ENDPOINT'),
-        'FORGEAX_VIDEO_COS_ENDPOINT',
-      ),
-      prefix: normalizeVideoObjectPrefix(
-        env.FORGEAX_VIDEO_COS_PREFIX,
-        'FORGEAX_VIDEO_COS_PREFIX',
-      ),
-    };
+    return config;
   }
 
   throw new VideoAssetConfigError(`Invalid FORGEAX_VIDEO_STORAGE value: ${storage}`);

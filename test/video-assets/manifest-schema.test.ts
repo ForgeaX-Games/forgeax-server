@@ -58,6 +58,39 @@ describe('shared video asset manifest schema', () => {
     expect(validated.assets[0]).not.toBe((input.assets as unknown[])[0]);
   });
 
+  test('accepts a Kino-backed generated video with the workbench production type', () => {
+    const input = validManifest();
+    const assets = input.assets as Array<Record<string, unknown>>;
+    assets[0] = {
+      ...assets[0],
+      productionType: 'video_clip',
+      sourceModule: 'wb-game-video',
+      provider: {
+        kind: 'kino',
+        ref: 'https://cdn.example.test/generated.mp4',
+        upstreamResourceId: 'resource-1',
+      },
+    };
+
+    expect(validateAndCloneVideoAssetManifest(input).assets[0]).toMatchObject({
+      productionType: 'video_clip',
+      provider: { kind: 'kino', upstreamResourceId: 'resource-1' },
+    });
+  });
+
+  test('accepts unknown byte size only for a remote provider mapping', () => {
+    const input = validManifest();
+    const asset = (input.assets as Array<Record<string, unknown>>)[0]!;
+    asset.bytes = 0;
+    asset.provider = {
+      kind: 'kino',
+      ref: 'https://cdn.example.test/remote.mp4',
+      upstreamResourceId: 'resource-unknown-size',
+    };
+
+    expect(validateAndCloneVideoAssetManifest(input).assets[0]?.bytes).toBe(0);
+  });
+
   test.each([
     ['zero bytes', (manifest: any) => { manifest.assets[0].bytes = 0; }],
     ['negative duration', (manifest: any) => { manifest.assets[0].durationMs = -1; }],

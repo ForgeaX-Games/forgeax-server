@@ -27,6 +27,13 @@ export type AudioUploadMime = (typeof AUDIO_UPLOAD_MIMES)[number];
 export type FontUploadMime = (typeof FONT_UPLOAD_MIMES)[number];
 export type SupportedUploadMime = typeof VIDEO_UPLOAD_MIME | ImageUploadMime | AudioUploadMime | FontUploadMime;
 
+export const SUPPORTED_UPLOAD_MIMES: readonly SupportedUploadMime[] = [
+  VIDEO_UPLOAD_MIME,
+  ...IMAGE_UPLOAD_MIMES,
+  ...AUDIO_UPLOAD_MIMES,
+  ...FONT_UPLOAD_MIMES,
+];
+
 export const MAX_VIDEO_UPLOAD_BYTES = 100 * 1024 * 1024;
 export const MAX_AUDIO_UPLOAD_BYTES = MAX_VIDEO_UPLOAD_BYTES;
 export const MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024;

@@ -1,4 +1,5 @@
 import type { Hono } from 'hono';
+import type { ExtensionCapabilityControl } from '@forgeax/types';
 import type { VideoAssetProviderControl } from './video-assets/contracts';
 export { registerServerModule } from './composition-host';
 
@@ -10,8 +11,8 @@ export type {
   ProviderPrepareUploadInput,
   ProviderUploadDraft,
   UploadedObject,
-  UpstreamVideoPage,
-  UpstreamVideoResource,
+  UpstreamResource,
+  UpstreamResourcePage,
   VideoAsset,
   VideoAssetManifest,
   VideoAssetProvider,
@@ -20,11 +21,18 @@ export type {
   VideoAssetRequestContext,
   VideoAssetStatus,
 } from './video-assets/contracts';
+export type {
+  ExtensionCapabilityControl,
+  ExtensionCapabilityInvocationContext,
+  ExtensionCapabilityInvocationOptions,
+  ExtensionCapabilityProvider,
+} from '@forgeax/types';
 
 export interface ServerCompositionContext {
   app: Hono;
   services: {
     videoAssets: VideoAssetProviderControl;
+    capabilities: ExtensionCapabilityControl;
   };
 }
 

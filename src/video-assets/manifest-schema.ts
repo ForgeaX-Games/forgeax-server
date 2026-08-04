@@ -83,6 +83,7 @@ function assertVideoAsset(asset: unknown): asserts asset is VideoAsset {
     throw new VideoAssetManifestSchemaError('Invalid asset', 'invalid_asset');
   }
   const candidate = asset as unknown as VideoAsset;
+  assertProviderMapping(candidate.provider);
   if (
     !isValidVideoAssetResourceId(candidate.id) ||
     (candidate.kind !== 'video' && candidate.kind !== 'image' && candidate.kind !== 'audio' && candidate.kind !== 'font') ||
@@ -90,7 +91,8 @@ function assertVideoAsset(asset: unknown): asserts asset is VideoAsset {
     !STATUSES.includes(candidate.status) ||
     mediaTypeForMime(candidate.mimeType) !== candidate.kind ||
     !Number.isSafeInteger(candidate.bytes) ||
-    candidate.bytes <= 0 ||
+    candidate.bytes < 0 ||
+    (candidate.bytes === 0 && candidate.provider.kind === 'local') ||
     (candidate.durationMs !== undefined &&
       (!Number.isSafeInteger(candidate.durationMs) || candidate.durationMs < 0)) ||
     typeof candidate.createdAt !== 'number' ||
@@ -100,13 +102,15 @@ function assertVideoAsset(asset: unknown): asserts asset is VideoAsset {
     (candidate.error !== undefined && typeof candidate.error !== 'string') ||
     (candidate.productionType !== undefined &&
       candidate.productionType !== 'character_ref' &&
-      candidate.productionType !== 'scene_ref') ||
+      candidate.productionType !== 'scene_ref' &&
+      candidate.productionType !== 'shot_image' &&
+      candidate.productionType !== 'grid_storyboard' &&
+      candidate.productionType !== 'video_clip') ||
     (candidate.sourceModule !== undefined && typeof candidate.sourceModule !== 'string') ||
     (candidate.meta !== undefined && !assertPlainRecord(candidate.meta))
   ) {
     throw new VideoAssetManifestSchemaError('Invalid asset', 'invalid_asset');
   }
-  assertProviderMapping(candidate.provider);
 }
 
 export function validateVideoAssetManifest(

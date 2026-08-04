@@ -1,6 +1,9 @@
 import { Hono } from 'hono';
 import type { VideoAssetProvider, VideoAssetProviderControl } from './contracts';
-import { parseVideoStorageConfig } from './config';
+import {
+  parseOptionalCosVideoStorageConfig,
+  parseVideoStorageConfig,
+} from './config';
 import type { ProjectRootResolver } from './game-path';
 import { resolveVideoAssetsDir } from './game-path';
 import { VideoAssetManifestRepository } from './manifest-repository';
@@ -53,6 +56,7 @@ export class ProjectUploadSessionRepository implements UploadSessionRepository {
   complete(token: string, resourceId: string, gameId: string): Promise<UploadSession> {
     return this.#store(gameId).complete(token, resourceId);
   }
+
 }
 
 export interface VideoAssetRuntime {
@@ -87,7 +91,18 @@ export function createVideoAssetRuntime(
   const manifest = new VideoAssetManifestRepository();
   const uploadSessions = new ProjectUploadSessionRepository(options.getProjectRoot);
   const defaultProvider = createDefaultVideoAssetProvider(config, options.getProjectRoot);
-  const registry = new VideoAssetProviderRegistry(defaultProvider);
+  const cosSourceConfig = config.kind === 'cos'
+    ? config
+    : parseOptionalCosVideoStorageConfig(options.env);
+  const cosSourceProvider = cosSourceConfig
+    ? (defaultProvider.kind === 'cos'
+        ? defaultProvider
+        : createCosVideoAssetProvider(cosSourceConfig))
+    : undefined;
+  const registry = new VideoAssetProviderRegistry(
+    defaultProvider,
+    cosSourceProvider ? [cosSourceProvider] : [],
+  );
   const service = new VideoAssetService({
     getProjectRoot: options.getProjectRoot,
     providers: registry,

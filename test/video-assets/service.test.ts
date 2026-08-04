@@ -191,7 +191,7 @@ class FakeProvider implements VideoAssetProvider {
     }
   };
 
-  listUpstream = async (page: number, pageSize: number) => {
+  listUpstream = async (_mediaType: 'video' | 'image' | 'audio' | 'font', page: number, pageSize: number) => {
     this.upstreamCalls.push(page);
     const slice = this.upstreamPages[page - 1] ?? { items: [], total: 0 };
     return {
@@ -283,19 +283,20 @@ afterEach(() => {
 });
 
 describe('VideoAssetService validation', () => {
-  test('rejects audio when the Kino provider advertises audio capability', async () => {
+  test('rejects a MIME omitted from the provider upload capability', async () => {
     registry.control.setProvider({
       ...fakeProvider,
       kind: 'kino',
       supportedMediaTypes: ['video', 'image', 'audio'],
+      supportedUploadMimes: ['video/mp4', 'image/png', 'audio/mpeg', 'audio/wav'],
     });
 
     await expectKinoError(
       service.prepareUpload(
         {
-          fileName: 'battle-theme.mp3',
+          fileName: 'battle-theme.ogg',
           mediaType: 'audio',
-          mimeType: 'audio/mpeg',
+          mimeType: 'audio/ogg',
           bytes: FIXTURE.byteLength,
         },
         request,
@@ -1822,6 +1823,74 @@ describe('VideoAssetService.batchCreateResources', () => {
 });
 
 describe('VideoAssetService reconciliation', () => {
+  test('reconciles remote Kino image and audio resources into their own media libraries', async () => {
+    const mediaCalls: string[] = [];
+    registry.control.setProvider({
+      ...fakeProvider,
+      kind: 'kino',
+      supportedMediaTypes: ['video', 'image', 'audio'],
+      supportedUploadMimes: ['video/mp4', 'image/png', 'audio/mpeg', 'audio/wav'],
+      listUpstream: async (mediaType, page, pageSize) => {
+        mediaCalls.push(mediaType);
+        const item =
+          mediaType === 'image'
+            ? {
+                upstreamResourceId: 'remote-image',
+                name: 'reference.png',
+                url: 'https://kino.example.test/reference.png',
+                mimeType: 'image/png' as const,
+                bytes: 12,
+                createdAt: 1,
+                updatedAt: 2,
+              }
+            : mediaType === 'audio'
+              ? {
+                  upstreamResourceId: 'remote-audio',
+                  name: 'theme.wav',
+                  url: 'https://kino.example.test/theme.wav',
+                  mimeType: 'audio/wav' as const,
+                  createdAt: 3,
+                  updatedAt: 4,
+                }
+              : undefined;
+        return {
+          items: item ? [item] : [],
+          page,
+          pageSize,
+          total: item ? 1 : 0,
+        };
+      },
+    });
+
+    const imagePage = await service.listResources(
+      { game_id: gameId, media_type: 'image' },
+      request,
+    );
+    const audioPage = await service.listResources(
+      { game_id: gameId, media_type: 'audio' },
+      request,
+    );
+
+    expect(mediaCalls).toEqual(['image', 'audio']);
+    expect(imagePage.items[0]).toMatchObject({
+      resource_id: 'remote-image',
+      media_type: 'image',
+      source_meta: { mime_type: 'image/png' },
+    });
+    expect(audioPage.items[0]).toMatchObject({
+      resource_id: 'remote-audio',
+      media_type: 'audio',
+      source_meta: { mime_type: 'audio/wav' },
+    });
+    expect((await manifest.get(gameDir, 'remote-image'))?.provider.ref).toBe(
+      'https://kino.example.test/reference.png',
+    );
+    expect((await manifest.get(gameDir, 'remote-audio'))?.provider.ref).toBe(
+      'https://kino.example.test/theme.wav',
+    );
+    expect((await manifest.get(gameDir, 'remote-audio'))?.bytes).toBe(0);
+  });
+
   test('uses the reconciliation cache within TTL and refreshes after expiry', async () => {
     fakeProvider.upstreamPages = [
       {

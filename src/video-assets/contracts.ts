@@ -4,6 +4,12 @@ import type { SupportedUploadMime } from './media-policy';
 export type VideoAssetProviderKind = 'local' | 's3' | 'cos' | 'kino';
 export type VideoAssetStatus = 'uploading' | 'ready' | 'failed';
 
+export interface VideoAssetProviderCapabilities {
+  provider: VideoAssetProviderKind;
+  media_types: readonly KinoMediaType[];
+  upload_mimes: readonly SupportedUploadMime[];
+}
+
 export interface ProviderMapping {
   kind: VideoAssetProviderKind;
   ref: string;
@@ -16,9 +22,15 @@ export interface VideoAsset {
   name: string;
   status: VideoAssetStatus;
   mimeType: SupportedUploadMime;
+  /** Zero is allowed only for remote resources whose upstream API omits object size. */
   bytes: number;
   durationMs?: number;
-  productionType?: 'character_ref' | 'scene_ref';
+  productionType?:
+    | 'character_ref'
+    | 'scene_ref'
+    | 'shot_image'
+    | 'grid_storyboard'
+    | 'video_clip';
   sourceModule?: string;
   createdAt: number;
   updatedAt: number;
@@ -85,19 +97,19 @@ export type PlaybackSource =
     }
   | { kind: 'redirect'; url: string };
 
-export interface UpstreamVideoResource {
+export interface UpstreamResource {
   upstreamResourceId: string;
   name: string;
   url: string;
   bytes?: number;
   durationMs?: number;
-  mimeType?: string;
+  mimeType?: SupportedUploadMime;
   createdAt: number;
   updatedAt: number;
 }
 
-export interface UpstreamVideoPage {
-  items: UpstreamVideoResource[];
+export interface UpstreamResourcePage {
+  items: UpstreamResource[];
   page: number;
   pageSize: number;
   total: number;
@@ -105,8 +117,10 @@ export interface UpstreamVideoPage {
 
 export interface VideoAssetProvider {
   readonly kind: VideoAssetProviderKind;
-  /** Providers that omit this capability remain video-only (notably Kino). */
+  /** Providers that omit this capability remain video-only. */
   readonly supportedMediaTypes?: readonly KinoMediaType[];
+  /** Providers that omit this capability accept every public upload MIME. */
+  readonly supportedUploadMimes?: readonly SupportedUploadMime[];
   prepareUpload(
     input: ProviderPrepareUploadInput,
     context: VideoAssetRequestContext,
@@ -147,12 +161,14 @@ export interface VideoAssetProvider {
     context: VideoAssetRequestContext,
   ): Promise<void>;
   listUpstream?(
+    mediaType: KinoMediaType,
     page: number,
     pageSize: number,
     context: VideoAssetRequestContext,
-  ): Promise<UpstreamVideoPage>;
+  ): Promise<UpstreamResourcePage>;
 }
 
 export interface VideoAssetProviderControl {
   setProvider(provider: VideoAssetProvider): void;
+  sourceProvider(kind: VideoAssetProviderKind): VideoAssetProvider | undefined;
 }

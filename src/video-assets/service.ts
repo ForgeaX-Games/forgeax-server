@@ -3,8 +3,9 @@ import { accessSync, constants, statSync } from 'node:fs';
 import type {
   PlaybackSource,
   PrepareUploadInput,
-  UpstreamVideoResource,
+  UpstreamResource,
   VideoAsset,
+  VideoAssetProviderCapabilities,
   VideoAssetRequestContext,
 } from './contracts';
 import type { ProjectRootResolver } from './game-path';
@@ -28,9 +29,22 @@ import {
   assertUploadMime,
   assertUploadSize,
   mediaTypeForMime,
+  SUPPORTED_UPLOAD_MIMES,
+  type SupportedUploadMime,
 } from './media-policy';
 import type { KinoMediaType } from './kino-api';
 import { isValidVideoAssetResourceId } from './resource-id';
+
+const DEFAULT_UPSTREAM_MIME_BY_MEDIA_TYPE = {
+  video: 'video/mp4',
+  image: 'image/png',
+  audio: 'audio/mpeg',
+  font: 'font/woff2',
+} as const satisfies Record<KinoMediaType, SupportedUploadMime>;
+
+function defaultUpstreamMime(mediaType: KinoMediaType): SupportedUploadMime {
+  return DEFAULT_UPSTREAM_MIME_BY_MEDIA_TYPE[mediaType];
+}
 
 export interface UploadSessionRepository {
   write(session: UploadSession): Promise<void>;
@@ -235,6 +249,15 @@ export class VideoAssetService {
     this.#deps = deps;
   }
 
+  getProviderCapabilities(): VideoAssetProviderCapabilities {
+    const provider = this.#deps.providers.current();
+    return {
+      provider: provider.kind,
+      media_types: [...(provider.supportedMediaTypes ?? ['video'])],
+      upload_mimes: [...(provider.supportedUploadMimes ?? SUPPORTED_UPLOAD_MIMES)],
+    };
+  }
+
   #resolveGameDir(context: VideoAssetRequestContext): string {
     return resolveGameDir(context.gameId, this.#deps.getProjectRoot);
   }
@@ -245,11 +268,32 @@ export class VideoAssetService {
     targetGameDir: string;
     targetGameId: string;
   }): Promise<void> {
+    const provider = this.#deps.providers.current();
+    const targetContext: VideoAssetRequestContext = {
+      gameId: input.targetGameId,
+      identity: 'template-copy',
+      origin: 'http://localhost',
+    };
+
+    // A remote catalog is authoritative for an existing target game scope. In
+    // particular, Kino identifies assets by openid + gameId, so recreating the
+    // same game must restore that scope's videos instead of copying the bundled
+    // template manifest or cloning assets from the template's gameId.
+    if (typeof provider.listUpstream === 'function') {
+      await this.#reconcileUpstream(
+        input.targetGameDir,
+        targetContext,
+        'video',
+        MAX_PAGE_SIZE,
+        { force: true, replaceMediaType: true },
+      );
+      return;
+    }
+
     const sourceManifest = await this.#deps.manifest.read(input.sourceGameDir);
     const assets = sourceManifest.assets.filter((asset) => asset.status === 'ready');
     if (assets.length === 0) return;
 
-    const provider = this.#deps.providers.current();
     if (typeof provider.cloneAsset !== 'function') {
       throw new KinoApiError(
         `Provider ${provider.kind} cannot copy template assets`,
@@ -257,22 +301,8 @@ export class VideoAssetService {
         'template_asset_copy_unsupported',
       );
     }
-    const mismatched = assets.find((asset) => asset.provider.kind !== provider.kind);
-    if (mismatched) {
-      throw new KinoApiError(
-        `Template asset provider ${mismatched.provider.kind} does not match active provider ${provider.kind}`,
-        409,
-        'template_asset_provider_mismatch',
-      );
-    }
-
     const sourceContext: VideoAssetRequestContext = {
       gameId: input.sourceGameId,
-      identity: 'template-copy',
-      origin: 'http://localhost',
-    };
-    const targetContext: VideoAssetRequestContext = {
-      gameId: input.targetGameId,
       identity: 'template-copy',
       origin: 'http://localhost',
     };
@@ -354,16 +384,19 @@ export class VideoAssetService {
 
     const provider = this.#deps.providers.current();
     const supported = provider.supportedMediaTypes ?? ['video'];
-    if (provider.kind === 'kino' && mediaType === 'audio') {
+    if (!supported.includes(mediaType)) {
       throw new KinoApiError(
-        'Provider kino does not support audio uploads',
+        `Provider ${provider.kind} does not support ${mediaType} uploads`,
         400,
         'unsupported_provider_media_type',
       );
     }
-    if (!supported.includes(mediaType)) {
+    if (
+      provider.supportedUploadMimes &&
+      !provider.supportedUploadMimes.includes(input.mimeType)
+    ) {
       throw new KinoApiError(
-        `Provider ${provider.kind} does not support ${mediaType} uploads`,
+        `Provider ${provider.kind} does not support ${input.mimeType} uploads`,
         400,
         'unsupported_provider_media_type',
       );
@@ -787,9 +820,7 @@ export class VideoAssetService {
       throw new KinoApiError('Upload session game mismatch', 400, 'upload_session_game_mismatch');
     }
     const { page, pageSize } = parsePagination(query.page, query.page_size);
-    if (query.media_type === 'video') {
-      await this.#reconcileUpstream(gameDir, context, pageSize);
-    }
+    await this.#reconcileUpstream(gameDir, context, query.media_type, pageSize);
 
     const manifest = await this.#deps.manifest.read(gameDir);
     const assets = readyAssets(manifest.assets)
@@ -812,7 +843,10 @@ export class VideoAssetService {
     context: VideoAssetRequestContext,
   ): Promise<KinoResourceDTO> {
     const gameDir = this.#resolveGameDir(context);
-    await this.#reconcileUpstream(gameDir, context, DEFAULT_PAGE_SIZE);
+    const provider = this.#deps.providers.current();
+    for (const mediaType of provider.supportedMediaTypes ?? ['video']) {
+      await this.#reconcileUpstream(gameDir, context, mediaType, DEFAULT_PAGE_SIZE);
+    }
     const asset = await this.#deps.manifest.get(gameDir, resourceId);
     if (!asset || asset.status !== 'ready') {
       throw new KinoApiError('Resource not found', 404, 'resource_not_found');
@@ -1248,27 +1282,32 @@ export class VideoAssetService {
   async #reconcileUpstream(
     gameDir: string,
     context: VideoAssetRequestContext,
+    mediaType: KinoMediaType,
     pageSize: number,
+    options: { force?: boolean; replaceMediaType?: boolean } = {},
   ): Promise<void> {
     const provider = this.#deps.providers.current();
     if (typeof provider.listUpstream !== 'function') {
       return;
     }
+    if (!(provider.supportedMediaTypes ?? ['video']).includes(mediaType)) {
+      return;
+    }
 
     const ttl = this.#deps.reconcileTtlMs ?? DEFAULT_RECONCILE_TTL_MS;
-    const cacheKey = `${gameDir}:${provider.kind}`;
+    const cacheKey = `${gameDir}:${provider.kind}:${mediaType}`;
     const now = nowOf(this.#deps)();
     const last = this.#reconcileAt.get(cacheKey);
-    if (last !== undefined && now - last < ttl) {
+    if (!options.force && last !== undefined && now - last < ttl) {
       return;
     }
 
     let currentPage = 1;
     let total = Number.POSITIVE_INFINITY;
-    const upstreamById = new Map<string, UpstreamVideoResource>();
+    const upstreamById = new Map<string, UpstreamResource>();
 
     while ((currentPage - 1) * pageSize < total) {
-      const upstreamPage = await provider.listUpstream(currentPage, pageSize, context);
+      const upstreamPage = await provider.listUpstream(mediaType, currentPage, pageSize, context);
       total = upstreamPage.total;
       for (const item of upstreamPage.items) {
         upstreamById.set(item.upstreamResourceId, item);
@@ -1279,12 +1318,15 @@ export class VideoAssetService {
       currentPage += 1;
     }
 
-    if (upstreamById.size === 0) {
+    if (upstreamById.size === 0 && !options.replaceMediaType) {
       this.#reconcileAt.set(cacheKey, now);
       return;
     }
 
     await this.#deps.manifest.mutate(gameDir, (manifest) => {
+      if (options.replaceMediaType) {
+        manifest.assets = manifest.assets.filter((asset) => asset.kind !== mediaType);
+      }
       for (const upstream of upstreamById.values()) {
         const existing = manifest.assets.find(
           (asset) => asset.provider.upstreamResourceId === upstream.upstreamResourceId,
@@ -1292,19 +1334,21 @@ export class VideoAssetService {
 
         if (existing) {
           existing.name = upstream.name;
+          existing.mimeType = upstream.mimeType ?? existing.mimeType;
           existing.bytes = upstream.bytes ?? existing.bytes;
           existing.durationMs = upstream.durationMs ?? existing.durationMs;
           existing.updatedAt = upstream.updatedAt;
           existing.status = 'ready';
+          existing.provider.ref = upstream.url;
           continue;
         }
 
         manifest.assets.push({
           id: upstream.upstreamResourceId,
-          kind: 'video',
+          kind: mediaType,
           name: upstream.name,
           status: 'ready',
-          mimeType: 'video/mp4',
+          mimeType: upstream.mimeType ?? defaultUpstreamMime(mediaType),
           bytes: upstream.bytes ?? 0,
           durationMs: upstream.durationMs,
           createdAt: upstream.createdAt,

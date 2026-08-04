@@ -26,7 +26,11 @@ import { resolve, join } from 'node:path';
 
 import { serveStatic } from 'hono/bun';
 // 产品壳:初始化编排层(@forgeax/orchestrator)并注入产品相关内容,自己只负责进程/服务/代理。
-import { createForgeaxApp, createNpcWebSocketHandler } from '@forgeax/orchestrator';
+import {
+  createForgeaxApp,
+  createNpcWebSocketHandler,
+  getExtensionCapabilityControl,
+} from '@forgeax/orchestrator';
 import { getVersion } from '@forgeax/platform-io';
 import { loadBrand } from '@forgeax/orchestrator/brand';
 import { defaultProjectRoot } from '@forgeax/platform-io';
@@ -314,6 +318,7 @@ await activateServerModules({
   app,
   services: {
     videoAssets: videoAssets.providerControl,
+    capabilities: getExtensionCapabilityControl(),
   },
 });
 

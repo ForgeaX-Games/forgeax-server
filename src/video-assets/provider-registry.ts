@@ -32,16 +32,26 @@ function assertVideoAssetProvider(value: unknown): asserts value is VideoAssetPr
 
 export class VideoAssetProviderRegistry {
   #provider: VideoAssetProvider;
+  readonly #sourceProviders = new Map<VideoAssetProviderKind, VideoAssetProvider>();
   readonly control: VideoAssetProviderControl;
 
-  constructor(defaultProvider: VideoAssetProvider) {
+  constructor(
+    defaultProvider: VideoAssetProvider,
+    sourceProviders: readonly VideoAssetProvider[] = [],
+  ) {
     assertVideoAssetProvider(defaultProvider);
     this.#provider = defaultProvider;
+    this.#sourceProviders.set(defaultProvider.kind, defaultProvider);
+    for (const provider of sourceProviders) {
+      assertVideoAssetProvider(provider);
+      this.#sourceProviders.set(provider.kind, provider);
+    }
     this.control = Object.freeze({
       setProvider: (provider: VideoAssetProvider) => {
         assertVideoAssetProvider(provider);
         this.#provider = provider;
       },
+      sourceProvider: (kind: VideoAssetProviderKind) => this.#sourceProviders.get(kind),
     });
   }
 
