@@ -343,8 +343,11 @@ mountRuntimeCarrierApi(app, runtimeCarrierSupervisor);
 
 // The instance root is private runtime infrastructure. The active user project
 // is always the game slug returned by /api/workbench/games.
-app.get('/api/health', (c) =>
-  c.json({
+app.get('/api/health', (c) => {
+  // Process resource usage for the status-bar diagnostics "运行时" section
+  // (rss = resident set, heapUsed = V8 heap). Read per-request so it's live.
+  const mu = process.memoryUsage();
+  return c.json({
     status: 'ok',
     version: VERSION,
     name: '@forgeax/server',
@@ -353,13 +356,14 @@ app.get('/api/health', (c) =>
     instanceRoot: friendlyPath(defaultProjectRoot()),
     instanceRootAbs: defaultProjectRoot(),
     wsClients: hub.size(),
+    mem: { rss: mu.rss, heapUsed: mu.heapUsed },
     // Live native-path model id (read from process.env, which /api/settings/env
     // live-applies). The UI's useModelLabel() falls back to this instead of the
     // stale hardcoded "Claude Opus 4.7" — that constant was the source of the
     // "model stuck on 4.7" report whenever the per-agent model hadn't resolved.
     model: process.env.FORGEAX_MODEL || undefined,
-  }),
-);
+  });
+});
 
 // 全链路 trace:浏览器产的 span(ui.send/ui.request/ui.stream/ui.render、app.boot.*)经此
 // 上传 → 与后端 span 同落项目本地 .forgeax/sessions/<sid>/logs/(同 traceId 拼一棵树)+ 广播给
