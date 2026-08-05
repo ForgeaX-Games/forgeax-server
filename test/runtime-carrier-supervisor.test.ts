@@ -127,6 +127,19 @@ test('stopped runtime remains queryable but a new ensure gets a new runtimeId', 
   if (second.ok) expect(second.runtimeId).not.toBe(first.runtimeId);
 });
 
+test('stops the managed fallback only when its scope matches interactive authority', async () => {
+  const host = new FakeCarrierHost();
+  const supervisor = createRuntimeCarrierSupervisor({ host });
+  const ensured = await supervisor.ensure(scopeA);
+  if (!ensured.ok) throw new Error('expected ensure to succeed');
+  await waitForRunning(supervisor, ensured.runtimeId);
+
+  expect(await supervisor.stopScope(scopeB)).toBeNull();
+  expect(host.stopped).toEqual([]);
+  expect(await supervisor.stopScope(scopeA)).toMatchObject({ ok: true, lifecycle: 'stopped' });
+  expect(host.stopped).toEqual([ensured.runtimeId]);
+});
+
 test('unknown runtime ids are rejected without adoption or process discovery', async () => {
   const supervisor = createRuntimeCarrierSupervisor({ host: new FakeCarrierHost() });
   expect(await supervisor.status('old-runtime')).toMatchObject({ ok: false, error: { code: 'UNKNOWN_RUNTIME' } });

@@ -252,6 +252,15 @@ export class RuntimeCarrierSupervisor {
     return stopPromise;
   }
 
+  /** Stop the managed fallback only when it owns the requested scope. */
+  stopScope(scope: RuntimeScope): Promise<StopResult | null> {
+    const active = this.#active;
+    if (!active) return Promise.resolve(null);
+    const occupyingScope = active.confirmedScope ?? active.requestedScope;
+    if (!sameScope(scope, occupyingScope)) return Promise.resolve(null);
+    return this.stop(active.runtimeId);
+  }
+
   snapshot(): RuntimeSnapshot | null {
     return this.#active ? this.#snapshot(this.#active) : null;
   }

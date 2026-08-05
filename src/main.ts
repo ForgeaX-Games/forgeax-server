@@ -243,6 +243,14 @@ const runtimeCarrierSupervisor = createRuntimeCarrierSupervisor({
   }),
 });
 const editorTransportCarrier = createEditorTransportCarrier({
+  onInteractiveAuthority: async (scope) => {
+    const prefix = 'game:';
+    if (!scope.startsWith(prefix) || scope.length === prefix.length) return;
+    await runtimeCarrierSupervisor.stopScope({
+      projectId: defaultProjectRoot(),
+      gameId: scope.slice(prefix.length),
+    });
+  },
   ensureScope: async (scope) => {
     const prefix = 'game:';
     if (!scope.startsWith(prefix) || scope.length === prefix.length) {

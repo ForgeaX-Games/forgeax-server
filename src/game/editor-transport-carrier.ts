@@ -30,7 +30,11 @@ interface EditorTransportPresence {
 
 export interface EditorTransportCarrierOptions {
   readonly timeoutMs?: number;
+  /** Briefly wait for a user-owned page to reconnect before creating a managed fallback. */
+  readonly managedFallbackDelayMs?: number;
   readonly ensureScope?: (scope: string) => Promise<void>;
+  /** Called once an interactive page owns the scope and managed in-flight work is drained. */
+  readonly onInteractiveAuthority?: (scope: string) => void | Promise<void>;
 }
 
 export interface EditorTransportCarrier {
@@ -125,13 +129,33 @@ function pendingKey(scope: string, id: string, correlationId: string): string {
  */
 export function createEditorTransportCarrier(options: EditorTransportCarrierOptions = {}): EditorTransportCarrier {
   const timeoutMs = options.timeoutMs ?? 15_000;
+  const managedFallbackDelayMs = options.managedFallbackDelayMs ?? 250;
   const app = new Hono();
   const pending = new Map<string, PendingRequest>();
   const connectionScopes = new Map<ServerWebSocket<EditorTransportSocketData>, string | null>();
   const connectionRoles = new Map<ServerWebSocket<EditorTransportSocketData>, EditorTransportRole | null>();
   const connectionPresence = new Map<ServerWebSocket<EditorTransportSocketData>, EditorTransportPresence>();
   const socketsByScope = new Map<string, Set<ServerWebSocket<EditorTransportSocketData>>>();
+  const deferredInteractiveAuthority = new Set<string>();
   let activitySequence = 0;
+
+  const publishInteractiveAuthorityIfIdle = (scope: string): void => {
+    if (!deferredInteractiveAuthority.has(scope) || options.onInteractiveAuthority === undefined) return;
+    const managedRequestInFlight = [...pending.values()].some((entry) => (
+      entry.scope === scope && connectionRoles.get(entry.socket) === 'managed'
+    ));
+    if (managedRequestInFlight) return;
+    deferredInteractiveAuthority.delete(scope);
+    void Promise.resolve(options.onInteractiveAuthority(scope)).catch((error) => {
+      console.warn('[editor-transport] failed to retire redundant managed carrier:', error);
+    });
+  };
+
+  const markInteractiveAuthority = (scope: string): void => {
+    if (options.onInteractiveAuthority === undefined) return;
+    deferredInteractiveAuthority.add(scope);
+    publishInteractiveAuthorityIfIdle(scope);
+  };
 
   const presenceFrom = (value: JsonRecord): EditorTransportPresence | null => {
     if ((value.visibility !== 'visible' && value.visibility !== 'hidden') || typeof value.focused !== 'boolean') return null;
@@ -177,17 +201,26 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
   };
 
   const failPending = (socket: ServerWebSocket<EditorTransportSocketData>, hint: string): void => {
+    const settledScopes = new Set<string>();
     for (const [key, entry] of pending) {
       if (entry.socket !== socket) continue;
       clearTimeout(entry.timer);
       pending.delete(key);
+      settledScopes.add(entry.scope);
       entry.resolve(unavailable(entry.request, hint));
     }
+    for (const scope of settledScopes) publishInteractiveAuthorityIfIdle(scope);
   };
 
   const acquireSocket = async (scope: string): Promise<ServerWebSocket<EditorTransportSocketData> | undefined> => {
     const connected = activeSocket(scope);
     if (connected !== undefined || options.ensureScope === undefined) return connected;
+    const fallbackAt = Date.now() + Math.max(0, Math.min(managedFallbackDelayMs, timeoutMs));
+    while (Date.now() < fallbackAt) {
+      const reconnected = activeSocket(scope);
+      if (reconnected !== undefined) return reconnected;
+      await Bun.sleep(Math.min(25, fallbackAt - Date.now()));
+    }
     try {
       await options.ensureScope(scope);
     } catch {
@@ -225,6 +258,7 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     return new Promise<JsonRecord>((resolve) => {
       const timer = setTimeout(() => {
         pending.delete(key);
+        publishInteractiveAuthorityIfIdle(scope);
         resolve(unavailable(parsed, `The connected Studio editor page did not answer within ${timeoutMs}ms.`));
       }, timeoutMs);
       pending.set(key, { request: parsed, socket: target, scope, resolve, timer });
@@ -233,6 +267,7 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
       } catch {
         clearTimeout(timer);
         pending.delete(key);
+        publishInteractiveAuthorityIfIdle(scope);
         resolve(unavailable(parsed, 'The Studio editor transport connection closed while sending the request.'));
       }
     });
@@ -311,6 +346,7 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
       group.delete(socket);
       group.add(socket);
       socketsByScope.set(value.scope, group);
+      if (value.role === 'interactive') markInteractiveAuthority(value.scope);
       return;
     }
     if (value.type === 'editor-transport/presence') {
@@ -330,6 +366,7 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     clearTimeout(entry.timer);
     pending.delete(key);
     entry.resolve(response);
+    publishInteractiveAuthorityIfIdle(scope);
   };
 
   const close = (socket: ServerWebSocket<EditorTransportSocketData>): void => {

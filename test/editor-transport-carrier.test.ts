@@ -60,6 +60,7 @@ describe('Studio editor typed transport carrier', () => {
     let carrier: ReturnType<typeof createEditorTransportCarrier>;
     carrier = createEditorTransportCarrier({
       timeoutMs: 100,
+      managedFallbackDelayMs: 0,
       ensureScope: async (scope) => {
         ensuredScope = scope;
         managed = socket();
@@ -79,6 +80,63 @@ describe('Studio editor typed transport carrier', () => {
       correlationId: request.correlationId, result: { owner: 'managed' },
     } }));
     await expect(pending).resolves.toMatchObject({ result: { owner: 'managed' } });
+  });
+
+  test('gives an interactive page time to reconnect before ensuring a managed fallback', async () => {
+    let ensureCalls = 0;
+    const carrier = createEditorTransportCarrier({
+      timeoutMs: 100,
+      managedFallbackDelayMs: 50,
+      ensureScope: async () => { ensureCalls += 1; },
+    });
+    const pending = carrier.dispatch(request);
+    await Bun.sleep(0);
+
+    const interactive = socket();
+    carrier.open(interactive as never);
+    carrier.message(interactive as never, JSON.stringify({
+      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
+    }));
+    await Bun.sleep(30);
+
+    expect(ensureCalls).toBe(0);
+    expect(interactive.sent.some((message) => JSON.parse(message).request?.id === request.id)).toBe(true);
+    carrier.message(interactive as never, JSON.stringify({ type: 'editor-transport/response', response: {
+      jsonrpc: '2.0', version: 'editor-transport/v1', id: request.id,
+      correlationId: request.correlationId, result: { owner: 'interactive' },
+    } }));
+    await expect(pending).resolves.toMatchObject({ result: { owner: 'interactive' } });
+  });
+
+  test('retires a redundant managed fallback after its in-flight request settles', async () => {
+    const interactiveAuthorities: string[] = [];
+    const carrier = createEditorTransportCarrier({
+      timeoutMs: 100,
+      onInteractiveAuthority: async (scope) => { interactiveAuthorities.push(scope); },
+    });
+    const managed = socket();
+    carrier.open(managed as never);
+    carrier.message(managed as never, JSON.stringify({
+      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'managed', scope: 'game:spin-cube',
+    }));
+    const pending = carrier.dispatch(request);
+    await Bun.sleep(0);
+
+    const interactive = socket();
+    carrier.open(interactive as never);
+    carrier.message(interactive as never, JSON.stringify({
+      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
+    }));
+    await Bun.sleep(0);
+    expect(interactiveAuthorities).toEqual([]);
+
+    carrier.message(managed as never, JSON.stringify({ type: 'editor-transport/response', response: {
+      jsonrpc: '2.0', version: 'editor-transport/v1', id: request.id,
+      correlationId: request.correlationId, result: { owner: 'managed' },
+    } }));
+    await expect(pending).resolves.toMatchObject({ result: { owner: 'managed' } });
+    await Bun.sleep(0);
+    expect(interactiveAuthorities).toEqual(['game:spin-cube']);
   });
 
   test('forwards a typed request to the connected page and preserves its correlation', async () => {

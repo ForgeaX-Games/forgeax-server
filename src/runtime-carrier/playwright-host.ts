@@ -19,6 +19,16 @@ export interface PlaywrightCarrierHostOptions {
   readonly resolveScope?: () => RuntimeScope | Promise<RuntimeScope>;
 }
 
+/** Managed carriers are infrastructure, not user browser windows. Keep them
+ * headless unless a developer explicitly opts into a visible diagnostic host. */
+export function resolveCarrierHeadless(
+  configured: boolean | undefined,
+  env: Readonly<{ FORGEAX_CARRIER_HEADLESS?: string }> = process.env as { FORGEAX_CARRIER_HEADLESS?: string },
+): boolean {
+  if (configured !== undefined) return configured;
+  return env.FORGEAX_CARRIER_HEADLESS !== '0';
+}
+
 interface CarrierEventWindow {
   __forgeaxCarrierLatest?: unknown;
   __forgeax_carrier_health?: unknown;
@@ -37,7 +47,7 @@ const installCarrierEventBuffer = (): void => {
 export function createPlaywrightCarrierHost(options: PlaywrightCarrierHostOptions = {}): CarrierHost {
   const baseUrl = (options.baseUrl ?? process.env.FORGEAX_INTERFACE_ORIGIN ?? 'http://127.0.0.1:18920').replace(/\/$/, '');
   const timeoutMs = options.timeoutMs ?? 15_000;
-  const headless = options.headless ?? process.env.FORGEAX_CARRIER_HEADLESS === '1';
+  const headless = resolveCarrierHeadless(options.headless);
   let context: BrowserContext | null = null;
   let page: Page | null = null;
   let userDataDir: string | null = null;
