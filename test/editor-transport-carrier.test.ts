@@ -139,6 +139,29 @@ describe('Studio editor typed transport carrier', () => {
     expect(interactiveAuthorities).toEqual(['game:spin-cube']);
   });
 
+  test('does not ensure a managed page for a connected-only HTTP request', async () => {
+    let ensureCalls = 0;
+    const carrier = createEditorTransportCarrier({
+      timeoutMs: 10,
+      ensureScope: async () => { ensureCalls++; },
+    });
+
+    const response = await carrier.app.request('/api/editor/transport', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-forgeax-editor-carrier-provisioning': '0',
+      },
+      body: JSON.stringify(request),
+    });
+
+    expect(response.status).toBe(503);
+    expect(ensureCalls).toBe(0);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'editor-carrier-unavailable' },
+    });
+  });
+
   test('forwards a typed request to the connected page and preserves its correlation', async () => {
     const carrier = createEditorTransportCarrier({ timeoutMs: 100 });
     const page = socket();
@@ -147,7 +170,10 @@ describe('Studio editor typed transport carrier', () => {
 
     const pending = carrier.app.request('/api/editor/transport', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'x-forgeax-editor-carrier-provisioning': '0',
+      },
       body: JSON.stringify(request),
     });
 

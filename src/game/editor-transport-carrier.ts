@@ -28,6 +28,11 @@ interface EditorTransportPresence {
   readonly activity: number;
 }
 
+interface EditorTransportDispatchOptions {
+  /** Preserve the managed carrier fallback for explicit host operations; passive projections opt out. */
+  readonly allowCarrierProvisioning?: boolean;
+}
+
 export interface EditorTransportCarrierOptions {
   readonly timeoutMs?: number;
   /** Briefly wait for a user-owned page to reconnect before creating a managed fallback. */
@@ -43,7 +48,7 @@ export interface EditorTransportCarrier {
   readonly message: (socket: ServerWebSocket<EditorTransportSocketData>, message: unknown) => void;
   readonly close: (socket: ServerWebSocket<EditorTransportSocketData>) => void;
   readonly isSocket: (socket: ServerWebSocket<EditorTransportSocketData>) => boolean;
-  readonly dispatch: (request: JsonRecord) => Promise<JsonRecord>;
+  readonly dispatch: (request: JsonRecord, options?: EditorTransportDispatchOptions) => Promise<JsonRecord>;
   readonly connected: () => boolean;
 }
 
@@ -212,9 +217,12 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     for (const scope of settledScopes) publishInteractiveAuthorityIfIdle(scope);
   };
 
-  const acquireSocket = async (scope: string): Promise<ServerWebSocket<EditorTransportSocketData> | undefined> => {
+  const acquireSocket = async (
+    scope: string,
+    allowCarrierProvisioning: boolean,
+  ): Promise<ServerWebSocket<EditorTransportSocketData> | undefined> => {
     const connected = activeSocket(scope);
-    if (connected !== undefined || options.ensureScope === undefined) return connected;
+    if (connected !== undefined || !allowCarrierProvisioning || options.ensureScope === undefined) return connected;
     const fallbackAt = Date.now() + Math.max(0, Math.min(managedFallbackDelayMs, timeoutMs));
     while (Date.now() < fallbackAt) {
       const reconnected = activeSocket(scope);
@@ -235,12 +243,15 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     return undefined;
   };
 
-  const dispatch = async (request: JsonRecord): Promise<JsonRecord> => {
+  const dispatch = async (
+    request: JsonRecord,
+    dispatchOptions: EditorTransportDispatchOptions = {},
+  ): Promise<JsonRecord> => {
     const parsed = requestShape(request);
     if (parsed === null) return protocolError(isRecord(request) ? request : {});
     const scope = parsed.scope as string;
     const key = pendingKey(scope, parsed.id as string, parsed.correlationId as string);
-    const target = await acquireSocket(scope);
+    const target = await acquireSocket(scope, dispatchOptions.allowCarrierProvisioning !== false);
     if (target === undefined) {
       return unavailable(parsed, `Connect or start a Studio Editor page for scope "${scope}" before using the Editor transport.`);
     }
@@ -303,7 +314,9 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     try { body = await c.req.json(); } catch { return jsonResponse(protocolError(), 400); }
     const parsed = requestShape(body);
     if (parsed === null) return jsonResponse(protocolError(isRecord(body) ? body : {}), 400);
-    const result = await dispatch(parsed);
+    const result = await dispatch(parsed, {
+      allowCarrierProvisioning: c.req.header('x-forgeax-editor-carrier-provisioning') !== '0',
+    });
     const status = result.error && (result.error as JsonRecord).code === 'editor-carrier-unavailable' ? 503 : 200;
     return jsonResponse(result, status);
   });
