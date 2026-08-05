@@ -25,7 +25,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
   return [{
     name: 'editor_transport',
     description:
-      'Call the versioned Editor transport in the connected Studio page. Start with method "discover", use "query" for canonical editor facts, and use "run.dispatch" with an idempotencyKey for a mutation. The result preserves the typed result/error envelope; do not send JavaScript or use a relay eval endpoint.',
+      'Call the versioned Editor transport in the connected Studio page. Start with "discover", use "query" for canonical facts, "run.dispatch" for one mutation, or "script.execute" for operation-scope JavaScript that composes gateway/query/_import. Scripts require execute permission and an idempotencyKey; they never receive raw world/renderer/assets. Do not use a relay eval endpoint.',
     inputSchema: {
       type: 'object',
       properties: {

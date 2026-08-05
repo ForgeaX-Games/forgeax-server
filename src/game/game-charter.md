@@ -76,12 +76,13 @@ Before writing code, answer:
 
 ## Editor operations: gateway first
 
-`editor_transport` is the default editor integration. Start with the typed `discover` method, use `query` for canonical facts, and use `run.dispatch` with an idempotency key for mutations. The connected Studio page executes the versioned request in the in-process Editor Gateway; do not send JavaScript or use an eval relay.
+`editor_transport` is the default editor integration. Start with the typed `discover` method, use `query` for canonical facts, use `run.dispatch` with an idempotency key for one mutation, and use `script.execute` when branching or loops must compose several Gateway calls. The connected Studio page executes every form against the same in-process Editor Gateway. A script receives only `{ gateway, query, _import }`; never use an eval relay or raw `world`/`renderer`/`assets` for authored state.
 
 | Need | First choice | Fallback |
 |---|---|---|
 | inspect editor state, assets, selection or runtime | `editor_transport` | `discover` then typed `query` / `asset.snapshot` |
 | create or update a supported editor asset | `editor_transport` | `asset.preflight` then typed `run.dispatch` |
+| compose several discovered editor operations | `editor_transport` | typed `script.execute`; dispatch one Gateway `transaction` when all writes must roll back together |
 | produce an asset type the gateway cannot author yet | asset generator or file/resource tool | never put the persistent asset back into an entry-file literal |
 | prove the result | `editor_transport` plus Edit/Play observation | direct file/schema checks plus browser verification |
 
