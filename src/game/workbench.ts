@@ -185,8 +185,6 @@ async function regenerateGameGuids(gameDir: string): Promise<void> {
 function resolveGameTemplate(projectRoot: string): string | null {
   const userOverride = resolve(projectRoot, '.forgeax/games/_template');
   if (existsSync(userOverride)) return userOverride;
-  const minimal = resolve(assetRoot(), 'server', 'templates', 'game-minimal');
-  if (existsSync(minimal)) return minimal;
   // Use assetRoot() to locate the builtin template across all platforms/modes
   // (dev source tree, or packaged app). assetRoot() points to the 'packages' level.
   // Engine is now the editor's nested submodule (top-level packages/engine removed).
@@ -744,7 +742,7 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
       templateDir = resolveGameTemplate(projectRoot);
     }
     if (!templateDir) {
-      return c.json({ error: 'game template not found — expected .forgeax/games/_template/, packages/server/templates/game-minimal/, or the legacy engine game-default/' }, 500);
+      return c.json({ error: 'game template not found — expected .forgeax/games/_template/ or packages/editor/packages/engine/templates/game-default/' }, 500);
     }
     try {
       // Skip per-instance state when copying (built-in templates like spin-cube
