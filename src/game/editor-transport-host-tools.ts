@@ -1,5 +1,4 @@
 import type { HostToolSpec } from '@forgeax/orchestrator/orchestration-seams';
-import { MAX_EDITOR_TRANSPORT_TIMEOUT_MS } from './editor-transport-carrier';
 
 export const EDITOR_TRANSPORT_VERSION = 'editor-transport/v1' as const;
 
@@ -35,7 +34,6 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
         scope: { type: 'string', minLength: 1 },
         sessionId: { type: 'string', minLength: 1 },
         permission: { enum: ['read', 'write', 'execute'] },
-        timeoutMs: { type: 'integer', minimum: 1, maximum: MAX_EDITOR_TRANSPORT_TIMEOUT_MS },
       },
       required: ['method'],
       additionalProperties: false,
@@ -43,10 +41,6 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
     run: async (args, ctx) => {
       const method = typeof args.method === 'string' ? args.method.trim() : '';
       if (!method) return { ok: false, error: { code: 'invalid-args', hint: 'editor_transport requires a non-empty method.' } };
-      const timeoutMs = args.timeoutMs;
-      if (timeoutMs !== undefined && (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_EDITOR_TRANSPORT_TIMEOUT_MS)) {
-        return { ok: false, error: { code: 'invalid-args', hint: `timeoutMs must be an integer from 1 to ${MAX_EDITOR_TRANSPORT_TIMEOUT_MS}.` } };
-      }
       const scope = typeof args.scope === 'string' && args.scope.trim()
         ? args.scope
         : ctx.game ? `game:${ctx.game}` : '';
@@ -71,7 +65,6 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
         correlationId: id('editor-correlation', deps.idFactory),
         scope,
         method,
-        ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
         params: {
           ...params,
           scope,
