@@ -20,10 +20,6 @@ import {
 } from '@forgeax/types/npc-protocol';
 import { NPC_TOOL_CONTRACTS } from '@forgeax/types/npc-tools';
 import { editorTransportHostTools, type EditorTransportHostToolsDeps } from './editor-transport-host-tools';
-// 双轨期:上游已切换到 typed editor_transport(禁 JS relay);行走协议 editor_ui_browse
-// 的编辑器腿仍走 relay-eval —— 本轮并存,迁移到 transport 记为显性债(见 docs/ai-native)。
-import { editorGatewayHostTools } from './editor-gateway-host-tools';
-import { editorUiBrowseHostTools } from './editor-ui-browse-host-tools';
 
 const GAME_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u;
 const NPC_BRAIN_FILE = 'src/npc-brain.ts';
@@ -397,7 +393,7 @@ export function gameHostTools(): HostToolSpec[] {
   return [
     {
       name: 'list_games',
-      description: 'List the game projects in this ForgeaX instance. Returns { count, games }. READ-ONLY: to OPEN/SWITCH to a game the way a human does, do NOT hunt for slugs or read files — call editor_ui_browse open(\'menu:file/打开最近\') to reveal the recent list visually, then append the game\'s display name to the chain and call open again.',
+      description: 'List the game projects in this ForgeaX instance. Returns { count, games }.',
       inputSchema: { type: 'object', properties: {} },
       run: (_args, ctx: HostToolRunCtx) => listGames(ctx.projectRoot),
     },
@@ -444,10 +440,5 @@ export function gameHostTools(): HostToolSpec[] {
 export function studioHostTools(
   editorTransport?: EditorTransportHostToolsDeps,
 ): HostToolSpec[] {
-  return [
-    ...gameHostTools(),
-    ...editorTransportHostTools(editorTransport),
-    ...editorGatewayHostTools(),
-    ...editorUiBrowseHostTools(),
-  ];
+  return [...gameHostTools(), ...editorTransportHostTools(editorTransport)];
 }

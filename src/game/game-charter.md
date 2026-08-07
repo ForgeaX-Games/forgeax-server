@@ -78,8 +78,6 @@ Before writing code, answer:
 
 `editor_transport` is the default editor integration. Start with the typed `discover` method, use `query` for canonical facts, use `run.dispatch` with an idempotency key for one mutation, and use `script.execute` when branching or loops must compose several Gateway calls. The connected Studio page executes every form against the same in-process Editor Gateway. A script receives only `{ gateway, query, _import }`; never use an eval relay or raw `world`/`renderer`/`assets` for authored state.
 
-That prohibition is about YOU hand-authoring JavaScript against the editor. `editor_ui_browse` driving the editor through its own managed channel is not "sending JavaScript" — it remains the default for inspection, navigation and supported edits (see below). `editor_gateway_eval` still exists as a low-level escape hatch for operations the typed transport does not yet cover; it is a disclosed, temporary dual track pending that coverage, **never a routine path**.
-
 | Need | First choice | Fallback |
 |---|---|---|
 | inspect editor state, assets, selection or runtime | `editor_transport` | `discover` then typed `query` / `asset.snapshot` |
@@ -87,21 +85,6 @@ That prohibition is about YOU hand-authoring JavaScript against the editor. `edi
 | compose several discovered editor operations | `editor_transport` | typed `script.execute`; dispatch one Gateway `transaction` when all writes must roll back together |
 | produce an asset type the gateway cannot author yet | asset generator or file/resource tool | never put the persistent asset back into an entry-file literal |
 | prove the result | `editor_transport` plus Edit/Play observation | direct file/schema checks plus browser verification |
-
-**Answer product questions from the product, not from source code.** When the user asks what a feature does or how to use it (教我用X / X怎么用 / X里有什么), your information sources are what the product itself publishes: the static function table (`find`), extension manifests (`workbench.list_plugins` — id, name, description), menu/panel text the user can see, and the feature's own on-screen state. Do NOT rg/read repository source files to reverse-engineer product behavior: the user has no source tree, so any path you learn that way is unverifiable and unreproducible for them, and burns dozens of calls. If the published description is too thin to teach from, open the feature visually, describe what is actually on screen, and say plainly that deeper docs are not published yet — that gap belongs to the feature's team, not to your improvisation. When the interior genuinely cannot be observed through published tools — embedded canvases screenshot as black, a11y trees stop at iframe boundaries — that is a wall, not a malfunction: say so and stop. Never escalate to other browsers, automation CLIs, or source archaeology to see through it.
-
-**Shell is consent-gated, and "no path" must be DEMONSTRATED, not assumed.** `Bash` is NOT part of your default toolkit for product tasks — every use pops an approval card the user must grant. Before you may claim the published tools have no path, you must have ACTUALLY TRIED the front door on THIS task and hit a concrete failure you can quote: the specific call you made and the specific error it returned. A remembered defect, a caveat you read somewhere, or a defect in a NEIGHBOURING operation is not evidence about the operation in front of you — capabilities get fixed, and known issues are usually narrower than their summary (e.g. "minting a NEW material then binding it fails" does NOT mean "changing a colour cannot persist"; binding an EXISTING asset works fine). Asking for shell before the first tool call is always wrong. Only after a real, quotable failure: tell the user in chat what you tried, what it returned, what you now want to look at and why, and ask whether they allow it. The approval card is the second gate, not a substitute for asking. If they decline, deliver what the published tools support and state the limit plainly.
-
-**Never hand-edit scene or asset files to "make a change stick".** The live editor document leads the files on disk; an unsaved editor is the normal case, not a defect. If a supported edit lands in the document but you want it persisted, the answer is `act({kind:'saveDocToDisk'})` — never a text editor, never the shell. Editing those files behind the gateway takes the change out of the ledger, makes it un-undoable for the user, and desynchronises the open editor. If you believe an edit genuinely cannot be persisted through the gateway, say so and stop; do not route around it.
-
-`editor_ui_browse` is the default editor integration for inspection, navigation and supported edits. Its returns are the AUTHORITATIVE scene state: the live editor document leads the on-disk scene/pack files, so never read, grep or git-diff those files to discover or verify scene state — an unsaved editor is the normal case, not an error. For editor/scene tasks skip file discovery entirely; `find`/`look` are the front door. Its entity and asset nodes expose real gateway schemas, identity and ready-to-submit affordances; use `act` so changes enter the ledger and remain undoable. `editor_gateway_eval` is a low-level escape hatch; do not use it for routine tasks.
-
-| Need | First choice | Fallback |
-|---|---|---|
-| inspect or navigate editor state, assets, selection or runtime | `editor_ui_browse` | `editor_gateway_eval` only when browse lacks the required read surface |
-| create or update a supported editor asset | `editor_ui_browse` | `editor_gateway_eval` escape hatch, then project file/resource tool only when the gateway cannot author it |
-| produce an asset type the gateway cannot author yet | asset generator or file/resource tool | never put the persistent asset back into an entry-file literal |
-| prove the result | `editor_ui_browse` plus Edit/Play observation | `editor_gateway_eval` escape hatch plus direct schema/browser verification |
 
 When a gateway capability is missing, use the lowest layer that can perform the real operation, state the limitation, and return to the gateway for editor/runtime verification. Do not invent a gateway API, silently skip verification, or treat a gateway limitation as permission to hide authored content in code.
 
@@ -118,12 +101,14 @@ When a gateway capability is missing, use the lowest layer that can perform the 
 
 Use the running Studio endpoints when verifying: server `http://127.0.0.1:{{serverPort}}`, interface `http://127.0.0.1:{{interfacePort}}`.
 
-After each meaningful change, verification is SCOPED TO WHAT CHANGED:
+After each meaningful change:
 
-- **Editor ops (`editor_ui_browse` act)**: the act return — `rev`, `after`, `ledger`, `visible_change` — IS the verification. Do not re-open the entity, enter Play, read consoles or capture screenshots to confirm a field-level edit; that ritual costs 4-6 tool calls and proves nothing the return did not already state.
-- **Typed transport ops (`editor_transport`)**: read the changed manifest/meta/asset and confirm it satisfies the game's contract; use `editor_transport` to inspect the live editor state or apply the supported edit.
-- **Game-code or asset-file changes (main.ts, manifests, imported assets)**: check the authored asset in Edit and the composed result in Play; read browser and runtime errors, including HMR or loader failures; verify Edit and Play instantiate the same authored source, except for intentional runtime-only behavior.
-- Either way, leave the project in a state where the next iteration can discover and reuse the assets.
+- read the changed manifest/meta/asset and confirm it satisfies the game's contract;
+- use `editor_transport` to inspect the live editor state or apply the supported edit;
+- check the authored asset in Edit and the composed result in Play;
+- read browser and runtime errors, including HMR or loader failures;
+- verify that Edit and Play instantiate the same authored source, except for intentional runtime-only behavior;
+- leave the project in a state where the next iteration can discover and reuse the assets.
 
 ## Minimal ECS reference
 

@@ -63,30 +63,4 @@ describe('detectActiveSlug', () => {
     touch('real-game', new Date(2026, 0, 1));
     expect(detectActiveSlug(root)).toBe('real-game');
   });
-
-  test('external game symlink is skipped by the shared instance boundary', () => {
-    const external = mkdtempSync(resolve(tmpdir(), 'forgeax-active-slug-external-'));
-    try {
-      const gamesRoot = resolve(root, '.forgeax/games');
-      mkdirSync(gamesRoot, { recursive: true });
-      symlinkSync(external, resolve(gamesRoot, 'external-game'));
-      touch('real-game', new Date(2026, 0, 1));
-
-      expect(detectActiveSlug(root)).toBe('real-game');
-    } finally {
-      rmSync(external, { recursive: true, force: true });
-    }
-  });
-
-  test('launcher-projected package game participates in active detection', () => {
-    const source = resolve(root, 'packages/games/shared-game');
-    const gamesRoot = resolve(root, '.forgeax/games');
-    mkdirSync(source, { recursive: true });
-    mkdirSync(gamesRoot, { recursive: true });
-    symlinkSync(source, resolve(gamesRoot, 'shared-game'));
-    utimesSync(source, new Date(2026, 0, 10), new Date(2026, 0, 10));
-    touch('older-game', new Date(2026, 0, 1));
-
-    expect(detectActiveSlug(root)).toBe('shared-game');
-  });
 });

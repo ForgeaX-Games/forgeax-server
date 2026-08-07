@@ -179,16 +179,6 @@ describe('createVideoAssetRouter capabilities', () => {
       ],
     });
   });
-
-  test('returns an explicit unsupported response for external imports without a Kino provider', async () => {
-    const result = await json<null>(
-      app,
-      '/api/v1/kino/import-projects?exclude_game_id=source-game',
-    );
-
-    expect(result.status).toBe(501);
-    expect(result.body.error_code).toBe('import_projects_unsupported');
-  });
 });
 
 describe('createVideoAssetRouter prepare upload', () => {

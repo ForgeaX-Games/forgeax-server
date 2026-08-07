@@ -13,31 +13,27 @@ import { scanExtensionSource } from '@forgeax/workbench-host/node';
 
 describe('createForgeaxWorkbenchHostGetter', () => {
   test('resolves the installed extension from the server package boundary', async () => {
-    const source = await resolveInstalledWorkbenchPackage('@forgeax-extension/wb-game-video');
+    const source = await resolveInstalledWorkbenchPackage('@forgeax/wb-game-video');
     expect(source.kind).toBe('directory');
     const scanned = await scanExtensionSource(source);
     expect(scanned.manifest).toMatchObject({
-      id: '@forgeax-extension/wb-game-video',
-      version: '0.6.3',
+      id: '@forgeax/wb-game-video',
+      version: '0.2.1',
     });
   });
 
-  test('uses the wb-game-video workspace backend in web development', async () => {
-    const source = await resolveInstalledWorkbenchPackage(
-      '@forgeax-extension/wb-game-video',
-      { startupProfile: 'web-dev' },
-    );
+  test('resolves the installed asset-canvas extension through its host export', async () => {
+    const source = await resolveInstalledWorkbenchPackage('@forgeax-extension/wb-asset-canvas/kino-binding');
     expect(source.kind).toBe('directory');
     const scanned = await scanExtensionSource(source);
-    expect(scanned.packageRoot).toEndWith('/packages/marketplace/extensions/wb-game-video');
     expect(scanned.manifest).toMatchObject({
-      id: '@forgeax-extension/wb-game-video',
-      version: '0.6.3',
+      id: '@forgeax-extension/wb-asset-canvas',
+      version: '0.2.0',
     });
   });
 
   test('installed wb-game-video does not reference legacy Studio protocols', async () => {
-    const source = await resolveInstalledWorkbenchPackage('@forgeax-extension/wb-game-video');
+    const source = await resolveInstalledWorkbenchPackage('@forgeax/wb-game-video');
     const scanned = await scanExtensionSource(source);
     // Inspect the package manifest and executable entrypoints only. The release
     // contains hundreds of built-in media files; recursively reading every
@@ -69,13 +65,14 @@ describe('createForgeaxWorkbenchHostGetter', () => {
       },
       async scanExtensionSource(source) {
         calls.push('scan');
+        const assetCanvas = (source as { specifier?: string }).specifier === '@forgeax-extension/wb-asset-canvas/kino-binding';
         return {
           root: '/extension',
           manifestPath: '/extension/forgeax-extension.json',
           manifest: {
-            id: '@forgeax-extension/wb-game-video',
-            version: '0.6.3',
-            name: 'Video Game',
+            id: assetCanvas ? '@forgeax-extension/wb-asset-canvas' : '@forgeax/wb-game-video',
+            version: assetCanvas ? '0.2.0' : '0.2.1',
+            name: assetCanvas ? 'Asset Canvas' : 'Video Game',
             entrypoints: { browser: 'dist/index.js', host: 'dist/server/host.js' },
           },
         } as never;
@@ -93,20 +90,16 @@ describe('createForgeaxWorkbenchHostGetter', () => {
           versioning: {} as never,
           media: {} as never,
           models: {} as never,
-          capabilities: { forGame: () => ({ invoke: async () => undefined }) },
-          providerExtensions: [{ extensionId: '@forgeax-extension/kino-video-provider' }] as never,
-          capabilitySelections: FORGEAX_KINO_VIDEO_CAPABILITY,
         };
       },
       createWorkbenchHost(options) {
-        expect(options.capabilities).toBeDefined();
         calls.push(`host:${options.capabilitySelections?.[0]?.providerId}:${options.providerExtensions?.[0]?.extensionId}`);
         void options.isExtensionTrusted?.({
           runtimeId: 'runtime-video',
           root: '/extension',
           manifest: {
-            id: '@forgeax-extension/wb-game-video',
-            version: '0.6.3',
+            id: '@forgeax/wb-game-video',
+            version: '0.2.1',
             name: 'Video Game',
             entrypoints: { browser: 'dist/index.js', host: 'dist/server/host.js' },
           },
@@ -124,9 +117,12 @@ describe('createForgeaxWorkbenchHostGetter', () => {
     expect(await getter(options)).toBe(host);
     expect(await getter(options)).toBe(host);
     expect(calls).toEqual([
-      'package:@forgeax-extension/wb-game-video',
+      'package:@forgeax/wb-game-video',
+      'package:@forgeax-extension/wb-asset-canvas/kino-binding',
       'scan',
-      'register:@forgeax-extension/wb-game-video@0.6.3',
+      'scan',
+      'register:@forgeax/wb-game-video@0.2.1',
+      'register:@forgeax-extension/wb-asset-canvas@0.2.0',
       'adapters:runtime-video',
       'host:arrival-kino:@forgeax-extension/kino-video-provider',
     ]);
@@ -137,7 +133,7 @@ describe('createForgeaxWorkbenchHostGetter', () => {
       packageExtension: () => ({}) as never,
       scanExtensionSource: async () => ({
         manifest: {
-          id: '@forgeax-extension/wb-game-video',
+          id: '@forgeax/wb-game-video',
           version: '0.3.0',
         },
       }) as never,
@@ -147,12 +143,13 @@ describe('createForgeaxWorkbenchHostGetter', () => {
       projectRoot: '/project',
       mediaService: {} as never,
       modelRouter: {} as never,
-    })).rejects.toThrow('Expected @forgeax-extension/wb-game-video@0.6.3');
+    })).rejects.toThrow('Expected @forgeax/wb-game-video@0.2.1');
   });
 
-  test('exports the exact handshake extension and provider selection', () => {
+  test('exports exact dual-extension and provider selections', () => {
     expect(WORKBENCH_EXTENSIONS).toEqual([
-      { id: '@forgeax-extension/wb-game-video', version: '0.6.3' },
+      { id: '@forgeax/wb-game-video', version: '0.2.1' },
+      { id: '@forgeax-extension/wb-asset-canvas', version: '0.2.0' },
     ]);
     expect(FORGEAX_KINO_VIDEO_CAPABILITY).toEqual([{
       id: 'media.video.generate',

@@ -15,12 +15,10 @@ import type {
   BatchCreateKinoResourcesResult,
   CreateKinoResourceInput,
   KinoResourceDTO,
-  KinoImportProjectPage,
   KinoResourcePage,
   KinoResourceSourceMeta,
   KinoResourceType,
   UpdateKinoResourceInput,
-  KinoImageUploadSts,
 } from './kino-api';
 import { KinoApiError } from './kino-api';
 import { VideoAssetManifestRepository } from './manifest-repository';
@@ -74,8 +72,6 @@ export interface PrepareUploadResponse {
   object_url: string;
   upload_token: string;
 }
-
-export type BrowserUploadResponse = PrepareUploadResponse | KinoImageUploadSts;
 
 export interface ListResourcesQuery {
   game_id: string;
@@ -260,27 +256,6 @@ export class VideoAssetService {
       media_types: [...(provider.supportedMediaTypes ?? ['video'])],
       upload_mimes: [...(provider.supportedUploadMimes ?? SUPPORTED_UPLOAD_MIMES)],
     };
-  }
-
-  getProviderUploadTransport(): 'receiver' | 'direct' {
-    return typeof this.#deps.providers.current().receiveUpload === 'function'
-      ? 'receiver'
-      : 'direct';
-  }
-
-  async listImportProjects(
-    excludeGameId: string | undefined,
-    context: VideoAssetRequestContext,
-  ): Promise<KinoImportProjectPage> {
-    const provider = this.#deps.providers.current();
-    if (typeof provider.listImportProjects !== 'function') {
-      throw new KinoApiError(
-        `Provider ${provider.kind} does not support external project imports`,
-        501,
-        'import_projects_unsupported',
-      );
-    }
-    return provider.listImportProjects(excludeGameId, context);
   }
 
   #resolveGameDir(context: VideoAssetRequestContext): string {
@@ -471,52 +446,6 @@ export class VideoAssetService {
     };
   }
 
-  /**
-   * Prepare a browser upload using the active provider's native transport.
-   * Kino returns its documented short-lived COS STS; other providers keep the
-   * existing Workbench resumable response for compatibility.
-   */
-  async prepareBrowserUpload(
-    input: PrepareUploadInput,
-    context: VideoAssetRequestContext,
-  ): Promise<BrowserUploadResponse> {
-    this.#resolveGameDir(context);
-    const mediaType = input.mediaType ?? mediaTypeForMime(input.mimeType);
-    if (!mediaType) {
-      throw new KinoApiError('Invalid upload mime type', 400, 'invalid_media_type');
-    }
-    assertUploadFileName(input.fileName, input.mimeType);
-    assertUploadMime(mediaType, input.mimeType);
-    assertUploadSize(mediaType, input.bytes);
-    const provider = this.#deps.providers.current();
-    const supported = provider.supportedMediaTypes ?? ['video'];
-    if (!supported.includes(mediaType)) {
-      throw new KinoApiError(
-        `Provider ${provider.kind} does not support ${mediaType} uploads`,
-        400,
-        'unsupported_provider_media_type',
-      );
-    }
-    if (provider.supportedUploadMimes && !provider.supportedUploadMimes.includes(input.mimeType)) {
-      throw new KinoApiError(
-        `Provider ${provider.kind} does not support ${input.mimeType} uploads`,
-        400,
-        'unsupported_provider_media_type',
-      );
-    }
-    // Kino's public STS contract has no replacement/session fields. Keep the
-    // legacy Workbench session for replacement uploads so that existing
-    // client-resource-id semantics remain unchanged.
-    if (
-      typeof provider.prepareBrowserUpload === 'function' &&
-      input.clientResourceId === undefined &&
-      input.replaceExisting !== true
-    ) {
-      return provider.prepareBrowserUpload({ ...input, mediaType }, context);
-    }
-    return this.prepareUpload({ ...input, mediaType }, context);
-  }
-
   async receiveUpload(
     token: string,
     body: ReadableStream<Uint8Array>,
@@ -696,35 +625,6 @@ export class VideoAssetService {
     const stored = await this.#deps.manifest.get(gameDir, reservedId);
     return toDto(stored ?? storedAsset, context);
     });
-  }
-
-  /**
-   * Register an object already uploaded directly to a provider. Providers
-   * with native browser uploads (currently Kino) forward this to their
-   * upstream `/resources`; legacy providers retain the upload-session flow.
-   */
-  async createBrowserResource(
-    input: CreateKinoResourceInput,
-    context: VideoAssetRequestContext,
-  ): Promise<KinoResourceDTO> {
-    const gameDir = this.#resolveGameDir(context);
-    if (input.game_id !== context.gameId) {
-      throw new KinoApiError('Upload session game mismatch', 400, 'upload_session_game_mismatch');
-    }
-    const provider = this.#deps.providers.current();
-    let legacyUploadReference = false;
-    try {
-      parseUploadTokenFromReference(input.url, context.origin);
-      legacyUploadReference = true;
-    } catch {
-      // Direct Kino object URLs are intentionally not Workbench upload tokens.
-    }
-    if (typeof provider.createBrowserResource === 'function' && !legacyUploadReference) {
-      const created = await provider.createBrowserResource(input, context);
-      await this.#persistBrowserResource(gameDir, created, input, provider.kind);
-      return created;
-    }
-    return this.createResource(input, context);
   }
 
   async batchCreateResources(
@@ -920,26 +820,11 @@ export class VideoAssetService {
       throw new KinoApiError('Upload session game mismatch', 400, 'upload_session_game_mismatch');
     }
     const { page, pageSize } = parsePagination(query.page, query.page_size);
-    const provider = this.#deps.providers.current();
-    await this.#reconcileUpstream(
-      gameDir,
-      context,
-      query.media_type,
-      pageSize,
-      // A provider-backed catalog is authoritative. Keeping local manifest
-      // entries beside an upstream page makes a Kino selection display assets
-      // from the previous/local provider and turns the manifest into a second
-      // catalog source.
-      { replaceMediaType: typeof provider.listUpstream === 'function' },
-    );
+    await this.#reconcileUpstream(gameDir, context, query.media_type, pageSize);
 
     const manifest = await this.#deps.manifest.read(gameDir);
     const assets = readyAssets(manifest.assets)
       .filter((asset) => asset.kind === query.media_type)
-      .filter((asset) => (
-        typeof provider.listUpstream !== 'function'
-        || asset.provider.kind === provider.kind
-      ))
       .sort((left, right) => right.updatedAt - left.updatedAt);
     const total = assets.length;
     const start = (page - 1) * pageSize;
@@ -1293,62 +1178,6 @@ export class VideoAssetService {
       .map(({ asset }) => ({ asset }));
   }
 
-  async #persistBrowserResource(
-    gameDir: string,
-    resource: KinoResourceDTO,
-    input: CreateKinoResourceInput,
-    providerKind: VideoAsset['provider']['kind'],
-  ): Promise<void> {
-    const declaredMime = resource.source_meta?.mime_type ?? input.source_meta?.mime_type;
-    const mimeType = SUPPORTED_UPLOAD_MIMES.includes(declaredMime as SupportedUploadMime)
-      ? declaredMime as SupportedUploadMime
-      : defaultUpstreamMime(resource.media_type);
-    const asset: VideoAsset = {
-      id: resource.resource_id,
-      kind: resource.media_type,
-      name: input.name ?? resource.name ?? resource.resource_id,
-      status: 'ready',
-      mimeType,
-      // Kino's resource API does not return object size on create. Zero is the
-      // existing sentinel for remote assets and is refreshed by list/reconcile.
-      bytes: 0,
-      durationMs: resource.source_meta?.duration_ms ?? input.source_meta?.duration_ms,
-      ...(resource.media_type === 'image' &&
-      (input.type === 'CHARACTER_IMAGE' || input.type === 'LOCATION_IMAGE')
-        ? {
-            productionType:
-              input.type === 'CHARACTER_IMAGE' ? 'character_ref' as const : 'scene_ref' as const,
-            sourceModule: 'wb-game-video',
-          }
-        : {}),
-      createdAt: resource.created_at,
-      updatedAt: resource.updated_at,
-      provider: {
-        kind: providerKind,
-        ref: resource.url,
-        upstreamResourceId: resource.resource_id,
-      },
-      meta: {
-        type: input.type ?? resource.type ?? 'UPLOAD',
-        remark: input.remark ?? resource.remark,
-        source: input.source ?? resource.source,
-        sourceMeta: input.source_meta ?? resource.source_meta,
-      },
-    };
-    await this.#deps.manifest.mutate(gameDir, (manifest) => {
-      const index = manifest.assets.findIndex((entry) => entry.id === asset.id);
-      if (index === -1) {
-        manifest.assets.push(asset);
-        return;
-      }
-      manifest.assets[index] = {
-        ...manifest.assets[index],
-        ...asset,
-        createdAt: manifest.assets[index]?.createdAt ?? asset.createdAt,
-      };
-    });
-  }
-
   async #verifyPrecommitPlayback(
     asset: VideoAsset,
     provider: ReturnType<VideoAssetProviderRegistry['current']>,
@@ -1496,14 +1325,7 @@ export class VideoAssetService {
 
     await this.#deps.manifest.mutate(gameDir, (manifest) => {
       if (options.replaceMediaType) {
-        manifest.assets = manifest.assets.filter((asset) => (
-          asset.kind !== mediaType
-          || asset.provider.kind !== provider.kind
-          || (
-            asset.provider.upstreamResourceId !== undefined
-            && upstreamById.has(asset.provider.upstreamResourceId)
-          )
-        ));
+        manifest.assets = manifest.assets.filter((asset) => asset.kind !== mediaType);
       }
       for (const upstream of upstreamById.values()) {
         const existing = manifest.assets.find(
@@ -1517,11 +1339,7 @@ export class VideoAssetService {
           existing.durationMs = upstream.durationMs ?? existing.durationMs;
           existing.updatedAt = upstream.updatedAt;
           existing.status = 'ready';
-          existing.provider = {
-            kind: provider.kind,
-            ref: upstream.url,
-            upstreamResourceId: upstream.upstreamResourceId,
-          };
+          existing.provider.ref = upstream.url;
           continue;
         }
 
