@@ -10,7 +10,6 @@
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { resolveInstanceGame } from './instance-game';
 
 /**
  * Most-recently-modified game folder under `<root>/.forgeax/games/`.
@@ -31,10 +30,12 @@ export function detectActiveSlug(root: string): string | undefined {
     let best: { slug: string; mtime: number } | undefined;
     for (const e of readdirSync(gamesDir)) {
       if (e.startsWith('.') || e.startsWith('_')) continue;
-      const game = resolveInstanceGame(root, e);
-      if (!game) continue;
+      // Per-entry guard: a dangling symlink makes statSync throw ENOENT. A
+      // loop-wide throw here would abort detection and return undefined, so a
+      // single broken games/<slug> link would knock out the whole mtime
+      // heuristic. Skip the bad entry instead.
       let st: ReturnType<typeof statSync>;
-      try { st = statSync(game.gameDir); } catch { continue; }
+      try { st = statSync(resolve(gamesDir, e)); } catch { continue; }
       if (!st.isDirectory()) continue;
       if (!best || st.mtimeMs > best.mtime) best = { slug: e, mtime: st.mtimeMs };
     }

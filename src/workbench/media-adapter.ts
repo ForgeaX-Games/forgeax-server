@@ -1,27 +1,17 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { extname } from 'node:path';
 import type {
   MediaAsset,
   MediaBody,
-  MediaUpdateInput,
+  MediaCapability,
   MediaType,
   MediaWriteInput,
-  ResumableMediaCapability,
 } from '@forgeax/workbench-host/contracts';
 import type { VideoAssetService } from '../video-assets/service';
 import type { VideoAssetRequestContext } from '../video-assets/contracts';
 import type { KinoResourceDTO } from '../video-assets/kino-api';
 import { KinoApiError } from '../video-assets/kino-api';
-import { resolveGameDir } from '../video-assets/game-path';
-import {
-  assertUploadFileName,
-  assertUploadMime,
-  assertUploadSize,
-  extensionForMime,
-  mediaTypeForMime,
-} from '../video-assets/media-policy';
-import { ForgeaxMediaUploadStore } from './media-upload-store';
 
 export type ForgeaxVideoAssetService = Pick<
   VideoAssetService,
@@ -31,13 +21,11 @@ export type ForgeaxVideoAssetService = Pick<
   | 'prepareUpload'
   | 'receiveUpload'
   | 'createResource'
-  | 'updateResource'
   | 'deleteResource'
-> & Partial<Pick<VideoAssetService, 'getProviderCapabilities'>>;
+>;
 
 export interface ForgeaxMediaCapabilityOptions {
   readonly runtimeId: string;
-  readonly projectRoot: string;
   readonly origin?: string;
   readonly identity?: (gameId: string) => string;
   readonly fetch?: typeof fetch;
@@ -56,12 +44,7 @@ function requestContext(
 
 function contentType(resource: KinoResourceDTO): string {
   return resource.source_meta?.mime_type
-    ?? {
-      video: 'video/mp4',
-      image: 'image/png',
-      audio: 'audio/mpeg',
-      font: 'font/woff2',
-    }[resource.media_type];
+    ?? (resource.media_type === 'video' ? 'video/mp4' : 'image/png');
 }
 
 function publicUrl(gameId: string, runtimeId: string, assetId: string): string {
@@ -72,54 +55,44 @@ function toAsset(
   resource: KinoResourceDTO,
   runtimeId: string,
 ): MediaAsset {
-  const extra = Object.fromEntries(
-    Object.entries(resource.source_meta?.extra ?? {})
-      .filter(([key]) => key !== 'workbench_fingerprint'),
-  );
-  const { mime_type: _mimeType, extra: _extra, ...sourceMeta } = resource.source_meta ?? {};
-  const metadata = {
-    ...extra,
-    ...sourceMeta,
-    ...(resource.type === undefined ? {} : { type: resource.type }),
-    ...(resource.remark === undefined ? {} : { remark: resource.remark }),
-    ...(resource.source === undefined ? {} : { source: resource.source }),
-    created_at: resource.created_at,
-    updated_at: resource.updated_at,
-  };
-  const sizeBytes = extra?.bytes;
   return {
     id: resource.resource_id,
-    ...(resource.name === undefined ? {} : { filename: resource.name }),
     type: resource.media_type,
     contentType: contentType(resource),
     url: publicUrl(resource.game_id, runtimeId, resource.resource_id),
-    ...(typeof sizeBytes === 'number' && Number.isSafeInteger(sizeBytes) && sizeBytes >= 0
-      ? { sizeBytes }
-      : {}),
-    metadata,
+    metadata: {
+      name: resource.name,
+      type: resource.type,
+      remark: resource.remark,
+      source: resource.source,
+      sourceMeta: resource.source_meta,
+      createdAt: resource.created_at,
+      updatedAt: resource.updated_at,
+    },
   };
 }
 
-function mediaType(type: MediaType): MediaType {
-  return type;
+function mediaType(type: MediaType): 'image' | 'video' {
+  if (type === 'image' || type === 'video') return type;
+  throw new TypeError(`ForgeaX video assets do not support ${type}`);
 }
 
-function providerMediaTypes(service: ForgeaxVideoAssetService): MediaType[] {
-  const configured = service.getProviderCapabilities?.().media_types ?? ['image', 'video'];
-  return [...new Set(configured.map(mediaType))];
-}
-
-function typeFor(contentType: string): MediaType {
-  const type = mediaTypeForMime(contentType);
-  if (type !== null) return type;
-  throw new TypeError(`Unsupported ForgeaX media type: ${contentType}`);
+function typeFor(input: MediaWriteInput): 'image' | 'video' {
+  if (input.contentType.startsWith('image/')) return 'image';
+  if (input.contentType === 'video/mp4') return 'video';
+  throw new TypeError(`Unsupported ForgeaX media type: ${input.contentType}`);
 }
 
 function uploadFilename(input: MediaWriteInput): string {
   if (extname(input.filename)) return input.filename;
-  const type = typeFor(input.contentType);
-  assertUploadMime(type, input.contentType);
-  return `${input.filename}.${extensionForMime(input.contentType)}`;
+  const suffix = input.contentType === 'video/mp4'
+    ? '.mp4'
+    : input.contentType === 'image/jpeg'
+      ? '.jpg'
+      : input.contentType === 'image/webp'
+        ? '.webp'
+        : '.png';
+  return `${input.filename}${suffix}`;
 }
 
 function fingerprint(input: MediaWriteInput): string {
@@ -142,17 +115,13 @@ function resourceId(key: string): string {
 export function createForgeaxMediaCapability(
   service: ForgeaxVideoAssetService,
   options: ForgeaxMediaCapabilityOptions,
-): ResumableMediaCapability {
-  const uploads = new ForgeaxMediaUploadStore((gameId) => join(
-    resolveGameDir(gameId, () => options.projectRoot),
-    'assets',
-    '.workbench-uploads',
-  ));
-  const capability: ResumableMediaCapability = {
+): MediaCapability {
+  return {
     async list(gameId, query = {}): Promise<MediaAsset[]> {
-      const supportedTypes = providerMediaTypes(service);
-      if (query.type !== undefined && !supportedTypes.includes(query.type)) return [];
-      const types = query.type ? [mediaType(query.type)] : supportedTypes;
+      if (query.type === 'audio' || query.type === 'font') return [];
+      const types: Array<'image' | 'video'> = query.type
+        ? [mediaType(query.type)]
+        : ['image', 'video'];
       const pages = await Promise.all(types.map((type) => service.listResources({
         game_id: gameId,
         media_type: type,
@@ -194,8 +163,7 @@ export function createForgeaxMediaCapability(
 
     async put(gameId, input): Promise<MediaAsset> {
       const context = requestContext(gameId, options);
-      const type = typeFor(input.contentType);
-      assertUploadMime(type, input.contentType);
+      const type = typeFor(input);
       const digest = fingerprint(input);
       const stableId = input.idempotencyKey ? resourceId(input.idempotencyKey) : undefined;
       if (stableId) {
@@ -213,7 +181,7 @@ export function createForgeaxMediaCapability(
       const prepared = await service.prepareUpload({
         fileName: uploadFilename(input),
         mediaType: type,
-        mimeType: input.contentType,
+        mimeType: input.contentType as never,
         bytes: input.bytes.byteLength,
         ...(stableId ? { clientResourceId: stableId } : {}),
       }, context);
@@ -244,85 +212,5 @@ export function createForgeaxMediaCapability(
         if (!(error instanceof KinoApiError) || error.status !== 404) throw error;
       }
     },
-
-    async update(
-      gameId: string,
-      assetId: string,
-      input: MediaUpdateInput,
-    ): Promise<MediaAsset | null> {
-      const context = requestContext(gameId, options);
-      try {
-        const existing = await service.getResource(assetId, context);
-        const fingerprint = existing.source_meta?.extra?.workbench_fingerprint;
-        const nextExtra = input.metadata === undefined
-          ? existing.source_meta?.extra
-          : {
-              ...input.metadata,
-              ...(typeof fingerprint === 'string' ? { workbench_fingerprint: fingerprint } : {}),
-            };
-        const updated = await service.updateResource(assetId, {
-          resource_id: assetId,
-          game_id: gameId,
-          media_type: existing.media_type,
-          url: existing.url,
-          name: input.filename ?? existing.name,
-          type: existing.type,
-          remark: existing.remark,
-          source: existing.source,
-          source_meta: {
-            ...existing.source_meta,
-            ...(nextExtra === undefined ? {} : { extra: nextExtra }),
-          },
-        }, context);
-        return toAsset(updated, options.runtimeId);
-      } catch (error) {
-        if (error instanceof KinoApiError && error.status === 404) return null;
-        throw error;
-      }
-    },
-
-    async createUpload(gameId, input) {
-      const type = typeFor(input.contentType);
-      assertUploadMime(type, input.contentType);
-      assertUploadFileName(input.filename, input.contentType);
-      assertUploadSize(type, input.sizeBytes);
-      return uploads.create(gameId, input);
-    },
-
-    async getUpload(gameId, uploadId) {
-      return uploads.get(gameId, uploadId);
-    },
-
-    async writeUploadChunk(gameId, uploadId, input) {
-      return uploads.writeChunk(gameId, uploadId, input);
-    },
-
-    async completeUpload(gameId, uploadId) {
-      return uploads.complete(gameId, uploadId, async (completed) => {
-        if (completed.assetId !== undefined) {
-          try {
-            const existing = await service.getResource(
-              completed.assetId,
-              requestContext(gameId, options),
-            );
-            return {
-              asset: toAsset(existing, options.runtimeId),
-              assetId: completed.assetId,
-            };
-          } catch (error) {
-            if (!(error instanceof KinoApiError) || error.status !== 404) throw error;
-          }
-        }
-        const asset = await capability.put(gameId, {
-          filename: completed.upload.filename,
-          contentType: completed.upload.contentType,
-          bytes: await completed.readBytes(),
-          ...(completed.upload.metadata === undefined ? {} : { metadata: completed.upload.metadata }),
-          idempotencyKey: `upload:${uploadId}`,
-        });
-        return { asset, assetId: asset.id };
-      });
-    },
   };
-  return capability;
 }
