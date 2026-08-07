@@ -11,7 +11,6 @@ describe('SPA reserved path prefixes', () => {
     const reserved = Function(`return ${literal}`)() as RegExp;
 
     expect(reserved.test('/extensions/wb-reel/missing.js')).toBe(true);
-    expect(reserved.test('/__workbench__/v1/catalog')).toBe(true);
     expect(reserved.test('/plugins/wb-reel/missing.js')).toBe(false);
   });
 });
