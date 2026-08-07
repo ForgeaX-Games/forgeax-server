@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { createHmac } from 'node:crypto';
 import {
   createRemoteKinoBinding,
+  createRemoteKinoBindingIfConfigured,
   forgeaxKinoScope,
 } from '../../src/workbench/remote-kino-binding';
 
@@ -19,6 +20,18 @@ function environment(overrides: Record<string, string> = {}) {
 }
 
 describe('ForgeaX remote Kino binding', () => {
+  test('keeps the Host available without advertising an unconfigured Kino capability', async () => {
+    expect(await createRemoteKinoBindingIfConfigured({
+      projectRoot: '/tmp/forgeax-project',
+      env: {},
+    })).toBeUndefined();
+
+    await expect(createRemoteKinoBindingIfConfigured({
+      projectRoot: '/tmp/forgeax-project',
+      env: { FORGEAX_KINO_BASE_URL: 'https://kino.example' },
+    })).rejects.toThrow('FORGEAX_KINO_GATEWAY_TOKEN');
+  });
+
   test('uses the exact installation/game HMAC scope formula', async () => {
     const binding = await createRemoteKinoBinding({
       projectRoot: '/tmp/forgeax-project',

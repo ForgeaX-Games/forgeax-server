@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  DEFAULT_EDITOR_TRANSPORT_TIMEOUT_MS,
   EDITOR_TRANSPORT_WS_SID,
+  MAX_EDITOR_TRANSPORT_TIMEOUT_MS,
   createEditorTransportCarrier,
 } from '../src/game/editor-transport-carrier';
 
@@ -60,7 +62,6 @@ describe('Studio editor typed transport carrier', () => {
     let carrier: ReturnType<typeof createEditorTransportCarrier>;
     carrier = createEditorTransportCarrier({
       timeoutMs: 100,
-      managedFallbackDelayMs: 0,
       ensureScope: async (scope) => {
         ensuredScope = scope;
         managed = socket();
@@ -82,32 +83,6 @@ describe('Studio editor typed transport carrier', () => {
     await expect(pending).resolves.toMatchObject({ result: { owner: 'managed' } });
   });
 
-  test('gives an interactive page time to reconnect before ensuring a managed fallback', async () => {
-    let ensureCalls = 0;
-    const carrier = createEditorTransportCarrier({
-      timeoutMs: 100,
-      managedFallbackDelayMs: 50,
-      ensureScope: async () => { ensureCalls += 1; },
-    });
-    const pending = carrier.dispatch(request);
-    await Bun.sleep(0);
-
-    const interactive = socket();
-    carrier.open(interactive as never);
-    carrier.message(interactive as never, JSON.stringify({
-      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
-    }));
-    await Bun.sleep(30);
-
-    expect(ensureCalls).toBe(0);
-    expect(interactive.sent.some((message) => JSON.parse(message).request?.id === request.id)).toBe(true);
-    carrier.message(interactive as never, JSON.stringify({ type: 'editor-transport/response', response: {
-      jsonrpc: '2.0', version: 'editor-transport/v1', id: request.id,
-      correlationId: request.correlationId, result: { owner: 'interactive' },
-    } }));
-    await expect(pending).resolves.toMatchObject({ result: { owner: 'interactive' } });
-  });
-
   test('retires a redundant managed fallback after its in-flight request settles', async () => {
     const interactiveAuthorities: string[] = [];
     const carrier = createEditorTransportCarrier({
@@ -126,15 +101,45 @@ describe('Studio editor typed transport carrier', () => {
     carrier.open(interactive as never);
     carrier.message(interactive as never, JSON.stringify({
       type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
+      visibility: 'visible', focused: true, capabilities: { gameplay: true },
     }));
     await Bun.sleep(0);
     expect(interactiveAuthorities).toEqual([]);
+    expect(managed.readyState).toBe(1);
+    expect(managed.sent.filter((message) => JSON.parse(message).type === 'editor-transport/request')).toHaveLength(1);
 
     carrier.message(managed as never, JSON.stringify({ type: 'editor-transport/response', response: {
       jsonrpc: '2.0', version: 'editor-transport/v1', id: request.id,
       correlationId: request.correlationId, result: { owner: 'managed' },
     } }));
     await expect(pending).resolves.toMatchObject({ result: { owner: 'managed' } });
+    await Bun.sleep(0);
+    expect(interactiveAuthorities).toEqual(['game:spin-cube']);
+  });
+
+  test('keeps managed authority until an explicitly unready interactive page publishes gameplay readiness', async () => {
+    const interactiveAuthorities: string[] = [];
+    let ensureCalls = 0;
+    const carrier = createEditorTransportCarrier({
+      onInteractiveAuthority: (scope) => { interactiveAuthorities.push(scope); },
+      ensureScope: async () => { ensureCalls += 1; },
+    });
+    const interactive = socket();
+    carrier.open(interactive as never);
+    carrier.message(interactive as never, JSON.stringify({
+      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
+      visibility: 'visible', focused: true, capabilities: { gameplay: false },
+    }));
+    await Bun.sleep(0);
+    expect(interactiveAuthorities).toEqual([]);
+    await expect(carrier.dispatch({ ...request, method: 'gameplay' })).resolves.toMatchObject({
+      error: { code: 'editor-carrier-unavailable' },
+    });
+    expect(ensureCalls).toBe(0);
+
+    carrier.message(interactive as never, JSON.stringify({
+      type: 'editor-transport/presence', visibility: 'visible', focused: true, capabilities: { gameplay: true },
+    }));
     await Bun.sleep(0);
     expect(interactiveAuthorities).toEqual(['game:spin-cube']);
   });
@@ -223,10 +228,9 @@ describe('Studio editor typed transport carrier', () => {
     await Bun.sleep(0);
     carrier.message(spin as never, JSON.stringify({ type: 'editor-transport/response', response }));
     await expect(pending).resolves.toMatchObject({ result: { scope: 'game:spin-cube' } });
-    expect(carrier.connected()).toBe(true);
   });
 
-  test('keeps same-game pages connected and selects the newest healthy carrier', async () => {
+  test('keeps same-game pages connected and selects the focused healthy carrier', async () => {
     const carrier = createEditorTransportCarrier();
     const first = socket();
     const other = socket();
@@ -236,7 +240,10 @@ describe('Studio editor typed transport carrier', () => {
     carrier.open(replacement as never);
     carrier.message(first as never, JSON.stringify({ type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:a' }));
     carrier.message(other as never, JSON.stringify({ type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:b' }));
-    carrier.message(replacement as never, JSON.stringify({ type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:a' }));
+    carrier.message(replacement as never, JSON.stringify({
+      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:a',
+      visibility: 'visible', focused: true,
+    }));
 
     expect(first.readyState).toBe(1);
     expect(other.readyState).toBe(1);
@@ -295,49 +302,10 @@ describe('Studio editor typed transport carrier', () => {
       correlationId: request.correlationId, result: { owner: 'visible' },
     } }));
     await expect(pending).resolves.toMatchObject({ result: { owner: 'visible' } });
-  });
-
-  test('uses a managed renderer only when no visible Studio page is connected', async () => {
-    const carrier = createEditorTransportCarrier({ timeoutMs: 100 });
-    const managed = socket();
-    carrier.open(managed as never);
-    carrier.message(managed as never, JSON.stringify({
-      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'managed', scope: 'game:spin-cube',
-    }));
-    const pending = carrier.dispatch(request);
-    await Bun.sleep(0);
-    expect(managed.sent.some((message) => JSON.parse(message).type === 'editor-transport/request')).toBe(true);
-    carrier.message(managed as never, JSON.stringify({ type: 'editor-transport/response', response: {
-      jsonrpc: '2.0', version: 'editor-transport/v1', id: request.id,
-      correlationId: request.correlationId, result: { owner: 'managed' },
-    } }));
-    await expect(pending).resolves.toMatchObject({ result: { owner: 'managed' } });
-  });
-
-  test('selects the focused visible page when multiple interactive pages share a scope', async () => {
-    const carrier = createEditorTransportCarrier({ timeoutMs: 100 });
-    const background = socket();
-    const focused = socket();
-    carrier.open(background as never);
-    carrier.open(focused as never);
-    carrier.message(background as never, JSON.stringify({
-      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
-      visibility: 'visible', focused: false,
-    }));
-    carrier.message(focused as never, JSON.stringify({
-      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
-      visibility: 'visible', focused: true,
-    }));
-
-    const pending = carrier.dispatch(request);
-    await Bun.sleep(0);
-    expect(background.sent.some((message) => JSON.parse(message).type === 'editor-transport/request')).toBe(false);
-    expect(focused.sent.some((message) => JSON.parse(message).type === 'editor-transport/request')).toBe(true);
-    carrier.message(focused as never, JSON.stringify({ type: 'editor-transport/response', response: {
-      jsonrpc: '2.0', version: 'editor-transport/v1', id: request.id,
-      correlationId: request.correlationId, result: { owner: 'focused' },
-    } }));
-    await expect(pending).resolves.toMatchObject({ result: { owner: 'focused' } });
+    const health = await carrier.app.request('/api/editor/transport/health');
+    await expect(health.json()).resolves.toMatchObject({
+      carriers: [{ authority: 'interactive', selected: { role: 'interactive' } }],
+    });
   });
 
   test('moves authority when interactive page focus changes without reconnecting', async () => {
@@ -374,7 +342,7 @@ describe('Studio editor typed transport carrier', () => {
     await expect(secondRequest).resolves.toMatchObject({ result: { owner: 'second' } });
   });
 
-  test('prefers an engaged page when separate browser processes both report focus', async () => {
+  test('fails closed when separate browser processes both report focus', async () => {
     const carrier = createEditorTransportCarrier({ timeoutMs: 100 });
     const passive = socket();
     const userPage = socket();
@@ -382,50 +350,112 @@ describe('Studio editor typed transport carrier', () => {
     carrier.open(userPage as never);
     carrier.message(userPage as never, JSON.stringify({
       type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
-      visibility: 'visible', focused: true, engaged: true,
+      visibility: 'visible', focused: true,
     }));
     carrier.message(passive as never, JSON.stringify({
       type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
-      visibility: 'visible', focused: true, engaged: false,
+      visibility: 'visible', focused: true,
     }));
 
-    const pending = carrier.dispatch(request);
-    await Bun.sleep(0);
-    expect(userPage.sent.some((message) => JSON.parse(message).type === 'editor-transport/request')).toBe(true);
+    await expect(carrier.dispatch(request)).resolves.toMatchObject({
+      error: { code: 'editor-carrier-ambiguous', recoveryActions: ['editor.focus', 'request.retry'] },
+    });
+    expect(userPage.sent.some((message) => JSON.parse(message).type === 'editor-transport/request')).toBe(false);
     expect(passive.sent.some((message) => JSON.parse(message).type === 'editor-transport/request')).toBe(false);
-    carrier.message(userPage as never, JSON.stringify({ type: 'editor-transport/response', response: {
-      jsonrpc: '2.0', version: 'editor-transport/v1', id: request.id,
-      correlationId: request.correlationId, result: { owner: 'user-page' },
-    } }));
-    await expect(pending).resolves.toMatchObject({ result: { owner: 'user-page' } });
   });
 
-  test('allows the same JSON-RPC identity to be in flight independently per scope', async () => {
+  test('routes gameplay only to a carrier that explicitly declares the gameplay capability', async () => {
     const carrier = createEditorTransportCarrier({ timeoutMs: 100 });
-    const spin = socket();
-    const puzzle = socket();
-    carrier.open(spin as never);
-    carrier.open(puzzle as never);
-    carrier.message(spin as never, JSON.stringify({ type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube' }));
-    carrier.message(puzzle as never, JSON.stringify({ type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:2048' }));
-    const puzzleRequest = {
-      ...request,
-      scope: 'game:2048',
-      params: { ...request.params, scope: 'game:2048' },
-    };
+    const focusedWithoutViewport = socket();
+    const gameplayReady = socket();
+    carrier.open(focusedWithoutViewport as never);
+    carrier.open(gameplayReady as never);
+    carrier.message(focusedWithoutViewport as never, JSON.stringify({
+      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
+      visibility: 'visible', focused: true, capabilities: { gameplay: false },
+    }));
+    carrier.message(gameplayReady as never, JSON.stringify({
+      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
+      visibility: 'visible', focused: false, capabilities: { gameplay: true },
+    }));
 
-    const spinPending = carrier.dispatch(request);
-    const puzzlePending = carrier.dispatch(puzzleRequest);
+    const gameplayRequest = { ...request, method: 'gameplay', params: { version: 1, operation: 'capture' } };
+    const pending = carrier.dispatch(gameplayRequest);
     await Bun.sleep(0);
-    carrier.message(spin as never, JSON.stringify({ type: 'editor-transport/response', response: {
+    expect(focusedWithoutViewport.sent.some((message) => JSON.parse(message).request?.id === request.id)).toBe(false);
+    expect(gameplayReady.sent.some((message) => JSON.parse(message).request?.id === request.id)).toBe(true);
+    carrier.message(gameplayReady as never, JSON.stringify({ type: 'editor-transport/response', response: {
       jsonrpc: '2.0', version: 'editor-transport/v1', id: request.id,
-      correlationId: request.correlationId, result: { scope: 'game:spin-cube' },
+      correlationId: request.correlationId, result: { owner: 'gameplay-ready' },
     } }));
-    carrier.message(puzzle as never, JSON.stringify({ type: 'editor-transport/response', response: {
+    await expect(pending).resolves.toMatchObject({ result: { owner: 'gameplay-ready' } });
+  });
+
+  test('shares one timeout budget across carrier provisioning and response wait', async () => {
+    const managed = socket();
+    let carrier: ReturnType<typeof createEditorTransportCarrier>;
+    carrier = createEditorTransportCarrier({
+      timeoutMs: 100,
+      ensureScope: async (scope) => {
+        await Bun.sleep(70);
+        carrier.open(managed as never);
+        carrier.message(managed as never, JSON.stringify({
+          type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'managed', scope,
+        }));
+      },
+    });
+    const startedAt = Date.now();
+    await expect(carrier.dispatch(request)).resolves.toMatchObject({ error: { code: 'editor-carrier-timeout' } });
+    expect(Date.now() - startedAt).toBeLessThan(140);
+
+    const hung = createEditorTransportCarrier({
+      maxTimeoutMs: 15,
+      ensureScope: () => new Promise<void>(() => undefined),
+    });
+    await expect(hung.dispatch({ ...request, timeoutMs: 1_000 })).resolves.toMatchObject({
+      error: { code: 'editor-carrier-unavailable' },
+    });
+  });
+
+  test('bounds request timeouts, reports unknown outcome, and isolates late responses', async () => {
+    expect(DEFAULT_EDITOR_TRANSPORT_TIMEOUT_MS).toBe(60_000);
+    expect(MAX_EDITOR_TRANSPORT_TIMEOUT_MS).toBe(300_000);
+    let ensureCalls = 0;
+    const carrier = createEditorTransportCarrier({ timeoutMs: 40, maxTimeoutMs: 15, ensureScope: async () => { ensureCalls += 1; } });
+    const page = socket();
+    carrier.open(page as never);
+    carrier.message(page as never, JSON.stringify({
+      type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: 'game:spin-cube',
+      visibility: 'visible', focused: true, capabilities: { gameplay: true },
+    }));
+    const gameplayRequest = { ...request, timeoutMs: 5, method: 'gameplay', params: { version: 1, operation: 'capture' } };
+    await expect(carrier.dispatch(gameplayRequest))
+      .resolves.toMatchObject({ error: {
+        code: 'editor-carrier-timeout', retryable: false, outcome: 'unknown', operationMayStillBeRunning: true,
+      } });
+    const capped = { ...gameplayRequest, timeoutMs: 1_000, id: 'request-capped', correlationId: 'correlation-capped' };
+    const startedAt = Date.now();
+    await expect(carrier.dispatch(capped)).resolves.toMatchObject({
+      error: { code: 'editor-carrier-timeout', hint: expect.stringContaining('15ms') },
+    });
+    expect(Date.now() - startedAt).toBeLessThan(40);
+
+    const recoveredRequest = { ...gameplayRequest, id: 'request-recovered', correlationId: 'correlation-recovered' };
+    let recoveredSettled = false;
+    const recovered = carrier.dispatch(recoveredRequest).finally(() => { recoveredSettled = true; });
+    await Bun.sleep(0);
+    carrier.message(page as never, JSON.stringify({ type: 'editor-transport/response', response: {
       jsonrpc: '2.0', version: 'editor-transport/v1', id: request.id,
-      correlationId: request.correlationId, result: { scope: 'game:2048' },
+      correlationId: request.correlationId, result: { late: true },
     } }));
-    await expect(spinPending).resolves.toMatchObject({ result: { scope: 'game:spin-cube' } });
-    await expect(puzzlePending).resolves.toMatchObject({ result: { scope: 'game:2048' } });
+    await Bun.sleep(0);
+    expect(recoveredSettled).toBe(false);
+    expect(page.sent.filter((message) => JSON.parse(message).type === 'editor-transport/request')).toHaveLength(3);
+    expect(ensureCalls).toBe(0);
+    carrier.message(page as never, JSON.stringify({ type: 'editor-transport/response', response: {
+      jsonrpc: '2.0', version: 'editor-transport/v1', id: recoveredRequest.id,
+      correlationId: recoveredRequest.correlationId, result: { recovered: true },
+    } }));
+    await expect(recovered).resolves.toMatchObject({ result: { recovered: true } });
   });
 });

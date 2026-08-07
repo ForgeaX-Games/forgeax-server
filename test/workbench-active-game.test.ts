@@ -7,6 +7,7 @@ import { getEventBus, _resetEventBusForTests } from '@forgeax/orchestrator/event
 import { initPathManager, resetPathManager } from '@forgeax/orchestrator/fs/path-manager';
 import { ACTIVE_GAME_CHANGED_TOPIC, setActiveGame } from '../src/game/active-game';
 import { createWorkbenchRouter } from '../src/game/workbench';
+import type { RuntimeScopeClient, RuntimeScopeState } from '../src/game/runtime-scope-client';
 
 let root: string;
 let previousProjectRoot: string | undefined;
@@ -74,5 +75,47 @@ describe('active game resource', () => {
     _resetEventBusForTests();
     expect((await request()).status).toBe(200);
     expect(getEventBus().recent(ACTIVE_GAME_CHANGED_TOPIC, 10)).toEqual([]);
+  });
+
+  test('publishes the sidecar-confirmed binding atomically with the active game', async () => {
+    const state: RuntimeScopeState = {
+      status: 'ready',
+      binding: {
+        schemaVersion: 'runtime-asset-binding-v1',
+        gameId: 'game-b',
+        scopeId: 'studio-game-b',
+        generation: 12,
+        status: 'ready',
+        catalogUrl: '/preview/__pack/scopes/studio-game-b/12/catalog.json',
+        importUrlBase: '/preview/__pack/scopes/studio-game-b/12/import',
+        packageUrlBase: '/preview/__pack/scopes/studio-game-b/12/asset',
+      },
+    };
+    const binds: Array<{ gameId: string; gameDir: string }> = [];
+    const runtimeScope = {
+      snapshot: () => state,
+      bind: async (gameId: string, gameDir: string) => {
+        binds.push({ gameId, gameDir });
+        return state;
+      },
+    } as unknown as RuntimeScopeClient;
+    const runtimeApp = new Hono();
+    runtimeApp.route('/api/workbench', createWorkbenchRouter({
+      runtimeScope,
+      ensureSessionForGame: async () => ({ sid: 'runtime-session', created: true }),
+    }));
+
+    const response = await runtimeApp.request('/api/workbench/active-game', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug: 'game-b' }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      runtime: { binding: { generation: number } };
+    };
+    expect(body.runtime.binding.generation).toBe(12);
+    expect(binds).toEqual([{ gameId: 'game-b', gameDir: resolve(root, '.forgeax/games/game-b') }]);
   });
 });

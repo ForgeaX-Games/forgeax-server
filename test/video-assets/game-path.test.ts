@@ -69,16 +69,53 @@ describe('resolveGameDir', () => {
     }
   });
 
-  test('accepts a valid directory symlink even outside project root', () => {
+  test('rejects a directory symlink outside the canonical games root', () => {
     const external = mkdtempSync(join(tmpdir(), 'video-assets-external-'));
     try {
       const linkPath = resolve(projectRoot, '.forgeax/games', 'linked');
       mkdirSync(resolve(projectRoot, '.forgeax/games'), { recursive: true });
       symlinkSync(external, linkPath);
-      expect(resolveGameDir('linked', () => projectRoot)).toBe(linkPath);
+      expect(() => resolveGameDir('linked', () => projectRoot)).toThrow(KinoApiError);
     } finally {
       rmSync(external, { recursive: true, force: true });
     }
+  });
+
+  test('rejects an alias to the games root itself', () => {
+    const gamesRoot = resolve(projectRoot, '.forgeax/games');
+    mkdirSync(gamesRoot, { recursive: true });
+    symlinkSync(gamesRoot, resolve(gamesRoot, 'root-alias'));
+
+    expect(() => resolveGameDir('root-alias', () => projectRoot)).toThrow(KinoApiError);
+  });
+
+  test('accepts an alias to another direct child game', () => {
+    const target = makeGameDir('real-game');
+    const alias = resolve(projectRoot, '.forgeax/games', 'game-alias');
+    symlinkSync(target, alias);
+
+    expect(resolveGameDir('game-alias', () => projectRoot)).toBe(alias);
+  });
+
+  test('accepts a launcher projection from packages/games', () => {
+    const source = resolve(projectRoot, 'packages/games/shared-game');
+    mkdirSync(source, { recursive: true });
+    const gamesRoot = resolve(projectRoot, '.forgeax/games');
+    mkdirSync(gamesRoot, { recursive: true });
+    const link = resolve(gamesRoot, 'shared-game');
+    symlinkSync(source, link);
+
+    expect(resolveGameDir('shared-game', () => projectRoot)).toBe(link);
+  });
+
+  test('rejects a launcher projection to a nested packages/games directory', () => {
+    const source = resolve(projectRoot, 'packages/games/library/nested-game');
+    mkdirSync(source, { recursive: true });
+    const gamesRoot = resolve(projectRoot, '.forgeax/games');
+    mkdirSync(gamesRoot, { recursive: true });
+    symlinkSync(source, resolve(gamesRoot, 'nested-game'));
+
+    expect(() => resolveGameDir('nested-game', () => projectRoot)).toThrow(KinoApiError);
   });
 
   test('rejects a dangling symlink with 404', () => {
