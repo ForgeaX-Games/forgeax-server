@@ -25,10 +25,7 @@ describe('editorTransportHostTools', () => {
       dispatch: async (request) => { requests.push(request); return { ok: true }; },
     });
 
-    expect(tools[0]!.inputSchema).toMatchObject({
-      properties: { timeoutMs: { type: 'integer', minimum: 1, maximum: 300_000 } },
-    });
-    await expect(tools[0]!.run!({ method: 'discover', timeoutMs: 120_000 }, ctx)).resolves.toEqual({ ok: true });
+    await expect(tools[0]!.run!({ method: 'discover' }, ctx)).resolves.toEqual({ ok: true });
     expect(requests).toEqual([{
       jsonrpc: '2.0',
       version: 'editor-transport/v1',
@@ -36,7 +33,6 @@ describe('editorTransportHostTools', () => {
       correlationId: 'id-2',
       scope: 'game:spin-cube',
       method: 'discover',
-      timeoutMs: 120_000,
       params: {
         scope: 'game:spin-cube',
         sessionId: 'host:forge',

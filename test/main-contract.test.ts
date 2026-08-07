@@ -16,13 +16,3 @@ test('main composes the runtime carrier without replacing the existing preview p
   expect(mainSource).not.toContain('runtimeCarrierSupervisor.capture');
   expect(mainSource).not.toContain('CarrierGameplayAdapter');
 });
-
-test('main mounts the shared Workbench Host before creating the app', () => {
-  expect(mainSource).toContain("import { getForgeaxWorkbenchHost } from './workbench/runtime';");
-  const hostCreation = mainSource.indexOf('await getForgeaxWorkbenchHost({');
-  const appCreation = mainSource.indexOf('await createForgeaxApp({');
-  expect(hostCreation).toBeGreaterThanOrEqual(0);
-  expect(appCreation).toBeGreaterThan(hostCreation);
-  expect(mainSource.slice(appCreation, mainSource.indexOf('\n});', appCreation)))
-    .toContain('workbenchHost,');
-});

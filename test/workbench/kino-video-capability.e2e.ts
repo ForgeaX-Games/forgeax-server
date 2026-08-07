@@ -21,12 +21,10 @@ import type {
 import type { WorkbenchHost } from '@forgeax/workbench-host/node';
 import {
   createForgeaxWorkbenchHostGetter,
-  FORGEAX_KINO_VIDEO_CAPABILITY,
   resolveInstalledWorkbenchPackage,
   type ForgeaxWorkbenchHostDependencies,
 } from '../../src/workbench/runtime';
 import { createRemoteKinoBinding } from '../../src/workbench/remote-kino-binding';
-import { providerExtension as arrivalKinoProvider } from '@forgeax-extension/kino-video-provider';
 import { MockKinoServer } from './mock-kino-server';
 
 const roots: string[] = [];
@@ -114,12 +112,6 @@ class InMemoryWorkspace implements WorkspaceAdapter {
       readonly versions: {
         ensureRepository(): Promise<void>;
         createVersion(message: string): Promise<GameVersion>;
-        createCheckpoint(message: string): Promise<{
-          commitHash: string;
-          message: string;
-          createdAt: string;
-          created: boolean;
-        }>;
         currentVersion(): Promise<CurrentVersion | null>;
         listVersions(): Promise<GameVersion[]>;
         readFileAtVersion(tag: string, relativePath: string): Promise<Uint8Array | null>;
@@ -170,9 +162,6 @@ class InMemoryWorkspace implements WorkspaceAdapter {
       async createVersion(message: string): Promise<GameVersion> {
         return { tag: `v-${message}`, commitHash: 'mock', message, createdAt: new Date().toISOString() };
       },
-      async createCheckpoint(message: string) {
-        return { commitHash: 'mock-checkpoint', message, createdAt: new Date().toISOString(), created: true };
-      },
       async currentVersion(): Promise<CurrentVersion | null> { return null; },
       async listVersions(): Promise<GameVersion[]> { return []; },
       async readFileAtVersion(_tag: string, _path: string): Promise<Uint8Array | null> { return null; },
@@ -191,9 +180,6 @@ const mockVersioning: VersionAdapter = {
   async ensureRepository() {},
   async createVersion(gameRoot, message) {
     return { tag: `v-${message}`, commitHash: 'mock', message, createdAt: new Date().toISOString() };
-  },
-  async createCheckpoint(_gameRoot, message) {
-    return { commitHash: 'mock-checkpoint', message, createdAt: new Date().toISOString(), created: true };
   },
   async currentVersion(_gameRoot): Promise<CurrentVersion | null> { return null; },
   async listVersions(_gameRoot): Promise<GameVersion[]> { return []; },
@@ -223,8 +209,6 @@ async function hostFor(
         media,
         models: {} as never,
         serviceBindings: [binding],
-        providerExtensions: [arrivalKinoProvider],
-        capabilitySelections: FORGEAX_KINO_VIDEO_CAPABILITY,
         generation: { pollIntervalMs: 0, foregroundTimeoutMs: 1_000 },
       };
     },
@@ -243,7 +227,7 @@ describe('ForgeaX Kino workbench capability acceptance', () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
 
-  test('catalogs wb-game-video and runs its Kino capability through the shared Host', async () => {
+  test('catalogs both extensions, runs the Asset Canvas tool through Host, recovers receipts, and exposes the media asset to wb-game-video', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-kino-e2e-'));
     roots.push(root);
     const media = new InMemoryMedia();
@@ -263,8 +247,53 @@ describe('ForgeaX Kino workbench capability acceptance', () => {
     });
     const host = await hostFor(root, media, workspace, binding);
     const catalog = await host.catalog(GAME_ID) as readonly { extensionId: string }[];
-    expect(catalog.filter((entry) => entry.extensionId === '@forgeax-extension/wb-game-video')).toHaveLength(1);
-    expect(catalog.filter((entry) => entry.extensionId === '@forgeax-extension/wb-asset-canvas')).toHaveLength(0);
+    expect(catalog.filter((entry) => entry.extensionId === '@forgeax/wb-game-video')).toHaveLength(1);
+    expect(catalog.filter((entry) => entry.extensionId === '@forgeax-extension/wb-asset-canvas')).toHaveLength(1);
+
+    const startedRaw = await host.callTool({
+      caller: 'ai',
+      toolId: 'asset-canvas:start-video-generation',
+      gameId: GAME_ID,
+      args: {
+        prompt: 'A paper boat crossing a moonlit canal, no text',
+        durationSeconds: 5,
+        idempotencyKey: 'canvas-v1',
+      },
+    });
+    const started = toolResult<{ job: { jobId: string; status: string } }>(startedRaw);
+    expect(started.job.jobId).toMatch(/^gen_[a-f0-9]{64}$/u);
+    expect(['created', 'submitting', 'polling', 'succeeded']).toContain(started.job.status);
+
+    // Recreate the complete product Host while the first job is active. The
+    // receipt is read from the same game workspace; no second POST occurs.
+    const recreatedBinding = await createRemoteKinoBinding({
+      projectRoot: root,
+      installationId: 'installation-a',
+      env: {
+        FORGEAX_KINO_BASE_URL: kino.origin,
+        FORGEAX_KINO_GATEWAY_TOKEN: kino.gatewayToken,
+        FORGEAX_KINO_NAMESPACE_SECRET: Buffer.alloc(32, 7).toString('base64url'),
+        FORGEAX_KINO_OUTPUT_ORIGINS: kino.origin,
+      },
+      fetch: kino.fetch.bind(kino) as typeof fetch,
+    });
+    const recreatedHost = await hostFor(root, media, workspace, recreatedBinding);
+    let canvasJob: { jobId: string; status: string; assets?: readonly MediaAsset[] } = started.job;
+    for (let attempt = 0; attempt < 50 && canvasJob.status !== 'succeeded'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const result = toolResult<{ job: typeof canvasJob }>(await recreatedHost.callTool({
+        caller: 'ui',
+        toolId: 'asset-canvas:get-video-generation',
+        gameId: GAME_ID,
+        args: { jobId: started.job.jobId },
+      }));
+      canvasJob = result.job;
+    }
+    expect(canvasJob.status).toBe('succeeded');
+    const canvasAsset = canvasJob.assets?.[0];
+    expect(canvasAsset?.id).toMatch(/^host-[a-f0-9]{24}$/u);
+    expect(canvasAsset?.type).toBe('video');
+    expect(canvasAsset?.contentType).toBe('video/mp4');
 
     // Seed two Host media references in the wb-game-video registry. The second
     // extension receives them through its own tool contract, while the actual
@@ -310,7 +339,7 @@ describe('ForgeaX Kino workbench capability acceptance', () => {
         },
       ],
     });
-    const generated = toolResult<{ asset: MediaAsset & { kind?: string; mime?: string; meta?: Record<string, unknown> } }>(await host.callTool({
+    const generated = toolResult<{ asset: MediaAsset & { kind?: string; mime?: string; meta?: Record<string, unknown> } }>(await recreatedHost.callTool({
       caller: 'ai',
       toolId: 'wb-game-video:generate-video',
       gameId: GAME_ID,
@@ -330,10 +359,11 @@ describe('ForgeaX Kino workbench capability acceptance', () => {
     expect(gameVideoHostAssetId).toMatch(/^host-[a-f0-9]{24}$/u);
     expect(gameVideoAsset.kind).toBe('video');
     expect(gameVideoAsset.mime).toBe('video/mp4');
+    expect(gameVideoHostAssetId).not.toBe(canvasAsset!.id);
 
     // The generated host media is now visible through wb-game-video's own
     // shared registry, proving the extension-to-extension consumption path.
-    const listed = toolResult<{ assets: readonly { id: string; kind: string }[] }>(await host.callTool({
+    const listed = toolResult<{ assets: readonly { id: string; kind: string }[] }>(await recreatedHost.callTool({
       caller: 'ai',
       toolId: 'wb-game-video:list-assets',
       gameId: GAME_ID,
@@ -342,7 +372,7 @@ describe('ForgeaX Kino workbench capability acceptance', () => {
     expect(listed.assets.some((asset) => asset.id === gameVideoAsset.id)).toBe(true);
 
     const generationRequests = kino.generationRequests;
-    expect(generationRequests).toHaveLength(1);
+    expect(generationRequests).toHaveLength(2);
     for (const request of generationRequests) {
       const payload = request.body as { game_id?: unknown };
       expect(payload.game_id).toMatch(/^fx_[a-f0-9]{64}$/u);
@@ -353,8 +383,11 @@ describe('ForgeaX Kino workbench capability acceptance', () => {
     expect(new Set(generationRequests.map((request) => (request.body as { game_id: string }).game_id)).size).toBe(1);
 
     kino.removeOutputUrls();
+    const persistedCanvas = await media.read(GAME_ID, canvasAsset!.id);
+    expect(persistedCanvas?.contentType).toBe('video/mp4');
     const persistedGameVideo = await media.read(GAME_ID, gameVideoHostAssetId);
     expect(persistedGameVideo?.contentType).toBe('video/mp4');
+    expect(persistedCanvas?.bytes.byteLength).toBeGreaterThan(0);
     expect(persistedGameVideo?.bytes.byteLength).toBeGreaterThan(0);
 
     const otherBinding = await createRemoteKinoBinding({
@@ -369,20 +402,17 @@ describe('ForgeaX Kino workbench capability acceptance', () => {
       fetch: kino.fetch.bind(kino) as typeof fetch,
     });
     const otherHost = await hostFor(root, media, workspace, otherBinding);
-    const otherGenerated = toolResult<{ asset: MediaAsset }>(await otherHost.callTool({
+    const otherStarted = toolResult<{ job: { jobId: string; status: string } }>(await otherHost.callTool({
       caller: 'ai',
-      toolId: 'wb-game-video:generate-video',
+      toolId: 'asset-canvas:start-video-generation',
       gameId: GAME_ID,
       args: {
-        sceneNodeId: 'node-2',
-        nodeName: 'Second Moonlit Canal',
-        seedancePrompt: 'A second isolated paper boat crossing a moonlit canal, no text',
+        prompt: 'A second isolated paper boat crossing a moonlit canal, no text',
         durationSeconds: 5,
-        characterRefIds: ['character-ref'],
-        sceneRefIds: ['scene-ref'],
+        idempotencyKey: 'other-installation-v1',
       },
     }));
-    expect(otherGenerated.asset.id).toMatch(/^a-vid-[a-z0-9-]+$/u);
+    expect(otherStarted.job.jobId).toMatch(/^gen_[a-f0-9]{64}$/u);
     const scopes = kino.generationRequests.map((request) => (request.body as { game_id: string }).game_id);
     expect(new Set(scopes).size).toBe(2);
   });
