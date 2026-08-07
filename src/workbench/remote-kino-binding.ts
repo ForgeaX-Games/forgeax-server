@@ -132,6 +132,21 @@ export async function createRemoteKinoBinding(
   });
 }
 
+/**
+ * Keeps the Workbench Host available when Kino is intentionally not configured.
+ * A completely absent configuration disables only the video-generation
+ * capability; a partial configuration remains a startup error so credentials
+ * and routing can never drift into a half-enabled state.
+ */
+export async function createRemoteKinoBindingIfConfigured(
+  options: RemoteKinoBindingOptions,
+): Promise<ServiceBinding | undefined> {
+  const env = environment(options);
+  const configured = REQUIRED_ENVIRONMENT.filter((name) => Boolean(env[name]?.trim()));
+  if (configured.length === 0) return undefined;
+  return createRemoteKinoBinding(options);
+}
+
 export function forgeaxKinoScope(
   namespaceSecret: Uint8Array,
   installationId: string,

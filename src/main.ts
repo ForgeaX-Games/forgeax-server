@@ -39,7 +39,8 @@ import { mp, interfaceDist as resolveInterfaceDist } from '@forgeax/platform-io'
 import { FsWatcher } from '@forgeax/orchestrator/api/lib/watcher';
 import { WsHub, createWsHandler, type WsClientData } from '@forgeax/orchestrator/ws';
 import { getSessionManager } from '@forgeax/orchestrator/core/session-manager';
-import { getActiveGame } from './game/active-game';
+import { getActiveGame, setActiveGame } from './game/active-game';
+import { resolveInstanceGame } from './game/instance-game';
 import { GameSessionLayout } from './studio-session-layout';
 import { ensureSessionWithBootstrap } from '@forgeax/orchestrator/api/lib/session-create';
 // 游戏业务路由(阶段A:从 @forgeax/orchestrator 搬入产品壳)—— 经 ctx.routers 注入编排层。
@@ -83,6 +84,8 @@ import { mountRuntimeCarrierApi } from './runtime-carrier/api';
 import { createRuntimeCarrierSupervisor } from './runtime-carrier/supervisor';
 import { createPlaywrightCarrierHost } from './runtime-carrier/playwright-host';
 import { EDITOR_TRANSPORT_WS_SID, createEditorTransportCarrier } from './game/editor-transport-carrier';
+import { RuntimeScopeClient } from './game/runtime-scope-client';
+import { getForgeaxWorkbenchHost } from './workbench/runtime';
 
 // ──────────────────────────────────────────────────────────────────────────
 // FaultBoundary — top-level process-wide exception backstop (perf-analysis-2
@@ -163,6 +166,7 @@ const WATCH_FS = process.env.FORGEAX_NO_WATCH !== '1';
 const hub = new WsHub();
 const watcher = new FsWatcher();
 const instanceRoot = defaultProjectRoot();
+const runtimeScopeClient = new RuntimeScopeClient();
 
 // Realign the play-engine `.forgeax` junction to this server's private instance
 // root on every (re)start. Best-effort: packaged mode may not contain the
@@ -233,6 +237,16 @@ if (process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core') {
 // WS、Bun.serve、文件 watcher。这是"产品层初始化并注入编排层"的落点;换产品 = 换这层注入。
 const shimEnv = process.env as Record<string, string | undefined>;
 const videoAssets = createVideoAssetRuntime({ getProjectRoot: defaultProjectRoot });
+const ceApiRouter = createCeApiShimRouter({
+  projectRoot: instanceRoot,
+  env: shimEnv,
+  uiAssetCleanup: { inspectUiAssetCanvas, normalizeStandaloneUiAsset },
+});
+const workbenchHost = await getForgeaxWorkbenchHost({
+  projectRoot: instanceRoot,
+  mediaService: videoAssets.service,
+  modelRouter: ceApiRouter,
+});
 const runtimeCarrierSupervisor = createRuntimeCarrierSupervisor({
   host: createPlaywrightCarrierHost({
     timeoutMs: Number(process.env.FORGEAX_CARRIER_TIMEOUT_MS) || undefined,
@@ -266,6 +280,7 @@ const editorTransportCarrier = createEditorTransportCarrier({
 const { app, npcRuntime } = await createForgeaxApp({
   instanceRoot,
   version: VERSION,
+  workbenchHost,
   // system-prompt charter/environment/note 由产品壳提供(阶段A §3.2)——编排层经
   // 注入的 composer 取,cli 自身不再硬编码游戏宪章。ports 取自 env(与原 cli 顶层常量一致)。
   systemPromptComposer: new GameSystemPromptComposer({
@@ -285,6 +300,7 @@ const { app, npcRuntime } = await createForgeaxApp({
       path: '/api/workbench',
       router: createWorkbenchRouter({
         cloneTemplateAssets: (input) => videoAssets.service.cloneTemplateAssets(input),
+        runtimeScope: runtimeScopeClient,
         ensureSessionForGame: async (slug) => {
           const session = await ensureSessionWithBootstrap({ scope: slug, autoStart: true });
           return { sid: session.sid, created: session.created };
@@ -299,12 +315,8 @@ const { app, npcRuntime } = await createForgeaxApp({
     },
     {
       path: '/__ce-api__',
-      router: createCeApiShimRouter({
-        projectRoot: instanceRoot,
-        env: shimEnv,
-        // marketplace UI 资产清洗能力直接交给业务 router(不再经 cli ProductContext 中转)。
-        uiAssetCleanup: { inspectUiAssetCanvas, normalizeStandaloneUiAsset },
-      }),
+      // marketplace UI 资产清洗能力直接交给业务 router(不再经 cli ProductContext 中转)。
+      router: ceApiRouter,
     },
   ],
   // Session 状态树落**绑定 game 下** <instanceRoot>/.forgeax/games/<slug>/sessions/<sid>/
@@ -337,6 +349,10 @@ await activateServerModules({
   services: {
     videoAssets: videoAssets.providerControl,
     capabilities: getExtensionCapabilityControl(),
+    games: {
+      resolveGameId: (slug) =>
+        resolveInstanceGame(defaultProjectRoot(), slug)?.gameId ?? null,
+    },
   },
 });
 
@@ -670,7 +686,7 @@ if (SERVE_SPA) {
   // it's included in RESERVED_PREFIX so this SPA fallback never swallows it
   // (which would return index.html for the preview iframe and recurse the whole
   // Studio SPA — Studio-in-Studio).
-  const RESERVED_PREFIX = /^\/(api|extensions|__ce-api__|preview|ws)(\/|$)/;
+  const RESERVED_PREFIX = /^\/(api|extensions|__ce-api__|__workbench__|preview|ws)(\/|$)/;
   const staticAssets = serveStatic({ root: interfaceDist });
   const spaIndex = serveStatic({ path: 'index.html', root: interfaceDist });
   // Static assets (hashed JS/CSS, /brand/*, favicon, etc.).
@@ -1060,6 +1076,23 @@ serverReady = true;
 
 console.log(`[forgeax-server] listening on http://${server.hostname}:${server.port}`);
 console.log(`[forgeax-server] websocket on ws://${server.hostname}:${server.port}/ws`);
+
+// The sidecar starts after the server in the local supervisor. Rebind from the
+// server-owned active-game selection once it becomes reachable; the client
+// retries the exact command and publishes a new generation to subscribed UI
+// clients. No startup-time parent games directory is passed to the engine.
+{
+  const activeSlug = getActiveGame(instanceRoot);
+  const game = activeSlug === undefined ? undefined : resolveInstanceGame(instanceRoot, activeSlug);
+  if (game !== undefined) {
+    void runtimeScopeClient.bind(game.gameId, game.gameDir).then((runtime) => {
+      setActiveGame(instanceRoot, game.gameId, runtime, { forceEvent: true });
+      if (runtime.status === 'unavailable') {
+        console.warn(`[forgeax-server] active game runtime unavailable: ${runtime.error ?? 'unknown error'}`);
+      }
+    });
+  }
+}
 
 // R3-15:存在 user-imported soul-pack 但内核/sidecar 被关(逃生回旧路径)→ loud warn
 // (不可信 pack 缺凭据保险箱/进程监督)。内核+sidecar 现默认开,仅当被显式关掉才告警。
