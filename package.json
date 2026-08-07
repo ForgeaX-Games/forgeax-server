@@ -29,20 +29,14 @@
     "@forgeax/cli": "workspace:*",
     "@forgeax/orchestrator": "workspace:*",
     "@forgeax/platform-io": "workspace:*",
-    "@forgeax-extension/kino-video-provider": "0.2.0",
-    "@forgeax-extension/wb-asset-canvas": "0.2.0",
-    "@forgeax/wb-game-video": "0.2.1",
-    "@forgeax/workbench-host": "0.2.0",
+    "@forgeax-extension/kino-video-provider": "0.2.1",
+    "@forgeax-extension/wb-asset-canvas": "0.2.1",
+    "@forgeax-extension/wb-game-video": "0.3.2",
+    "@forgeax/workbench-host": "0.2.6",
     "cos-nodejs-sdk-v5": "^3.0.0",
     "hono": "^4.6.0",
     "playwright": "^1.61.1",
     "sharp": "^0.34.5"
-  },
-  "overrides": {
-    "@forgeax-extension/kino-video-provider": "file:vendor/forgeax-extension-kino-video-provider-0.2.0.tgz",
-    "@forgeax-extension/wb-asset-canvas": "file:vendor/forgeax-extension-wb-asset-canvas-0.2.0.tgz",
-    "@forgeax/wb-game-video": "file:vendor/forgeax-wb-game-video-0.2.1.tgz",
-    "@forgeax/workbench-host": "file:vendor/forgeax-workbench-host-0.2.0.tgz"
   },
   "devDependencies": {
     "@types/bun": "^1.3.13",

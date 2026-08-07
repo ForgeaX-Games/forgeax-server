@@ -17,6 +17,8 @@ import { friendlyPath } from '@forgeax/platform-io';
 import { addKnownGame } from '@forgeax/platform-io';
 import { getActiveGame, setActiveGame, clearActiveGameIf } from './active-game';
 import { GAME_SLUG_RE } from './game-slug';
+import { resolveInstanceGame } from './instance-game';
+import type { RuntimeScopeClient } from './runtime-scope-client';
 import { findMarketplaceManifest } from '@forgeax/orchestrator/api/lib/marketplace-manifest';
 import { computeAgentNaming, pickPersonName, type AgentNaming } from '@forgeax/orchestrator/api/lib/agent-naming';
 import { getPathManager } from '@forgeax/orchestrator/fs/path-manager';
@@ -152,20 +154,34 @@ const GUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
  *  pointed them at phantom GUIDs → asset-not-found / `/__import` 404 → blank
  *  scene. */
 async function regenerateGameGuids(gameDir: string): Promise<void> {
-  // Pass 1 — collect the GUIDs this game DEFINES (asset.guid in its packs) and
-  // assign each a fresh unique identity.
+  // Pass 1 — collect the GUIDs this game DEFINES and assign each a fresh unique
+  // identity. Definitions live in TWO shapes: internal text packs
+  // (pack.json assets[].guid) and external asset packages
+  // (.meta.json subAssets[].guid — e.g. the template's ui/*.meta.json).
+  // Seeding only pack.json left meta-defined GUIDs shared with the template,
+  // and the second scaffolded game collided in the global catalog
+  // (pack-guid-collision → catalog scan fails for EVERY game).
   const guidMap = new Map<string, string>();
+  const seed = (guid: unknown): void => {
+    if (typeof guid === 'string' && !guidMap.has(guid)) {
+      guidMap.set(guid, crypto.randomUUID());
+    }
+  };
   const packGlob = new Glob('**/*.pack.json');
   for await (const fp of packGlob.scan({ cwd: gameDir, absolute: true, dot: true })) {
     if (fp.includes('node_modules')) continue;
     try {
       const pack = JSON.parse(await readFile(fp, 'utf-8')) as { assets?: { guid?: string }[] };
-      for (const asset of pack.assets ?? []) {
-        if (typeof asset.guid === 'string' && !guidMap.has(asset.guid)) {
-          guidMap.set(asset.guid, crypto.randomUUID());
-        }
-      }
+      for (const asset of pack.assets ?? []) seed(asset.guid);
     } catch { /* skip malformed pack files */ }
+  }
+  const metaGlob = new Glob('**/*.meta.json');
+  for await (const fp of metaGlob.scan({ cwd: gameDir, absolute: true, dot: true })) {
+    if (fp.includes('node_modules')) continue;
+    try {
+      const meta = JSON.parse(await readFile(fp, 'utf-8')) as { subAssets?: { guid?: string }[] };
+      for (const sub of meta.subAssets ?? []) seed(sub.guid);
+    } catch { /* skip malformed meta files */ }
   }
   if (guidMap.size === 0) return;
   // Pass 2 — rewrite every reference to a locally-defined GUID across all game
@@ -361,6 +377,7 @@ export interface WorkbenchRouterOptions {
     targetGameId: string;
   }) => Promise<void>;
   ensureSessionForGame?: (slug: string) => Promise<{ sid: string; created: boolean }>;
+  runtimeScope?: RuntimeScopeClient;
 }
 
 export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hono {
@@ -369,7 +386,12 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
   // ── Active game — one authoritative read/write contract ──
   router.get('/active-game', (c) => {
     const projectRoot = defaultProjectRoot();
-    return c.json({ activeSlug: getActiveGame(projectRoot) ?? null });
+    const activeSlug = getActiveGame(projectRoot) ?? null;
+    const runtime = options.runtimeScope?.snapshot();
+    return c.json({
+      activeSlug,
+      ...(runtime === undefined ? {} : { runtime }),
+    });
   });
 
   router.put('/active-game', async (c) => {
@@ -378,19 +400,29 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
       return c.json({ error: 'invalid slug' }, 400);
     }
     const projectRoot = defaultProjectRoot();
-    const gameDir = resolve(projectRoot, '.forgeax/games', body!.slug as string);
-    if (!existsSync(gameDir)) {
+    const game = resolveInstanceGame(projectRoot, body!.slug as string);
+    if (game === undefined) {
       return c.json({ error: `.forgeax/games/${body!.slug as string} not found`, slug: body!.slug }, 404);
     }
     try {
       // Prepare dependent state before publishing the selection event. Pages
       // can then react as projections instead of racing to create sessions.
       const session = await options.ensureSessionForGame?.(body!.slug as string);
-      return c.json({
-        ok: true,
-        ...setActiveGame(projectRoot, body!.slug as string),
-        ...(session ? { session } : {}),
+      const runtime = options.runtimeScope === undefined
+        ? undefined
+        : await options.runtimeScope.bind(game.gameId, game.gameDir);
+      const selection = setActiveGame(projectRoot, game.gameId, runtime, {
+        forceEvent: runtime?.status === 'unavailable',
       });
+      if (runtime?.status === 'unavailable') {
+        return c.json({
+          ok: false,
+          error: runtime.error ?? 'active game runtime unavailable',
+          ...selection,
+          ...(session ? { session } : {}),
+        }, 503);
+      }
+      return c.json({ ok: true, ...selection, ...(session ? { session } : {}) });
     } catch (e) {
       return c.json({ error: `failed to prepare game session: ${(e as Error).message}` }, 500);
     }

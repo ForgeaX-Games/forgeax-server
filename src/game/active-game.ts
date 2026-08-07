@@ -22,11 +22,14 @@ import { dirname, resolve } from 'node:path';
 import { getEventBus } from '@forgeax/orchestrator/events/bus';
 import { detectActiveSlug } from './active-slug';
 import { isGameSlug } from './game-slug';
+import { resolveInstanceGame } from './instance-game';
+import type { RuntimeScopeState } from './runtime-scope-client';
 
 export const ACTIVE_GAME_CHANGED_TOPIC = 'workbench.active-game.changed';
 
 export interface ActiveGameSelection {
   activeSlug: string | null;
+  runtime?: RuntimeScopeState;
 }
 
 interface ActiveGameStore {
@@ -39,7 +42,7 @@ export function activeGameFile(root: string): string {
 }
 
 function gameDirExists(root: string, slug: string): boolean {
-  return existsSync(resolve(root, '.forgeax/games', slug));
+  return resolveInstanceGame(root, slug) !== undefined;
 }
 
 /** Read the explicitly-recorded active game slug, or `undefined` if none. */
@@ -80,13 +83,20 @@ export function getActiveGame(root: string): string | undefined {
  * Record the explicit active-game choice and publish its derived notification.
  * Invalid or missing games fail at the authority boundary.
  */
-export function setActiveGame(root: string, slug: string): ActiveGameSelection {
+export function setActiveGame(
+  root: string,
+  slug: string,
+  runtime?: RuntimeScopeState,
+  options: { forceEvent?: boolean } = {},
+): ActiveGameSelection {
   if (!isGameSlug(slug)) throw new Error(`invalid game slug: ${slug}`);
   if (!gameDirExists(root, slug)) throw new Error(`game not found: ${slug}`);
   const previous = getActiveGame(root) ?? null;
   writeSelection(root, slug);
-  const selection = { activeSlug: slug } as const;
-  if (previous !== slug) getEventBus().emit(ACTIVE_GAME_CHANGED_TOPIC, selection);
+  const selection: ActiveGameSelection = runtime === undefined
+    ? { activeSlug: slug }
+    : { activeSlug: slug, runtime };
+  if (previous !== slug || options.forceEvent === true) getEventBus().emit(ACTIVE_GAME_CHANGED_TOPIC, selection);
   return selection;
 }
 
