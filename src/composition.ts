@@ -28,11 +28,17 @@ export type {
   ExtensionCapabilityProvider,
 } from '@forgeax/types';
 
+export interface GameScopeControl {
+  /** Return a validated instance-scoped game id, or null when it is unsafe/missing. */
+  resolveGameId(slug: string): string | null;
+}
+
 export interface ServerCompositionContext {
   app: Hono;
   services: {
     videoAssets: VideoAssetProviderControl;
     capabilities: ExtensionCapabilityControl;
+    games: GameScopeControl;
   };
 }
 
