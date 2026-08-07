@@ -26,7 +26,7 @@ import { createForgeaxModelGateway } from './model-gateway-adapter';
 import { createRemoteKinoBindingIfConfigured } from './remote-kino-binding';
 
 export const WORKBENCH_EXTENSIONS = [
-  { id: '@forgeax-extension/wb-game-video', version: '0.3.2' },
+  { id: '@forgeax-extension/wb-game-video', version: '0.6.3' },
 ] as const;
 
 export const FORGEAX_KINO_VIDEO_CAPABILITY = [{

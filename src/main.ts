@@ -308,7 +308,7 @@ const { app, npcRuntime } = await createForgeaxApp({
       }),
     },
     { path: '/api/wb/character', router: createCharacterRouter({ projectRoot: instanceRoot, env: shimEnv }) },
-    { path: '/api/wb/bgm', router: createBgmRouter() },
+    { path: '/api/wb/bgm', router: createBgmRouter({ projectRoot: instanceRoot }) },
     {
       path: '/api/generative-visuals',
       router: createGenerativeVisualsRouter({ accessPolicy: generativeVisualAccessPolicy }),

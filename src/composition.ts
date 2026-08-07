@@ -22,6 +22,11 @@ export type {
   VideoAssetStatus,
 } from './video-assets/contracts';
 export type {
+  KinoImageUploadSts,
+  KinoImportProjectPage,
+  KinoResourceType,
+} from './video-assets/kino-api';
+export type {
   ExtensionCapabilityControl,
   ExtensionCapabilityInvocationContext,
   ExtensionCapabilityInvocationOptions,

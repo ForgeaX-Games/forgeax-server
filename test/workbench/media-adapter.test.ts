@@ -124,7 +124,7 @@ describe('createForgeaxMediaCapability', () => {
       contentType: 'video/mp4',
       sizeBytes: 3,
       metadata: { bytes: 3, source: 'fixture' },
-      url: '/__workbench__/v1/extension/rt-video/media/assets/resource-1?gameId=game-1',
+      url: '/__workbench__/v1/extension/rt-video/media/resources/resource-1/content?gameId=game-1',
     });
     expect(await media.read('game-1', 'resource-1')).toEqual({
       contentType: 'video/mp4',
@@ -147,6 +147,68 @@ describe('createForgeaxMediaCapability', () => {
     });
     await media.delete('game-1', 'resource-1');
     expect(deleted).toBe('resource-1');
+  });
+
+  test('executes the active provider direct-upload instruction before creating a resource', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-media-adapter-'));
+    roots.push(root);
+    await mkdir(join(root, '.forgeax', 'games', 'game-1'), { recursive: true });
+    let uploaded = new Uint8Array();
+    let uploadRequest: { url: string; method?: string; contentType?: string } | undefined;
+    let created = false;
+    const service = {
+      getProviderUploadTransport: () => 'direct' as const,
+      prepareUpload: async () => ({
+        upload: {
+          method: 'PUT' as const,
+          url: 'https://cos.example.test/signed-upload',
+          headers: { 'content-type': 'video/mp4', 'x-provider-header': 'required' },
+          expires_at: new Date().toISOString(),
+        },
+        object_url: 'http://127.0.0.1/api/v1/kino/uploads/token',
+        upload_token: 'token',
+      }),
+      receiveUpload: async () => { throw new Error('receiver transport must not be used'); },
+      createResource: async (input: { game_id: string }) => {
+        created = true;
+        return {
+          resource_id: 'resource-1',
+          game_id: input.game_id,
+          media_type: 'video' as const,
+          name: 'clip.mp4',
+          url: 'https://media.example.test/clip.mp4',
+          created_at: 1,
+          updated_at: 1,
+        };
+      },
+    } as unknown as ForgeaxVideoAssetService;
+    const media = createForgeaxMediaCapability(service, {
+      runtimeId: 'rt-video',
+      projectRoot: root,
+      fetch: async (input, init) => {
+        uploadRequest = {
+          url: String(input),
+          method: init?.method,
+          contentType: new Headers(init?.headers).get('content-type') ?? undefined,
+        };
+        uploaded = new Uint8Array(await new Response(init?.body).arrayBuffer());
+        return new Response(null, { status: 200 });
+      },
+    });
+
+    await media.put('game-1', {
+      filename: 'clip.mp4',
+      contentType: 'video/mp4',
+      bytes: new Uint8Array([4, 5, 6]),
+    });
+
+    expect(uploadRequest).toEqual({
+      url: 'https://cos.example.test/signed-upload',
+      method: 'PUT',
+      contentType: 'video/mp4',
+    });
+    expect(uploaded).toEqual(new Uint8Array([4, 5, 6]));
+    expect(created).toBeTrue();
   });
 
   test('returns an exact idempotent retry and rejects a conflicting payload', async () => {

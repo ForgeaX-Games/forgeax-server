@@ -51,6 +51,42 @@ export interface KinoResourcePage {
   page_size: number;
 }
 
+export interface KinoImportProjectDTO {
+  game_id: string;
+  game_name?: string;
+  name?: string;
+  cover_url?: string;
+  resource_count?: number;
+  asset_count?: number;
+  updated_at?: number;
+}
+
+export interface KinoImportProjectPage {
+  items: KinoImportProjectDTO[];
+  total: number;
+}
+
+/**
+ * Short-lived credentials returned by Kino's documented
+ * `POST /api/v1/kino/image-assets/upload` endpoint. The browser uses these
+ * only for a direct COS PUT; they are never persisted by Workbench.
+ */
+export interface KinoImageUploadSts {
+  tmp_secret_id: string;
+  tmp_secret_key: string;
+  session_token: string;
+  expiration: string;
+  bucket: string;
+  bucket_url: string;
+  region: string;
+  prefix: string;
+  object_key: string;
+  allowed_extensions: string[];
+  allowed_content_types: string[];
+  max_file_size_bytes: number;
+  required_headers: Record<string, string>;
+}
+
 export interface CreateKinoResourceInput {
   game_id: string;
   media_type: KinoMediaType;

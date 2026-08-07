@@ -33,14 +33,20 @@ export type ForgeaxVideoAssetService = Pick<
   | 'createResource'
   | 'updateResource'
   | 'deleteResource'
-> & Partial<Pick<VideoAssetService, 'getProviderCapabilities'>>;
+> & Partial<Pick<
+  VideoAssetService,
+  'getProviderCapabilities' | 'getProviderUploadTransport'
+>>;
 
 export interface ForgeaxMediaCapabilityOptions {
   readonly runtimeId: string;
   readonly projectRoot: string;
   readonly origin?: string;
   readonly identity?: (gameId: string) => string;
-  readonly fetch?: typeof fetch;
+  readonly fetch?: (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => Promise<Response>;
 }
 
 function requestContext(
@@ -65,7 +71,7 @@ function contentType(resource: KinoResourceDTO): string {
 }
 
 function publicUrl(gameId: string, runtimeId: string, assetId: string): string {
-  return `/__workbench__/v1/extension/${encodeURIComponent(runtimeId)}/media/assets/${encodeURIComponent(assetId)}?gameId=${encodeURIComponent(gameId)}`;
+  return `/__workbench__/v1/extension/${encodeURIComponent(runtimeId)}/media/resources/${encodeURIComponent(assetId)}/content?gameId=${encodeURIComponent(gameId)}`;
 }
 
 function toAsset(
@@ -217,8 +223,19 @@ export function createForgeaxMediaCapability(
         bytes: input.bytes.byteLength,
         ...(stableId ? { clientResourceId: stableId } : {}),
       }, context);
-      const body = new Blob([new Uint8Array(input.bytes)]).stream();
-      await service.receiveUpload(prepared.upload_token, body, context);
+      if ((service.getProviderUploadTransport?.() ?? 'receiver') === 'receiver') {
+        const body = new Blob([new Uint8Array(input.bytes)]).stream();
+        await service.receiveUpload(prepared.upload_token, body, context);
+      } else {
+        const response = await (options.fetch ?? fetch)(prepared.upload.url, {
+          method: prepared.upload.method,
+          headers: prepared.upload.headers,
+          body: new Blob([new Uint8Array(input.bytes)]),
+        });
+        if (!response.ok) {
+          throw new Error(`Media provider upload returned HTTP ${response.status}`);
+        }
+      }
       const created = await service.createResource({
         game_id: gameId,
         media_type: type,

@@ -31,7 +31,7 @@
     "@forgeax/platform-io": "workspace:*",
     "@forgeax-extension/kino-video-provider": "0.2.1",
     "@forgeax-extension/wb-asset-canvas": "0.2.1",
-    "@forgeax-extension/wb-game-video": "0.3.2",
+    "@forgeax-extension/wb-game-video": "0.6.3",
     "@forgeax/workbench-host": "0.2.6",
     "cos-nodejs-sdk-v5": "^3.0.0",
     "hono": "^4.6.0",
