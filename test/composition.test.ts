@@ -32,6 +32,7 @@ function context(): ServerCompositionContext {
     services: {
       videoAssets: registry.control,
       capabilities: { registerProvider() {} },
+      games: { resolveGameId: () => null },
     },
   };
 }
@@ -244,6 +245,7 @@ test('public composition wrapper registers a module without exposing host APIs',
       services: {
         videoAssets: registry.control,
         capabilities: { registerProvider() {} },
+        games: { resolveGameId: () => null },
       },
     });
     const response = await app.request('/module-level-seam');
