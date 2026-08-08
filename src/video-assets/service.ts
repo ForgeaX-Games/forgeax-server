@@ -1489,9 +1489,25 @@ export class VideoAssetService {
       currentPage += 1;
     }
 
-    if (upstreamById.size === 0 && !options.replaceMediaType) {
-      this.#reconcileAt.set(cacheKey, now);
-      return;
+    if (upstreamById.size === 0) {
+      if (!options.replaceMediaType) {
+        this.#reconcileAt.set(cacheKey, now);
+        return;
+      }
+
+      // An empty authoritative page only needs a manifest write when it removes
+      // a stale projection. Keeping an already-empty projection read-only is
+      // important for uninitialized Workbench games: creating
+      // assets/manifest.json by itself turns the three-file package into an
+      // inconsistent partial package before the user can initialize it.
+      const manifest = await this.#deps.manifest.read(gameDir);
+      const hasStaleProjection = manifest.assets.some((asset) => (
+        asset.kind === mediaType && asset.provider.kind === provider.kind
+      ));
+      if (!hasStaleProjection) {
+        this.#reconcileAt.set(cacheKey, now);
+        return;
+      }
     }
 
     await this.#deps.manifest.mutate(gameDir, (manifest) => {

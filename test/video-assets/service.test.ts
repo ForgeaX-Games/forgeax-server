@@ -1940,6 +1940,19 @@ describe('VideoAssetService.batchCreateResources', () => {
 });
 
 describe('VideoAssetService reconciliation', () => {
+  test('does not create a manifest when an empty upstream catalog has nothing to reconcile', async () => {
+    fakeProvider.upstreamPages = [{ total: 0, items: [] }];
+    const manifestPath = resolve(gameDir, 'assets', 'manifest.json');
+
+    const page = await service.listResources(
+      { game_id: gameId, media_type: 'video' },
+      request,
+    );
+
+    expect(page).toMatchObject({ items: [], total: 0 });
+    expect(existsSync(manifestPath)).toBe(false);
+  });
+
   test('reconciles remote Kino image and audio resources into their own media libraries', async () => {
     const mediaCalls: string[] = [];
     registry.control.setProvider({

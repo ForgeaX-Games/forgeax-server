@@ -25,8 +25,16 @@ import { createForgeaxMediaCapability } from './media-adapter';
 import { createForgeaxModelGateway } from './model-gateway-adapter';
 import { createRemoteKinoBindingIfConfigured } from './remote-kino-binding';
 
+const requireFromServer = createRequire(import.meta.url);
+const serverPackage = requireFromServer('../../package.json') as {
+  dependencies: Record<string, string>;
+};
+
+export const WB_GAME_VIDEO_VERSION =
+  serverPackage.dependencies['@forgeax-extension/wb-game-video'];
+
 export const WORKBENCH_EXTENSIONS = [
-  { id: '@forgeax-extension/wb-game-video', version: '0.6.3' },
+  { id: '@forgeax-extension/wb-game-video', version: WB_GAME_VIDEO_VERSION },
 ] as const;
 
 export const FORGEAX_KINO_VIDEO_CAPABILITY = [{
@@ -61,7 +69,6 @@ export interface ForgeaxWorkbenchHostDependencies {
   scanExtensionSource: typeof scanExtensionSource;
 }
 
-const requireFromServer = createRequire(import.meta.url);
 const WB_GAME_VIDEO_WORKSPACE = join(
   dirname(fileURLToPath(import.meta.url)),
   '../../../marketplace/extensions/wb-game-video',

@@ -6,6 +6,7 @@ import {
   createForgeaxWorkbenchHostGetter,
   FORGEAX_KINO_VIDEO_CAPABILITY,
   resolveInstalledWorkbenchPackage,
+  WB_GAME_VIDEO_VERSION,
   WORKBENCH_EXTENSIONS,
   type ForgeaxWorkbenchHostDependencies,
 } from '../../src/workbench/runtime';
@@ -18,7 +19,7 @@ describe('createForgeaxWorkbenchHostGetter', () => {
     const scanned = await scanExtensionSource(source);
     expect(scanned.manifest).toMatchObject({
       id: '@forgeax-extension/wb-game-video',
-      version: '0.6.3',
+      version: WB_GAME_VIDEO_VERSION,
     });
   });
 
@@ -32,7 +33,7 @@ describe('createForgeaxWorkbenchHostGetter', () => {
     expect(scanned.packageRoot).toEndWith('/packages/marketplace/extensions/wb-game-video');
     expect(scanned.manifest).toMatchObject({
       id: '@forgeax-extension/wb-game-video',
-      version: '0.6.3',
+      version: WB_GAME_VIDEO_VERSION,
     });
   });
 
@@ -74,7 +75,7 @@ describe('createForgeaxWorkbenchHostGetter', () => {
           manifestPath: '/extension/forgeax-extension.json',
           manifest: {
             id: '@forgeax-extension/wb-game-video',
-            version: '0.6.3',
+            version: WB_GAME_VIDEO_VERSION,
             name: 'Video Game',
             entrypoints: { browser: 'dist/index.js', host: 'dist/server/host.js' },
           },
@@ -106,7 +107,7 @@ describe('createForgeaxWorkbenchHostGetter', () => {
           root: '/extension',
           manifest: {
             id: '@forgeax-extension/wb-game-video',
-            version: '0.6.3',
+            version: WB_GAME_VIDEO_VERSION,
             name: 'Video Game',
             entrypoints: { browser: 'dist/index.js', host: 'dist/server/host.js' },
           },
@@ -126,7 +127,7 @@ describe('createForgeaxWorkbenchHostGetter', () => {
     expect(calls).toEqual([
       'package:@forgeax-extension/wb-game-video',
       'scan',
-      'register:@forgeax-extension/wb-game-video@0.6.3',
+      `register:@forgeax-extension/wb-game-video@${WB_GAME_VIDEO_VERSION}`,
       'adapters:runtime-video',
       'host:arrival-kino:@forgeax-extension/kino-video-provider',
     ]);
@@ -147,12 +148,14 @@ describe('createForgeaxWorkbenchHostGetter', () => {
       projectRoot: '/project',
       mediaService: {} as never,
       modelRouter: {} as never,
-    })).rejects.toThrow('Expected @forgeax-extension/wb-game-video@0.6.3');
+    })).rejects.toThrow(
+      `Expected @forgeax-extension/wb-game-video@${WB_GAME_VIDEO_VERSION}`,
+    );
   });
 
   test('exports the exact handshake extension and provider selection', () => {
     expect(WORKBENCH_EXTENSIONS).toEqual([
-      { id: '@forgeax-extension/wb-game-video', version: '0.6.3' },
+      { id: '@forgeax-extension/wb-game-video', version: WB_GAME_VIDEO_VERSION },
     ]);
     expect(FORGEAX_KINO_VIDEO_CAPABILITY).toEqual([{
       id: 'media.video.generate',
