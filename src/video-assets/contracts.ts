@@ -1,4 +1,10 @@
-import type { KinoMediaType } from './kino-api';
+import type {
+  CreateKinoResourceInput,
+  KinoImageUploadSts,
+  KinoImportProjectPage,
+  KinoMediaType,
+  KinoResourceDTO,
+} from './kino-api';
 import type { SupportedUploadMime } from './media-policy';
 
 export type VideoAssetProviderKind = 'local' | 's3' | 'cos' | 'kino';
@@ -125,6 +131,21 @@ export interface VideoAssetProvider {
     input: ProviderPrepareUploadInput,
     context: VideoAssetRequestContext,
   ): Promise<ProviderUploadDraft>;
+  /** Optional documented Kino STS response for direct browser uploads. */
+  prepareBrowserUpload?(
+    input: PrepareUploadInput,
+    context: VideoAssetRequestContext,
+  ): Promise<KinoImageUploadSts>;
+  /** Optional direct resource registration for an object uploaded to Kino COS. */
+  createBrowserResource?(
+    input: CreateKinoResourceInput,
+    context: VideoAssetRequestContext,
+  ): Promise<KinoResourceDTO>;
+  /** Optional Kino project catalog used by the browser's external-import flow. */
+  listImportProjects?(
+    excludeGameId: string | undefined,
+    context: VideoAssetRequestContext,
+  ): Promise<KinoImportProjectPage>;
   receiveUpload?(
     state: Record<string, unknown>,
     body: ReadableStream<Uint8Array>,

@@ -22,17 +22,28 @@ export type {
   VideoAssetStatus,
 } from './video-assets/contracts';
 export type {
+  KinoImageUploadSts,
+  KinoImportProjectPage,
+  KinoResourceType,
+} from './video-assets/kino-api';
+export type {
   ExtensionCapabilityControl,
   ExtensionCapabilityInvocationContext,
   ExtensionCapabilityInvocationOptions,
   ExtensionCapabilityProvider,
 } from '@forgeax/types';
 
+export interface GameScopeControl {
+  /** Return a validated instance-scoped game id, or null when it is unsafe/missing. */
+  resolveGameId(slug: string): string | null;
+}
+
 export interface ServerCompositionContext {
   app: Hono;
   services: {
     videoAssets: VideoAssetProviderControl;
     capabilities: ExtensionCapabilityControl;
+    games: GameScopeControl;
   };
 }
 

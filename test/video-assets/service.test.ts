@@ -562,6 +562,123 @@ describe('VideoAssetService.prepareUpload', () => {
   });
 });
 
+describe('VideoAssetService direct browser upload', () => {
+  test('uses provider-native STS and persists the registered resource for later mutations', async () => {
+    const sts = {
+      tmp_secret_id: 'AKIDTMP',
+      tmp_secret_key: 'tmp-secret',
+      session_token: 'session-token',
+      expiration: '2099-01-01T00:00:00.000Z',
+      bucket: 'kino-bucket',
+      bucket_url: 'https://kino-bucket.cos.ap-guangzhou.myqcloud.com',
+      region: 'ap-guangzhou',
+      prefix: 'kino/assets/user',
+      object_key: 'kino/assets/user/clip.mp4',
+      allowed_extensions: ['.mp4'],
+      allowed_content_types: ['video/mp4'],
+      max_file_size_bytes: MAX_VIDEO_UPLOAD_BYTES,
+      required_headers: { 'x-cos-forbid-overwrite': 'true' },
+    };
+    const resource = {
+      resource_id: 'kino-resource-1',
+      game_id: gameId,
+      media_type: 'video' as const,
+      name: 'clip',
+      type: 'UPLOAD' as const,
+      url: `${sts.bucket_url}/${sts.object_key}`,
+      source: 'wb-game-video',
+      source_meta: { mime_type: 'video/mp4' as const },
+      created_at: nowMs,
+      updated_at: nowMs,
+    };
+    const directProvider = {
+      ...fakeProvider,
+      kind: 'kino' as const,
+      supportedMediaTypes: ['video', 'image', 'audio'] as const,
+      supportedUploadMimes: ['video/mp4', 'image/png', 'audio/mpeg'] as const,
+      prepareBrowserUpload: async () => sts,
+      createBrowserResource: async () => resource,
+    } as unknown as VideoAssetProvider;
+    registry.control.setProvider(directProvider);
+
+    await expect(service.prepareBrowserUpload({
+      fileName: 'clip.mp4',
+      mimeType: 'video/mp4',
+      bytes: FIXTURE.byteLength,
+      mediaType: 'video',
+    }, request)).resolves.toEqual(sts);
+
+    const created = await service.createBrowserResource({
+      game_id: gameId,
+      media_type: 'video',
+      url: resource.url,
+      name: resource.name,
+      type: 'UPLOAD',
+      source: resource.source,
+      source_meta: resource.source_meta,
+    }, request);
+    expect(created.resource_id).toBe(resource.resource_id);
+
+    const stored = await manifest.get(gameDir, resource.resource_id);
+    expect(stored?.provider).toEqual({
+      kind: 'kino',
+      ref: resource.url,
+      upstreamResourceId: resource.resource_id,
+    });
+
+    await service.deleteResource(resource.resource_id, request);
+    expect(fakeProvider.deleteCalls).toBe(1);
+  });
+
+  test('keeps replacement uploads on the legacy Workbench session', async () => {
+    await manifest.mutate(gameDir, (current) => {
+      current.assets.push({
+        id: 'resource-existing',
+        kind: 'video',
+        name: 'old',
+        status: 'ready',
+        mimeType: 'video/mp4',
+        bytes: FIXTURE.byteLength,
+        createdAt: 1,
+        updatedAt: 2,
+        provider: { kind: 'kino', ref: 'https://storage.example/old.mp4' },
+      });
+    });
+    let browserPrepareCalls = 0;
+    const replacementProvider = {
+      kind: 'kino' as const,
+      supportedMediaTypes: ['video', 'image', 'audio'] as const,
+      supportedUploadMimes: ['video/mp4', 'image/png', 'audio/mpeg'] as const,
+      prepareBrowserUpload: async () => {
+        browserPrepareCalls += 1;
+        throw new Error('replacement must not request browser STS');
+      },
+      prepareUpload: fakeProvider.prepareUpload,
+      receiveUpload: fakeProvider.receiveUpload,
+      inspectUpload: fakeProvider.inspectUpload,
+      finalizeResource: fakeProvider.finalizeResource,
+      delete: fakeProvider.delete,
+      getPlayback: fakeProvider.getPlayback,
+    } as unknown as VideoAssetProvider;
+    registry.control.setProvider(replacementProvider);
+
+    const prepared = await service.prepareBrowserUpload({
+      fileName: 'replacement.mp4',
+      mimeType: 'video/mp4',
+      bytes: FIXTURE.byteLength,
+      mediaType: 'video',
+      clientResourceId: 'resource-existing',
+      replaceExisting: true,
+    }, request);
+
+    expect('upload_token' in prepared).toBe(true);
+    expect(browserPrepareCalls).toBe(0);
+    expect(fakeProvider.prepareCalls).toBe(1);
+    const token = 'upload_token' in prepared ? prepared.upload_token : '';
+    expect((await sessionStore.read(token))?.replaceExisting).toBe(true);
+  });
+});
+
 describe('VideoAssetService upload expiry', () => {
   test('uses the injected service clock when validating a session', async () => {
     const prepared = await service.prepareUpload(
@@ -2093,7 +2210,7 @@ describe('VideoAssetService reconciliation', () => {
     expect(manifestAfter.assets.find((asset) => asset.id === 'upstream-b')).toBeDefined();
   });
 
-  test('does not delete manifest entries that exist only locally', async () => {
+  test('lists only the active upstream provider without deleting another provider catalog', async () => {
     await manifest.mutate(gameDir, (m) => {
       m.assets.push({
         id: 'local-only',
@@ -2104,12 +2221,15 @@ describe('VideoAssetService reconciliation', () => {
         bytes: 4,
         createdAt: 1,
         updatedAt: 1,
-        provider: { kind: 'local', ref: 'blobs/local-only.mp4' },
+        provider: { kind: 'cos', ref: 'blobs/local-only.mp4' },
       });
     });
     fakeProvider.upstreamPages = [{ total: 0, items: [] }];
 
-    await service.listResources({ game_id: gameId, media_type: 'video' }, request);
+    const page = await service.listResources({ game_id: gameId, media_type: 'video' }, request);
+
+    expect(page.items).toEqual([]);
+    expect(page.total).toBe(0);
     expect(await manifest.get(gameDir, 'local-only')).not.toBeNull();
   });
 });

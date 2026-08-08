@@ -343,6 +343,21 @@ export function createVideoAssetRouter(service: VideoAssetService): Hono {
     return handleServiceCall(c, async () => service.getProviderCapabilities());
   });
 
+  router.get('/import-projects', async (c) => {
+    return handleServiceCall(c, async () => {
+      const rawExcludeGameId = c.req.query('exclude_game_id');
+      const excludeGameId = rawExcludeGameId?.trim() || undefined;
+      // The documented endpoint is user-scoped and does not require a game_id.
+      // Keep the request context's game slot empty unless the caller supplied
+      // the optional exclusion so provider auth can still use the request
+      // identity without inventing a project scope.
+      return service.listImportProjects(
+        excludeGameId,
+        buildRequestContext(c, excludeGameId ?? ''),
+      );
+    });
+  });
+
   router.post('/image-assets/upload', async (c) => {
     return handleServiceCall(c, async () => {
       const body = await readJsonObject(c);
@@ -373,19 +388,22 @@ export function createVideoAssetRouter(service: VideoAssetService): Hono {
           'invalid_replace_existing',
         );
       }
-      return service.prepareUpload(
-        {
-          fileName: resolveUploadFileName(body, mimeType),
-          mediaType,
-          mimeType,
-          bytes,
-          ...(clientResourceId !== undefined
-            ? { clientResourceId: clientResourceId.trim() }
-            : {}),
-          ...(replaceExisting !== undefined ? { replaceExisting } : {}),
-        },
-        context,
-      );
+      const input = {
+        fileName: resolveUploadFileName(body, mimeType),
+        mediaType,
+        mimeType,
+        bytes,
+        ...(clientResourceId !== undefined
+          ? { clientResourceId: clientResourceId.trim() }
+          : {}),
+        ...(replaceExisting !== undefined ? { replaceExisting } : {}),
+      };
+      // New services expose the provider-native Kino STS response. The
+      // fallback keeps older test doubles and non-Kino hosts compatible.
+      if (typeof service.prepareBrowserUpload === 'function') {
+        return service.prepareBrowserUpload(input, context);
+      }
+      return service.prepareUpload(input, context);
     });
   });
 
@@ -456,7 +474,11 @@ export function createVideoAssetRouter(service: VideoAssetService): Hono {
       const body = await readJsonObject(c);
       const gameId = requireGameIdFromBody(body);
       const context = buildRequestContext(c, gameId);
-      return service.createResource(body as unknown as CreateKinoResourceInput, context);
+      const input = body as unknown as CreateKinoResourceInput;
+      if (typeof service.createBrowserResource === 'function') {
+        return service.createBrowserResource(input, context);
+      }
+      return service.createResource(input, context);
     });
   });
 
