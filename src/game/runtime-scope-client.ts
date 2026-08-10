@@ -9,6 +9,11 @@
 
 import { createHash } from 'node:crypto';
 
+// A first bind rebuilds the Play sidecar's scoped catalog before it can reply.
+// Cold CI and large games can legitimately take several seconds; a short
+// transport timeout turns that work into a false runtime-unavailable 503.
+const DEFAULT_RUNTIME_SCOPE_TIMEOUT_MS = 10_000;
+
 export type RuntimeScopeStatus = 'unbound' | 'transitioning' | 'ready' | 'degraded' | 'unavailable';
 
 export interface RuntimeAssetBinding {
@@ -90,7 +95,7 @@ export class RuntimeScopeClient {
     this.endpoint = `http://127.0.0.1:${port}`;
     this.secret = options.secret ?? process.env.FORGEAX_RUNTIME_SCOPE_SECRET;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.timeoutMs = options.timeoutMs ?? 1500;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_RUNTIME_SCOPE_TIMEOUT_MS;
     this.retries = options.retries ?? 8;
     this.retryDelayMs = options.retryDelayMs ?? 150;
   }
