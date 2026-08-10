@@ -15,6 +15,10 @@ function binding(gameId: string, scopeId: string, generation: number): Record<st
   };
 }
 
+function responseForBinding(gameId: string, scopeId: string, generation: number): Response {
+  return Response.json(binding(gameId, scopeId, generation));
+}
+
 describe('RuntimeScopeClient', () => {
   test('serializes exact-game binds and validates the sidecar generation', async () => {
     const requests: Array<{ body: Record<string, unknown>; secret: string | null }> = [];
@@ -23,6 +27,14 @@ describe('RuntimeScopeClient', () => {
       secret: 'secret',
       retries: 0,
       fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+        if (init?.method === 'GET') {
+          const command = requests.at(-1)?.body;
+          return responseForBinding(
+            String(command?.gameId ?? 'unknown'),
+            String(command?.scopeId ?? 'unknown'),
+            Number(command?.generation ?? 1),
+          );
+        }
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         requests.push({
           body,
@@ -49,6 +61,71 @@ describe('RuntimeScopeClient', () => {
     expect(requests[1]?.body.gameDir).toBe('/project/.forgeax/games/game-b');
     expect(requests[1]?.secret).toBe('secret');
     expect(second.binding?.generation).toBeGreaterThan(first.binding?.generation ?? 0);
+  });
+
+  test('repairs a cached ready state after the sidecar becomes unbound', async () => {
+    let sidecar: unknown;
+    const methods: string[] = [];
+    const client = new RuntimeScopeClient({
+      enginePort: 15173,
+      secret: 'secret',
+      retries: 0,
+      fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+        methods.push(init?.method ?? 'GET');
+        if (init?.method === 'GET') {
+          return sidecar === undefined
+            ? new Response(JSON.stringify({ error: 'runtime-scope-unbound', status: 'unbound' }), { status: 503 })
+            : Response.json(sidecar);
+        }
+        const command = JSON.parse(String(init?.body)) as {
+          gameId: string;
+          scopeId: string;
+          generation: number;
+        };
+        sidecar = binding(command.gameId, command.scopeId, command.generation);
+        return Response.json(sidecar);
+      }) as unknown as typeof fetch,
+    });
+
+    const first = await client.bind('game-a', '/project/.forgeax/games/game-a');
+    expect(first.status).toBe('ready');
+    const firstGeneration = first.binding?.generation;
+    methods.length = 0;
+    sidecar = undefined;
+
+    const repaired = await client.bind('game-a', '/project/.forgeax/games/game-a');
+
+    expect(repaired.status).toBe('ready');
+    expect(repaired.binding?.gameId).toBe('game-a');
+    expect(repaired.binding?.generation).toBeGreaterThan(firstGeneration ?? 0);
+    expect(methods).toEqual(['GET', 'POST']);
+  });
+
+  test('does not rebind when the sidecar confirms the cached generation', async () => {
+    let sidecar: unknown;
+    const methods: string[] = [];
+    const client = new RuntimeScopeClient({
+      secret: 'secret',
+      retries: 0,
+      fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+        methods.push(init?.method ?? 'GET');
+        if (init?.method === 'GET') return Response.json(sidecar);
+        const command = JSON.parse(String(init?.body)) as {
+          gameId: string;
+          scopeId: string;
+          generation: number;
+        };
+        sidecar = binding(command.gameId, command.scopeId, command.generation);
+        return Response.json(sidecar);
+      }) as unknown as typeof fetch,
+    });
+
+    const first = await client.bind('game-a', '/project/.forgeax/games/game-a');
+    sidecar = first.binding;
+    const second = await client.bind('game-a', '/project/.forgeax/games/game-a');
+
+    expect(second).toEqual(first);
+    expect(methods).toEqual(['POST', 'GET']);
   });
 
   test('clears the previous binding when the sidecar cannot bind', async () => {

@@ -106,16 +106,35 @@ export class RuntimeScopeClient {
 
   /**
    * Bind exactly one server-resolved game directory. Calls are serialized and
-   * each accepted request gets a strictly increasing generation.
+   * each accepted request gets a strictly increasing generation. A cached
+   * server-side ready state is only reusable after the sidecar confirms the
+   * same binding; the Vite process can be restarted or reloaded independently
+   * of this long-lived server process.
    */
   bind(gameId: string, gameDir: string): Promise<RuntimeScopeState> {
-    const current = this.state.binding;
-    if (current?.gameId === gameId && isReadyStatus(current.status)) {
-      return Promise.resolve(this.state);
-    }
-    const generation = ++this.generation;
     const scopeId = scopeIdFor(gameId, gameDir);
     const run = this.serial.then(async () => {
+      const current = this.state.binding;
+      if (
+        current?.gameId === gameId
+        && current.scopeId === scopeId
+        && isReadyStatus(current.status)
+      ) {
+        const sidecar = await this.readSidecarBinding();
+        if (sidecar !== undefined) {
+          this.generation = Math.max(this.generation, sidecar.generation);
+        }
+        if (
+          sidecar?.gameId === current.gameId
+          && sidecar.scopeId === current.scopeId
+          && sidecar.generation === current.generation
+          && isReadyStatus(sidecar.status)
+        ) {
+          return this.state;
+        }
+      }
+
+      const generation = ++this.generation;
       this.publish({ status: 'transitioning' });
       try {
         const binding = await this.requestBind({
@@ -138,6 +157,25 @@ export class RuntimeScopeClient {
     });
     this.serial = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  /**
+   * Read the sidecar's authoritative state without changing it. A missing or
+   * malformed response is deliberately treated as unbound so the caller can
+   * repair the state with the credentialed bind route.
+   */
+  private async readSidecarBinding(): Promise<RuntimeAssetBinding | undefined> {
+    try {
+      const response = await this.fetchWithTimeout('/__pack/runtime-binding.json', {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+      });
+      if (!response.ok) return undefined;
+      const body = await response.json().catch(() => null) as unknown;
+      return isBinding(body) ? body : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private publish(state: RuntimeScopeState): void {

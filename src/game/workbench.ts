@@ -384,10 +384,20 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
   const router = new Hono();
 
   // ── Active game — one authoritative read/write contract ──
-  router.get('/active-game', (c) => {
+  router.get('/active-game', async (c) => {
     const projectRoot = defaultProjectRoot();
     const activeSlug = getActiveGame(projectRoot) ?? null;
-    const runtime = options.runtimeScope?.snapshot();
+    let runtime = options.runtimeScope?.snapshot();
+    if (options.runtimeScope !== undefined && activeSlug !== null) {
+      const game = resolveInstanceGame(projectRoot, activeSlug);
+      if (game !== undefined) {
+        // The server process outlives Vite config reloads. Reconcile the
+        // cached projection with the sidecar before handing runtime URLs to a
+        // browser; otherwise a stale ready binding makes every scoped asset
+        // request fail with 404 and leaves the editor in a false loading state.
+        runtime = await options.runtimeScope.bind(game.gameId, game.gameDir);
+      }
+    }
     return c.json({
       activeSlug,
       ...(runtime === undefined ? {} : { runtime }),
