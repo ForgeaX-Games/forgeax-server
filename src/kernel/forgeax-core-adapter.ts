@@ -45,6 +45,10 @@ import {
 } from '@forgeax/agent-runtime';
 import { connect, type RpcConnection } from '@forgeax/agent-host';
 import { NATIVE_KERNEL_PROFILE } from '@forgeax/orchestrator/kernel/kernel-profile';
+import {
+  CORE_DEFAULT_PERMISSION_MODE,
+  CORE_SUPPORTED_PERMISSION_MODES,
+} from '@forgeax/orchestrator/kernel/permission-config';
 import { ensureSidecar } from '@forgeax/orchestrator/kernel/sidecar-singleton';
 import { loadGatewayCatalog, gatewayCatalogToKernelModels } from '@forgeax/orchestrator/lib/llm-gateway/gateway-catalog';
 import { makeInProcessExecuteTool, type HostExecuteToolFn } from '@forgeax/orchestrator/kernel/host-tool-bridge';
@@ -63,6 +67,8 @@ import { createTelemetryFileSink, type TelemetryFileSink } from './telemetry-fil
  *  发布后跨包仍成立),monorepo 源码态回退相对路径(发包前过渡)。耦合从「硬编码兄弟路径」
  *  收敛到包依赖,与 sidecar(agent-host)同款。 */
 function resolveCoreServeEntry(): string {
+  const override = process.env.FORGEAX_CORE_SERVE_ENTRY?.trim();
+  if (override) return resolve(override);
   try {
     return fileURLToPath(import.meta.resolve('@forgeax/cli/serve'));
   } catch {
@@ -203,6 +209,10 @@ function toWire(req: TurnRequest): Record<string, unknown> {
     tools: req.tools,
     toolPolicy: req.toolPolicy,
     budget: req.budget,
+    // Preserve the neutral standing gear across the server -> sidecar
+    // boundary. Without this field the sidecar silently fell back to its
+    // default mode, so Studio's forgeax-core planning gear had no live effect.
+    permissionMode: req.permissionMode,
     model: req.model,
     fallbackModels: req.fallbackModels,
     trustTier: req.trustTier,
@@ -251,6 +261,10 @@ class ForgeaxCoreServeKernel implements AgentKernel {
   // 自带那份 forgeax-core-kernel.ts 对齐,补回这个声明。
   readonly orchestrationProfile = NATIVE_KERNEL_PROFILE;
   readonly capabilities = CAPS;
+  readonly permissionCapabilities = {
+    supported: CORE_SUPPORTED_PERMISSION_MODES,
+    defaultMode: CORE_DEFAULT_PERMISSION_MODE,
+  } as const;
 
   /** 模型目录 = LLM gateway 目录(disk models.json ∩ LiteLLM live)。原生内核
    *  经 gateway 路由,能跑的模型集合就是 gateway 的集合——委托共享实现
@@ -654,7 +668,10 @@ export function createForgeaxCoreKernel(opts: CreateForgeaxCoreKernelOpts = {}):
 
 /** 把连接式 forgeax-core 内核注册进共享 registry(幂等:已注册则跳过)。
  *  `opts.broadcast` 由产品壳(main.ts)注入 `hub.broadcast`,使 telemetry 能推给浏览器。 */
-export function registerForgeaxCoreKernel(opts: CreateForgeaxCoreKernelOpts = {}): void {
-  if (getKernel('forgeax-core')) return;
-  registerKernel(createForgeaxCoreKernel(opts));
+export function registerForgeaxCoreKernel(opts: CreateForgeaxCoreKernelOpts = {}): AgentKernel {
+  const existing = getKernel('forgeax-core');
+  if (existing) return existing;
+  const kernel = createForgeaxCoreKernel(opts);
+  registerKernel(kernel);
+  return kernel;
 }
