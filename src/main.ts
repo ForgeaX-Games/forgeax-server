@@ -31,7 +31,6 @@ import {
   createNpcWebSocketHandler,
   getExtensionCapabilityControl,
 } from '@forgeax/orchestrator';
-import { listAvailableKernels } from '@forgeax/orchestrator/kernel/resolve-kernel';
 import { getVersion } from '@forgeax/platform-io';
 import { loadBrand } from '@forgeax/orchestrator/brand';
 import { defaultProjectRoot } from '@forgeax/platform-io';
@@ -209,12 +208,11 @@ setHostTelemetry((sid, records) => {
 if (!process.env.FORGEAX_KERNEL_IMPL?.trim()) {
   process.env.FORGEAX_KERNEL_IMPL = 'forgeax-core';
 }
-let productForgeaxCoreKernel: ReturnType<typeof registerForgeaxCoreKernel> | undefined;
 if (process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core') {
   // observability v3 / B 档:把 hub.broadcast 注入 adapter,让 forgeax-core serve 经
   // RPC `telemetry` 推回的 span/log 既落盘(<sid>/logs/{trace,log}.jsonl)又广播给
   // 浏览器 viewer(WS `{ type:'telemetry', records }`)。
-  productForgeaxCoreKernel = registerForgeaxCoreKernel({
+  registerForgeaxCoreKernel({
     broadcast: (msg) => hub.broadcast(msg as Parameters<typeof hub.broadcast>[0]),
     telemetrySink,
   });
@@ -283,18 +281,6 @@ const { app, npcRuntime } = await createForgeaxApp({
   instanceRoot,
   version: VERSION,
   workbenchHost,
-  // Permission capability discovery must use the same product-owned registry
-  // that registered forgeax-core; the orchestrator fallback only knows its
-  // built-in rented kernels.
-  kernelProvider: () => {
-    const kernels = listAvailableKernels();
-    if (!productForgeaxCoreKernel || kernels.some((kernel) => kernel.id === productForgeaxCoreKernel?.id)) {
-      return kernels;
-    }
-    // Dev worktrees can resolve the shared registry through two module paths.
-    // Keep the product-owned core instance explicit so the API cannot lose it.
-    return [...kernels, productForgeaxCoreKernel];
-  },
   // system-prompt charter/environment/note 由产品壳提供(阶段A §3.2)——编排层经
   // 注入的 composer 取,cli 自身不再硬编码游戏宪章。ports 取自 env(与原 cli 顶层常量一致)。
   systemPromptComposer: new GameSystemPromptComposer({
