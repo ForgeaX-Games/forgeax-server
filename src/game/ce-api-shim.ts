@@ -38,6 +38,10 @@ import { vendorForModel } from '@forgeax/orchestrator/lib/image-gateway';
 import { createLitellmSpeech, litellmTtsConfigured } from '@forgeax/orchestrator/lib/audio-gateway/litellm-tts';
 import { createDoubaoSpeech, doubaoTtsConfigured } from '@forgeax/orchestrator/lib/audio-gateway/doubao-tts';
 import { createMinimaxSpeech, minimaxTtsConfigured } from '@forgeax/orchestrator/lib/audio-gateway/minimax-tts';
+import {
+  createElevenLabsSoundEffect,
+  elevenLabsAudioConfigured,
+} from '@forgeax/orchestrator/lib/audio-gateway/elevenlabs-audio';
 import { createMinimaxMusic, minimaxMusicConfigured } from '@forgeax/orchestrator/lib/audio-gateway/minimax-music';
 import {
   createLitellmVideoTask,
@@ -1215,6 +1219,65 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
       return c.json({ success: false, error: `minimax-music: ${(e as Error).message}` });
     }
   });
+
+  // ── POST /reel-sfx ──────────────────────────────────────────────────────
+  // 音频工作台的文生音效(ElevenLabs sound-generation 直连)。key 留编排层。
+  //   POST /reel-sfx { text, durationSeconds?, loop?, promptInfluence?, model? }
+  //   一次请求出一条 MP3;工作台要备选版本就并列发多次。
+  app.post('/reel-sfx', async (c) => {
+    if (!elevenLabsAudioConfigured()) {
+      return c.json({ success: false, error: '音效生成未配置:请在 .env 设 ELEVENLABS_API_KEY' });
+    }
+    let body: {
+      text?: string; durationSeconds?: number; loop?: boolean; promptInfluence?: number; model?: string;
+    };
+    try { body = await c.req.json(); } catch {
+      return c.json({ success: false, error: 'invalid JSON body' });
+    }
+    const text = body.text?.trim();
+    if (!text) return c.json({ success: false, error: 'empty sound-effect prompt' });
+    try {
+      const r = await createElevenLabsSoundEffect({
+        text, durationSeconds: body.durationSeconds, loop: body.loop,
+        promptInfluence: body.promptInfluence, model: body.model,
+      });
+      return c.json({
+        success: true, base64: r.bytes.toString('base64'), mimeType: r.mime,
+        provider: 'elevenlabs', model: r.model, traceId: r.requestId,
+        durationMs: typeof body.durationSeconds === 'number'
+          ? Math.round(body.durationSeconds * 1000)
+          : undefined,
+        fileSizeBytes: r.bytes.length,
+      });
+    } catch (e) {
+      return c.json({ success: false, error: `elevenlabs-sfx: ${(e as Error).message}` });
+    }
+  });
+
+  // ── GET /audio-generation-status ────────────────────────────────────────
+  // 工作台开面板时先问一次哪几类生成可用,好把没配 key 的入口直接置灰,而不是
+  // 等用户填完 prompt 点下去才报错。
+  app.get('/audio-generation-status', (c) => c.json({
+    success: true,
+    capabilities: {
+      tts: {
+        configured: litellmTtsConfigured() || minimaxTtsConfigured() || doubaoTtsConfigured(),
+        providers: [
+          litellmTtsConfigured() ? 'litellm' : '',
+          minimaxTtsConfigured() ? 'minimax' : '',
+          doubaoTtsConfigured() ? 'doubao' : '',
+        ].filter(Boolean),
+      },
+      music: {
+        configured: minimaxMusicConfigured(),
+        providers: minimaxMusicConfigured() ? ['minimax-music'] : [],
+      },
+      sfx: {
+        configured: elevenLabsAudioConfigured(),
+        providers: elevenLabsAudioConfigured() ? ['elevenlabs'] : [],
+      },
+    },
+  }));
 
   // ── wb-reel video (litellm /v1/videos · async task) ─────────────────────
   // Three-step contract mirrors the OpenAI Sora shape, but the iframe never
