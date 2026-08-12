@@ -1,0 +1,15 @@
+{
+  "name": "@forgeax/game-minimal",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Minimal ForgeaX game scaffold for authoring through Studio.",
+  "scripts": {
+    "test": "node --test tests/baseline.test.mjs"
+  },
+  "dependencies": {
+    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*"
+  }
+}

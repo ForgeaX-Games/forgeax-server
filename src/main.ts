@@ -46,6 +46,8 @@ import { GameSessionLayout } from './studio-session-layout';
 import { ensureSessionWithBootstrap } from '@forgeax/orchestrator/api/lib/session-create';
 // 游戏业务路由(阶段A:从 @forgeax/orchestrator 搬入产品壳)—— 经 ctx.routers 注入编排层。
 import { createWorkbenchRouter } from './game/workbench';
+import { createGameTemplatesRouter } from './game/game-templates';
+import { createGameTemplatesRouter as createWorkbenchGameTemplatesRouter } from './game/workbench';
 import {
   PARTY_WS_PATH,
   handlePartyClose,
@@ -85,6 +87,7 @@ import { mountRuntimeCarrierApi } from './runtime-carrier/api';
 import { createRuntimeCarrierSupervisor } from './runtime-carrier/supervisor';
 import { createPlaywrightCarrierHost } from './runtime-carrier/playwright-host';
 import { EDITOR_TRANSPORT_WS_SID, createEditorTransportCarrier } from './game/editor-transport-carrier';
+import { registerEditorAssetImportCapability } from './game/editor-asset-import-capability';
 import { RuntimeScopeClient } from './game/runtime-scope-client';
 import { getForgeaxWorkbenchHost } from './workbench/runtime';
 
@@ -279,6 +282,7 @@ const editorTransportCarrier = createEditorTransportCarrier({
     if (!result.ok) throw new Error(result.error.message);
   },
 });
+registerEditorAssetImportCapability(getExtensionCapabilityControl(), editorTransportCarrier.dispatch);
 const { app, npcRuntime } = await createForgeaxApp({
   instanceRoot,
   version: VERSION,
@@ -310,6 +314,7 @@ const { app, npcRuntime } = await createForgeaxApp({
   routers: [
     { path: '/api/v1/kino', router: videoAssets.router },
     { path: '/api/npc-settings', router: createNpcSettingsRouter({ getProjectRoot: defaultProjectRoot }) },
+    { path: '/api', router: createGameTemplatesRouter() },
     {
       path: '/api/workbench',
       router: createWorkbenchRouter({
@@ -321,6 +326,7 @@ const { app, npcRuntime } = await createForgeaxApp({
         },
       }),
     },
+    { path: '/api/game-templates', router: createWorkbenchGameTemplatesRouter() },
     { path: '/api/wb/character', router: createCharacterRouter({ projectRoot: instanceRoot, env: shimEnv }) },
     { path: '/api/wb/bgm', router: createBgmRouter({ projectRoot: instanceRoot }) },
     {

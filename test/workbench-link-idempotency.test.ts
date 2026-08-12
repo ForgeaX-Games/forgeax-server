@@ -56,4 +56,34 @@ describe('POST /api/workbench/games/link', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, slug: 'pong', alreadyMounted: true });
   });
+
+  test('activates a linked editor-owned sample outside the games consumer checkout', async () => {
+    const externalRoot = mkdtempSync(resolve(tmpdir(), 'forgeax-editor-sample-'));
+    const gameDir = resolve(externalRoot, 'packages', 'editor', 'games', 'sample');
+    mkdirSync(gameDir, { recursive: true });
+    writeFileSync(
+      resolve(gameDir, 'forge.json'),
+      JSON.stringify({ id: 'sample', name: 'Editor sample', entry: 'main.ts' }),
+      'utf-8',
+    );
+
+    try {
+      const linkResponse = await app.request('/api/workbench/games/link', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: gameDir }),
+      });
+      expect(linkResponse.status).toBe(200);
+
+      const activateResponse = await app.request('/api/workbench/active-game', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'sample' }),
+      });
+      expect(activateResponse.status).toBe(200);
+      expect(await activateResponse.json()).toMatchObject({ activeSlug: 'sample' });
+    } finally {
+      rmSync(externalRoot, { recursive: true, force: true });
+    }
+  });
 });

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { readFile, writeFile, cp, stat, rm, unlink } from 'node:fs/promises';
 import { existsSync, lstatSync, mkdirSync, readdirSync, statSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve, basename, join, isAbsolute, dirname } from 'node:path';
+import { resolve, basename, join, isAbsolute, dirname, sep } from 'node:path';
 // Why Bun.Glob and not node:fs/promises#glob: bun 1.3.x's shim of the node
 // glob silently won't enter dot-prefixed dirs (`.forgeax/`) regardless of
 // any option — patterns like `.forgeax/games/<slug>/**/*.ts` return zero
@@ -30,6 +30,7 @@ import { BLACKBOARD_KEYS } from '@forgeax/orchestrator/defaults/blackboard-vars'
 import type { FileActivityRecord } from '@forgeax/orchestrator/ledger/file-activity-ledger';
 import { registry, listHistory, deleteHistory, cleanPackagingEnv, createJob, getJob, updateJob, makeProgressFn, detectEngineRoots } from './packager';
 import type { TargetPlatform } from './packager';
+import { listGameTemplates, resolveEngineTemplatesRoot } from './game-templates';
 
 /** Content types for the `/play/:slug/*` static route. Bun.file infers most
  *  types, but the engine is strict about `.wasm` (must be `application/wasm`
@@ -201,12 +202,41 @@ async function regenerateGameGuids(gameDir: string): Promise<void> {
 function resolveGameTemplate(projectRoot: string): string | null {
   const userOverride = resolve(projectRoot, '.forgeax/games/_template');
   if (existsSync(userOverride)) return userOverride;
-  // Use assetRoot() to locate the builtin template across all platforms/modes
-  // (dev source tree, or packaged app). assetRoot() points to the 'packages' level.
-  // Engine is now the editor's nested submodule (top-level packages/engine removed).
-  const builtin = resolve(assetRoot(), '..', 'packages', 'editor', 'packages', 'engine', 'templates', 'game-default');
-  if (existsSync(builtin)) return builtin;
-  return null;
+  // A no-template New Game must start capability-light so authors add only the
+  // scene, assets, and behavior their game actually uses. The engine showcase
+  // remains available as the legacy fallback when the minimal template is not
+  // present in an older packaged installation.
+  const minimal = resolve(assetRoot(), 'server', 'templates', 'game-minimal');
+  if (existsSync(minimal)) return minimal;
+  return resolveEngineGameTemplate('game-default');
+}
+
+function resolveEngineGameTemplate(slug: string): string | null {
+  if (!GAME_SLUG_RE.test(slug)) return null;
+  const engineTemplatesRoot = resolve(resolveEngineTemplatesRoot());
+  const templateDir = resolve(engineTemplatesRoot, slug);
+  if (!templateDir.startsWith(`${engineTemplatesRoot}${sep}`)) return null;
+  try {
+    if (!statSync(templateDir).isDirectory()) return null;
+    if (!statSync(join(templateDir, 'forge.json')).isFile()) return null;
+    if (!statSync(join(templateDir, 'main.ts')).isFile()) return null;
+    return templateDir;
+  } catch {
+    return null;
+  }
+}
+
+/** Public product catalog shared by Studio New Game and the standalone editor. */
+export function createGameTemplatesRouter(): Hono {
+  const router = new Hono();
+  router.get('/', async (c) => {
+    try {
+      return c.json({ templates: await listGameTemplates() });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 500);
+    }
+  });
+  return router;
 }
 
 interface MarketplaceAgent {
@@ -449,33 +479,16 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
     return c.json({ games, activeSlug });
   });
 
-  // ── GET /templates — list built-in games usable as first-run templates ──
-  // Source is the official examples under assetRoot()/games (dev: packages/games;
-  // packaged: Resources/games). Read-only: onboarding "从模板创建" copies one of
-  // these into a fresh game via POST /api/workbench/games {template}.
-  // Filters underscore/dot/scripts entries and anything without a forge.json.
-  router.get('/templates', (c) => {
-    const gamesRoot = resolve(assetRoot(), 'games');
-    const out: Array<{ slug: string; name: string }> = [];
+  // ── GET /templates — list engine-owned New Game templates ──
+  // This is the workbench-scoped projection of the same catalog exposed at
+  // /api/game-templates. Both read editor/packages/engine/templates so the UI
+  // cannot advertise a template that POST /games cannot create.
+  router.get('/templates', async (c) => {
     try {
-      for (const entry of readdirSync(gamesRoot)) {
-        if (entry.startsWith('.') || entry.startsWith('_') || entry === 'scripts') continue;
-        const dir = resolve(gamesRoot, entry);
-        try {
-          if (!statSync(dir).isDirectory()) continue;
-          const forgeJson = join(dir, 'forge.json');
-          if (!existsSync(forgeJson)) continue;
-          let name = entry;
-          try {
-            const parsed = JSON.parse(readFileSync(forgeJson, 'utf-8')) as { name?: string };
-            if (typeof parsed.name === 'string' && parsed.name) name = parsed.name;
-          } catch { /* keep slug as name */ }
-          out.push({ slug: entry, name });
-        } catch { /* skip unreadable entry */ }
-      }
-    } catch { /* games root missing → empty list */ }
-    out.sort((a, b) => a.name.localeCompare(b.name));
-    return c.json({ templates: out });
+      return c.json({ templates: await listGameTemplates() });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 500);
+    }
   });
 
   // ── DELETE /games/:slug — remove a game's whole dir ──
@@ -750,8 +763,9 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
   });
 
   // ── POST /games — create a new game scaffold (mkdir + forge.json + main.ts) ──
-  // Optional `template` = a built-in game slug (GET /templates, sourced from
-  // assetRoot()/games) to copy from instead of the blank `_template`/game-default.
+  // Optional `template` = an engine template slug (GET /templates, sourced from
+  // packages/editor/packages/engine/templates) to copy from instead of the blank
+  // `_template`/game-default.
   // Either way the copy gets fresh GUIDs (regenerateGameGuids) so a template
   // copied into an instance that already holds games can't collide in the catalog.
   router.post('/games', async (c) => {
@@ -776,19 +790,18 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
     if (body.template) {
       const tslug = String(body.template).trim();
       if (!GAME_SLUG_RE.test(tslug)) return c.json({ error: 'invalid template slug' }, 400);
-      const cand = resolve(assetRoot(), 'games', tslug);
-      templateDir = existsSync(cand) ? cand : null;
+      templateDir = resolveEngineGameTemplate(tslug);
       if (!templateDir) return c.json({ error: `template not found: ${tslug}` }, 404);
       templateSlug = tslug;
     } else {
       templateDir = resolveGameTemplate(projectRoot);
     }
     if (!templateDir) {
-      return c.json({ error: 'game template not found — expected .forgeax/games/_template/ or packages/editor/packages/engine/templates/game-default/' }, 500);
+      return c.json({ error: 'game template not found — expected .forgeax/games/_template/, packages/server/templates/game-minimal/, or the legacy engine game-default/' }, 500);
     }
     try {
-      // Skip per-instance state when copying (built-in templates like spin-cube
-      // ship a sessions/ dir + may have node_modules — not part of the template).
+      // Skip per-instance state when copying (a template may ship a sessions/
+      // dir or node_modules — neither is part of a new game).
       await cp(templateDir, gameDir, {
         recursive: true,
         filter: (src) => { const b = basename(src); return b !== 'sessions' && b !== 'node_modules' && b !== '.git'; },

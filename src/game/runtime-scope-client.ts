@@ -16,6 +16,11 @@ const DEFAULT_RUNTIME_SCOPE_TIMEOUT_MS = 10_000;
 
 export type RuntimeScopeStatus = 'unbound' | 'transitioning' | 'ready' | 'degraded' | 'unavailable';
 
+export interface RuntimeCatalogRoot {
+  readonly root: string;
+  readonly catalogPrefix: string;
+}
+
 export interface RuntimeAssetBinding {
   readonly schemaVersion: 'runtime-asset-binding-v1';
   readonly gameId: string;
@@ -25,6 +30,7 @@ export interface RuntimeAssetBinding {
   readonly catalogUrl: string;
   readonly importUrlBase: string;
   readonly packageUrlBase: string;
+  readonly catalogRoots?: readonly RuntimeCatalogRoot[];
   readonly authority?: 'authoritative' | 'degraded';
   readonly diagnostics?: readonly unknown[];
 }
@@ -62,7 +68,17 @@ function isBinding(value: unknown): value is RuntimeAssetBinding {
     && typeof candidate.status === 'string'
     && typeof candidate.catalogUrl === 'string'
     && typeof candidate.importUrlBase === 'string'
-    && typeof candidate.packageUrlBase === 'string';
+    && typeof candidate.packageUrlBase === 'string'
+    && (candidate.catalogRoots === undefined || isCatalogRoots(candidate.catalogRoots));
+}
+
+function isCatalogRoots(value: unknown): value is readonly RuntimeCatalogRoot[] {
+  return Array.isArray(value) && value.every((root) => (
+    root !== null
+    && typeof root === 'object'
+    && typeof (root as { root?: unknown }).root === 'string'
+    && typeof (root as { catalogPrefix?: unknown }).catalogPrefix === 'string'
+  ));
 }
 
 function isReadyStatus(status: RuntimeScopeStatus): boolean {

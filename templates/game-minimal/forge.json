@@ -1,0 +1,7 @@
+{
+  "id": "game-minimal",
+  "name": "Minimal Game",
+  "schemaVersion": "1.0.0",
+  "entry": "main.ts",
+  "physics": false
+}
