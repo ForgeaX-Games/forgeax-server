@@ -29,6 +29,11 @@ export function resolveEngineTemplatesRoot(): string {
 
 function resolveEditorTemplateCatalogModule(): string {
   const candidates = [
+    // Current editor source layout.
+    resolve(assetRoot(), 'editor', 'apps', 'standalone', 'template-catalog.ts'),
+    resolve(assetRoot(), '..', 'packages', 'editor', 'apps', 'standalone', 'template-catalog.ts'),
+    // Compatibility with editor revisions before the standalone app moved
+    // under apps/.
     resolve(assetRoot(), 'editor', 'standalone', 'template-catalog.ts'),
     resolve(assetRoot(), '..', 'packages', 'editor', 'standalone', 'template-catalog.ts'),
   ];
