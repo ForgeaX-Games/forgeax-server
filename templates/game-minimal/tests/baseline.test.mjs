@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+const templateDir = dirname(dirname(fileURLToPath(import.meta.url)));
+
 test('minimal game baseline is capability-light', () => {
-  const manifest = JSON.parse(readFileSync(resolve('forge.json'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(resolve(templateDir, 'forge.json'), 'utf8'));
 
   assert.equal(manifest.entry, 'main.ts');
   assert.equal(manifest.physics, false);
-  assert.equal(existsSync(resolve('assets')), false);
-  assert.equal(existsSync(resolve('main.ts')), true);
+  assert.equal(existsSync(resolve(templateDir, 'assets')), false);
+  assert.equal(existsSync(resolve(templateDir, 'main.ts')), true);
 });

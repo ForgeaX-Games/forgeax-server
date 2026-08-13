@@ -18,12 +18,19 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe('workbench host dependency boundary', () => {
+  test('does not statically import product extension implementations', () => {
+    const violations = sourceFiles(join(packageRoot, 'src')).flatMap((file) => {
+      const source = readFileSync(file, 'utf8');
+      return [...source.matchAll(/from\s+['"](@forgeax-extension\/(?:wb-game-video|wb-asset-canvas|kino-video-provider)[^'"]*)['"]/g)]
+        .map((match) => `${file}: ${match[1]}`);
+    });
+    expect(violations).toEqual([]);
+  });
+
   test('pins one compatible local extension and host release set without package-local overrides', () => {
     const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
     for (const [packageName, version] of [
       ['@forgeax/workbench-host', '0.2.6'],
-      ['@forgeax-extension/wb-game-video', '0.3.2'],
-      ['@forgeax-extension/wb-asset-canvas', '0.2.1'],
     ] as const) {
       expect(manifest.dependencies?.[packageName]).toBe(version);
       expect(manifest.overrides?.[packageName]).toBeUndefined();

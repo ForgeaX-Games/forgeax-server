@@ -6,6 +6,7 @@ const ctx = { agentId: 'forge', projectRoot: '/tmp', game: 'spin-cube' };
 
 /** 过渡期注册清单单源 —— 与 editor-gateway-host-tools.test.ts 共用同一份。 */
 export const EXPECTED_STUDIO_TOOLS = [
+      'deliver_summary',
       'list_games',
       'npc_wire',
       'query_world',

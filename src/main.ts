@@ -67,7 +67,6 @@ import { createCeApiShimRouter } from './game/ce-api-shim';
 import { GameSystemPromptComposer } from './game/system-prompt-composer';
 import { studioHostTools } from './game/host-tools';
 import { createAssetCanvasInputsRouter } from './game/asset-canvas-inputs';
-import { gameHostBeforeVersion, gameHostSeedProvider } from './game/game-host-hooks';
 import { resolveLlmTestRequestSource } from './game/llm-test-source';
 import { createNpcSettingsRouter } from './game/npc-settings';
 // 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
@@ -84,7 +83,7 @@ import {
   inspectUiAssetCanvas,
   normalizeStandaloneUiAsset,
 } from './game/ui-asset-cleanup';
-import { activateServerModules } from './composition-host';
+import { activateServerModules, prepareServerModules } from './composition-host';
 import { createVideoAssetRuntime } from './video-assets/index';
 import { mountRuntimeCarrierApi } from './runtime-carrier/api';
 import { createRuntimeCarrierSupervisor } from './runtime-carrier/supervisor';
@@ -92,7 +91,6 @@ import { createPlaywrightCarrierHost } from './runtime-carrier/playwright-host';
 import { EDITOR_TRANSPORT_WS_SID, createEditorTransportCarrier } from './game/editor-transport-carrier';
 import { registerEditorAssetImportCapability } from './game/editor-asset-import-capability';
 import { RuntimeScopeClient } from './game/runtime-scope-client';
-import { getForgeaxWorkbenchHost } from './workbench/runtime';
 
 // ──────────────────────────────────────────────────────────────────────────
 // FaultBoundary — top-level process-wide exception backstop (perf-analysis-2
@@ -250,10 +248,12 @@ const ceApiRouter = createCeApiShimRouter({
   env: shimEnv,
   uiAssetCleanup: { inspectUiAssetCanvas, normalizeStandaloneUiAsset },
 });
-const workbenchHost = await getForgeaxWorkbenchHost({
+const productComposition = await prepareServerModules({
   projectRoot: instanceRoot,
   mediaService: videoAssets.service,
   modelRouter: ceApiRouter,
+  cloneTemplateAssets: (input) => videoAssets.service.cloneTemplateAssets(input),
+  gameDirForSlug: (slug) => resolve(defaultProjectRoot(), '.forgeax', 'games', slug),
 });
 const runtimeCarrierSupervisor = createRuntimeCarrierSupervisor({
   host: createPlaywrightCarrierHost({
@@ -289,7 +289,7 @@ registerEditorAssetImportCapability(getExtensionCapabilityControl(), editorTrans
 const { app, npcRuntime } = await createForgeaxApp({
   instanceRoot,
   version: VERSION,
-  workbenchHost,
+  ...productComposition,
   // Permission capability discovery must use the same product-owned registry
   // that registered forgeax-core; the orchestrator fallback only knows its
   // built-in rented kernels.
@@ -358,16 +358,6 @@ const { app, npcRuntime } = await createForgeaxApp({
   //   keys / kits / user settings 不随此根走,留 ~/.forgeax(跨项目共享/机密)。
   // state root 与 session layout 使用同一 instance root。
   stateRootFactory: (root) => join(root, '.forgeax', 'state'),
-  // game-host 打版本前置钩子:wb-game-video 游戏把平台组件集同步进游戏仓(随版本携带)。
-  // 通用 game-host(platform-io) 只调钩子,具体拷贝知识留产品壳(见 game/game-host-hooks.ts)。
-  gameHostBeforeVersion,
-  gameHostSeedProvider: ({ slug }) => gameHostSeedProvider(
-    {
-      slug,
-      targetGameDir: resolve(defaultProjectRoot(), '.forgeax', 'games', slug),
-    },
-    (input) => videoAssets.service.cloneTemplateAssets(input),
-  ),
 });
 
 await activateServerModules({

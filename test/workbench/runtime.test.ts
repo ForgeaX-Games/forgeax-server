@@ -1,82 +1,29 @@
 import { describe, expect, test } from 'bun:test';
 import type { WorkbenchHost } from '@forgeax/workbench-host/node';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import {
   createForgeaxWorkbenchHostGetter,
-  FORGEAX_KINO_VIDEO_CAPABILITY,
-  resolveInstalledWorkbenchPackage,
-  WB_GAME_VIDEO_VERSION,
-  WORKBENCH_EXTENSIONS,
   type ForgeaxWorkbenchHostDependencies,
 } from '../../src/workbench/runtime';
-import { scanExtensionSource } from '@forgeax/workbench-host/node';
 
 describe('createForgeaxWorkbenchHostGetter', () => {
-  test('resolves the installed extension from the server package boundary', async () => {
-    const source = await resolveInstalledWorkbenchPackage('@forgeax-extension/wb-game-video');
-    expect(source.kind).toBe('directory');
-    const scanned = await scanExtensionSource(source);
-    expect(scanned.manifest).toMatchObject({
-      id: '@forgeax-extension/wb-game-video',
-      version: WB_GAME_VIDEO_VERSION,
-    });
-  });
-
-  test('uses the wb-game-video workspace backend in web development', async () => {
-    const source = await resolveInstalledWorkbenchPackage(
-      '@forgeax-extension/wb-game-video',
-      { startupProfile: 'web-dev' },
-    );
-    expect(source.kind).toBe('directory');
-    const scanned = await scanExtensionSource(source);
-    expect(scanned.packageRoot).toEndWith('/packages/marketplace/extensions/wb-game-video');
-    expect(scanned.manifest).toMatchObject({
-      id: '@forgeax-extension/wb-game-video',
-      version: WB_GAME_VIDEO_VERSION,
-    });
-  });
-
-  test('installed wb-game-video does not reference legacy Studio protocols', async () => {
-    const source = await resolveInstalledWorkbenchPackage('@forgeax-extension/wb-game-video');
-    const scanned = await scanExtensionSource(source);
-    // Inspect the package manifest and executable entrypoints only. The release
-    // contains hundreds of built-in media files; recursively reading every
-    // asset makes this boundary test needlessly slow and flaky.
-    const text = (await Promise.all([
-      'forgeax-extension.json',
-      'package.json',
-      'dist/index.js',
-      'dist/server/host.js',
-    ].map((relativePath) => readFile(join(scanned.packageRoot, relativePath), 'utf8')))).join('\n');
-
-    for (const forbidden of [
-      '/__gva__',
-      '/__ce-api__',
-      '/api/game-host',
-      'FORGEAX_SERVER_PORT',
-    ]) {
-      expect(text).not.toContain(forbidden);
-    }
-  });
-
-  test('packages and registers the exact wb-game-video release once', async () => {
+  test('packages and registers the declared extension release once', async () => {
     const calls: string[] = [];
     const host = { catalog: async () => [] } as unknown as WorkbenchHost;
     const dependencies: ForgeaxWorkbenchHostDependencies = {
+      extensions: [{ id: 'extension.test', version: '1.0.0' }],
       packageExtension(specifier) {
         calls.push(`package:${specifier}`);
-        return { kind: 'package', specifier } as never;
+        return { kind: 'package', specifier };
       },
-      async scanExtensionSource(source) {
+      async scanExtensionSource() {
         calls.push('scan');
         return {
           root: '/extension',
           manifestPath: '/extension/forgeax-extension.json',
           manifest: {
-            id: '@forgeax-extension/wb-game-video',
-            version: WB_GAME_VIDEO_VERSION,
-            name: 'Video Game',
+            id: 'extension.test',
+            version: '1.0.0',
+            name: 'Test Extension',
             entrypoints: { browser: 'dist/index.js', host: 'dist/server/host.js' },
           },
         } as never;
@@ -84,7 +31,7 @@ describe('createForgeaxWorkbenchHostGetter', () => {
       createRuntimeRegistry: () => ({
         register(source: any) {
           calls.push(`register:${source.manifest.id}@${source.manifest.version}`);
-          return { runtimeId: 'runtime-video' };
+          return { runtimeId: 'runtime-test' };
         },
       }) as never,
       async createAdapters(_options, runtimeId) {
@@ -95,72 +42,51 @@ describe('createForgeaxWorkbenchHostGetter', () => {
           media: {} as never,
           models: {} as never,
           capabilities: { forGame: () => ({ invoke: async () => undefined }) },
-          providerExtensions: [{ extensionId: '@forgeax-extension/kino-video-provider' }] as never,
-          capabilitySelections: FORGEAX_KINO_VIDEO_CAPABILITY,
         };
       },
       createWorkbenchHost(options) {
         expect(options.capabilities).toBeDefined();
-        calls.push(`host:${options.capabilitySelections?.[0]?.providerId}:${options.providerExtensions?.[0]?.extensionId}`);
-        void options.isExtensionTrusted?.({
-          runtimeId: 'runtime-video',
+        calls.push(`host:${String(options.isExtensionTrusted?.({
+          runtimeId: 'runtime-test',
           root: '/extension',
           manifest: {
-            id: '@forgeax-extension/wb-game-video',
-            version: WB_GAME_VIDEO_VERSION,
-            name: 'Video Game',
+            id: 'extension.test',
+            version: '1.0.0',
+            name: 'Test Extension',
             entrypoints: { browser: 'dist/index.js', host: 'dist/server/host.js' },
           },
-        } as never);
+        } as never))}`);
         return host;
       },
     };
     const getter = createForgeaxWorkbenchHostGetter(dependencies);
-    const options = {
-      projectRoot: '/project',
-      mediaService: {} as never,
-      modelRouter: {} as never,
-    };
+    const options = { projectRoot: '/project', mediaService: {} as never, modelRouter: {} as never };
 
     expect(await getter(options)).toBe(host);
     expect(await getter(options)).toBe(host);
     expect(calls).toEqual([
-      'package:@forgeax-extension/wb-game-video',
+      'package:extension.test',
       'scan',
-      `register:@forgeax-extension/wb-game-video@${WB_GAME_VIDEO_VERSION}`,
-      'adapters:runtime-video',
-      'host:arrival-kino:@forgeax-extension/kino-video-provider',
+      'register:extension.test@1.0.0',
+      'adapters:runtime-test',
+      'host:true',
     ]);
   });
 
-  test('fails closed when package identity drifts', async () => {
+  test('fails closed when a declared extension identity drifts', async () => {
     const getter = createForgeaxWorkbenchHostGetter({
-      packageExtension: () => ({}) as never,
-      scanExtensionSource: async () => ({
-        manifest: {
-          id: '@forgeax-extension/wb-game-video',
-          version: '0.3.0',
-        },
-      }) as never,
+      extensions: [{ id: 'extension.test', version: '1.0.0' }],
+      packageExtension: () => ({ kind: 'package', specifier: 'extension.test' }),
+      scanExtensionSource: async () => ({ manifest: { id: 'other.test', version: '1.0.0' } }) as never,
+      createRuntimeRegistry: () => ({ register: () => ({ runtimeId: 'runtime-test' }) }) as never,
+      createAdapters: async () => ({} as never),
+      createWorkbenchHost: () => ({}) as never,
     });
 
     await expect(getter({
       projectRoot: '/project',
       mediaService: {} as never,
       modelRouter: {} as never,
-    })).rejects.toThrow(
-      `Expected @forgeax-extension/wb-game-video@${WB_GAME_VIDEO_VERSION}`,
-    );
-  });
-
-  test('exports the exact handshake extension and provider selection', () => {
-    expect(WORKBENCH_EXTENSIONS).toEqual([
-      { id: '@forgeax-extension/wb-game-video', version: WB_GAME_VIDEO_VERSION },
-    ]);
-    expect(FORGEAX_KINO_VIDEO_CAPABILITY).toEqual([{
-      id: 'media.video.generate',
-      version: 1,
-      providerId: 'arrival-kino',
-    }]);
+    })).rejects.toThrow('Expected extension.test@1.0.0');
   });
 });

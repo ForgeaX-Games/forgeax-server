@@ -17,14 +17,17 @@ test('main composes the runtime carrier without replacing the existing preview p
   expect(mainSource).not.toContain('CarrierGameplayAdapter');
 });
 
-test('main mounts the shared Workbench Host before creating the app', () => {
-  expect(mainSource).toContain("import { getForgeaxWorkbenchHost } from './workbench/runtime';");
-  const hostCreation = mainSource.indexOf('await getForgeaxWorkbenchHost({');
+test('main prepares optional product composition before creating the app', () => {
+  expect(mainSource).toContain(
+    "import { activateServerModules, prepareServerModules } from './composition-host';",
+  );
+  expect(mainSource).not.toContain("from './workbench/runtime';");
+  const hostCreation = mainSource.indexOf('await prepareServerModules({');
   const appCreation = mainSource.indexOf('await createForgeaxApp({');
   expect(hostCreation).toBeGreaterThanOrEqual(0);
   expect(appCreation).toBeGreaterThan(hostCreation);
   expect(mainSource.slice(appCreation, mainSource.indexOf('\n});', appCreation)))
-    .toContain('workbenchHost,');
+    .toContain('...productComposition,');
 });
 
 test('main composes chat task-flow host tools without merge residue', () => {

@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 describe('POST /api/workbench/games template assets', () => {
-  test('clones provider-backed assets into the new game scope', async () => {
+  test('delegates selected-template assets into the new game scope', async () => {
     const calls: Array<{
       sourceGameDir: string;
       sourceGameId: string;
@@ -38,7 +38,7 @@ describe('POST /api/workbench/games template assets', () => {
     const app = new Hono();
     app.route('/api/workbench', createWorkbenchRouter({
       cloneTemplateAssets: async (input) => {
-        expect(existsSync(resolve(input.targetGameDir, 'assets/manifest.json'))).toBe(true);
+        expect(existsSync(resolve(input.targetGameDir, 'forge.json'))).toBe(true);
         calls.push(input);
       },
     }));
@@ -49,14 +49,14 @@ describe('POST /api/workbench/games template assets', () => {
       body: JSON.stringify({
         slug: 'nodia-copy',
         name: 'Nodia Copy',
-        template: 'game-nodia-fighting',
+        template: 'game-empty',
       }),
     });
 
     expect(response.status).toBe(200);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
-      sourceGameId: 'game-nodia-fighting',
+      sourceGameId: 'game-empty',
       targetGameId: 'nodia-copy',
       targetGameDir: resolve(projectRoot, '.forgeax/games/nodia-copy'),
     });
@@ -75,7 +75,7 @@ describe('POST /api/workbench/games template assets', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         slug: 'broken-copy',
-        template: 'game-nodia-fighting',
+        template: 'game-empty',
       }),
     });
 

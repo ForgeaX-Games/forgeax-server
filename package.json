@@ -7,7 +7,8 @@
   "main": "src/main.ts",
   "exports": {
     ".": "./src/main.ts",
-    "./composition": "./src/composition.ts"
+    "./composition": "./src/composition.ts",
+    "./workbench/runtime": "./src/workbench/runtime.ts"
   },
   "bin": {
     "forgeax-server": "./bin/forgeax-server"
@@ -29,9 +30,6 @@
     "@forgeax/cli": "workspace:*",
     "@forgeax/orchestrator": "workspace:*",
     "@forgeax/platform-io": "workspace:*",
-    "@forgeax-extension/kino-video-provider": "0.2.1",
-    "@forgeax-extension/wb-asset-canvas": "0.2.1",
-    "@forgeax-extension/wb-game-video": "0.7.8",
     "@forgeax/workbench-host": "0.2.6",
     "cos-nodejs-sdk-v5": "^3.0.0",
     "hono": "^4.6.0",

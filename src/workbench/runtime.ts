@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
   createWorkbenchHost,
-  directoryExtension,
   RuntimeRegistry,
   scanExtensionSource,
   type ExtensionSource,
@@ -13,7 +12,6 @@ import {
   type WorkbenchHost,
   type WorkbenchHostOptions,
 } from '@forgeax/workbench-host/node';
-import { providerExtension as arrivalKinoProvider } from '@forgeax-extension/kino-video-provider';
 import {
   createForgeaxVersionAdapter,
   createForgeaxWorkspaceAdapter,
@@ -23,29 +21,13 @@ import { createForgeaxCeModelProvider } from './ce-model-provider';
 import { createForgeaxWorkbenchCapabilityResolver } from './capability-adapter';
 import { createForgeaxMediaCapability } from './media-adapter';
 import { createForgeaxModelGateway } from './model-gateway-adapter';
-import { createRemoteKinoBindingIfConfigured } from './remote-kino-binding';
 
 const requireFromServer = createRequire(import.meta.url);
-const serverPackage = requireFromServer('../../package.json') as {
-  dependencies: Record<string, string>;
-};
 
-export const WB_GAME_VIDEO_VERSION =
-  serverPackage.dependencies['@forgeax-extension/wb-game-video'];
-
-export const WORKBENCH_EXTENSIONS = [
-  { id: '@forgeax-extension/wb-game-video', version: WB_GAME_VIDEO_VERSION },
-] as const;
-
-export const FORGEAX_KINO_VIDEO_CAPABILITY = [{
-  id: 'media.video.generate',
-  version: 1,
-  providerId: 'arrival-kino',
-}] as const;
-
-const trustedExtensions = new Set(
-  WORKBENCH_EXTENSIONS.map(({ id, version }) => `${id}@${version}`),
-);
+export interface WorkbenchExtensionSpec {
+  readonly id: string;
+  readonly version: string;
+}
 
 export interface ForgeaxWorkbenchHostOptions {
   readonly projectRoot: string;
@@ -59,6 +41,7 @@ export type ForgeaxWorkbenchHostAdapters = Omit<
 >;
 
 export interface ForgeaxWorkbenchHostDependencies {
+  readonly extensions: readonly WorkbenchExtensionSpec[];
   createAdapters(
     options: ForgeaxWorkbenchHostOptions,
     runtimeId: string,
@@ -69,35 +52,17 @@ export interface ForgeaxWorkbenchHostDependencies {
   scanExtensionSource: typeof scanExtensionSource;
 }
 
-const WB_GAME_VIDEO_WORKSPACE = join(
-  dirname(fileURLToPath(import.meta.url)),
-  '../../../marketplace/extensions/wb-game-video',
-);
-
+/** Resolve any installed package without importing a product implementation. */
 export async function resolveInstalledWorkbenchPackage(
   specifier: string,
-  options: { readonly startupProfile?: string } = {},
+  options: { readonly resolvePackage?: (specifier: string) => string } = {},
 ): Promise<ExtensionSource> {
-  const startupProfile = options.startupProfile ?? process.env.FORGEAX_STARTUP_PROFILE;
-  if (
-    specifier === '@forgeax-extension/wb-game-video'
-    && startupProfile === 'web-dev'
-  ) {
-    try {
-      const metadata = JSON.parse(
-        await readFile(join(WB_GAME_VIDEO_WORKSPACE, 'package.json'), 'utf8'),
-      ) as { name?: unknown };
-      if (metadata.name === specifier) return directoryExtension(WB_GAME_VIDEO_WORKSPACE);
-    } catch {
-      // A source checkout without the optional workspace falls back to npm.
-    }
-  }
   const packageName = specifier.startsWith('@')
     ? specifier.split('/').slice(0, 2).join('/')
     : specifier.split('/')[0]!;
   let resolvedSpecifier: string;
   try {
-    resolvedSpecifier = requireFromServer.resolve(specifier);
+    resolvedSpecifier = (options.resolvePackage ?? requireFromServer.resolve)(specifier);
   } catch {
     const resolvedUrl = await import.meta.resolve(specifier);
     if (!resolvedUrl.startsWith('file:')) {
@@ -109,10 +74,8 @@ export async function resolveInstalledWorkbenchPackage(
   while (true) {
     const packageJsonPath = join(cursor, 'package.json');
     try {
-      const metadata = JSON.parse(await readFile(packageJsonPath, 'utf8')) as {
-        name?: unknown;
-      };
-      if (metadata.name === packageName) return directoryExtension(cursor);
+      const metadata = JSON.parse(await readFile(packageJsonPath, 'utf8')) as { name?: unknown };
+      if (metadata.name === packageName) return { kind: 'directory', path: cursor };
     } catch {
       // Continue walking to the package boundary.
     }
@@ -124,47 +87,44 @@ export async function resolveInstalledWorkbenchPackage(
   }
 }
 
-const defaultDependencies: ForgeaxWorkbenchHostDependencies = {
-  async createAdapters(options, runtimeId) {
-    const media = createForgeaxMediaCapability(options.mediaService, {
-      runtimeId,
-      projectRoot: options.projectRoot,
-    });
-    const remoteKinoBinding = await createRemoteKinoBindingIfConfigured({
-      projectRoot: options.projectRoot,
-    });
-    return {
-      workspace: createForgeaxWorkspaceAdapter({ projectRoot: options.projectRoot }),
-      versioning: createForgeaxVersionAdapter(),
+export async function createForgeaxWorkbenchAdapters(
+  options: ForgeaxWorkbenchHostOptions,
+  runtimeId: string,
+): Promise<ForgeaxWorkbenchHostAdapters> {
+  const media = createForgeaxMediaCapability(options.mediaService, {
+    runtimeId,
+    projectRoot: options.projectRoot,
+  });
+  return {
+    workspace: createForgeaxWorkspaceAdapter({ projectRoot: options.projectRoot }),
+    versioning: createForgeaxVersionAdapter(),
+    media,
+    capabilities: createForgeaxWorkbenchCapabilityResolver({ projectRoot: options.projectRoot }),
+    models: createForgeaxModelGateway(
+      createForgeaxCeModelProvider(options.modelRouter),
       media,
-      capabilities: createForgeaxWorkbenchCapabilityResolver({
-        projectRoot: options.projectRoot,
-      }),
-      models: createForgeaxModelGateway(
-        createForgeaxCeModelProvider(options.modelRouter),
-        media,
-      ),
-      ...(remoteKinoBinding === undefined ? {} : {
-        serviceBindings: [remoteKinoBinding],
-        providerExtensions: [arrivalKinoProvider],
-        capabilitySelections: FORGEAX_KINO_VIDEO_CAPABILITY,
-      }),
-    };
-  },
-  createWorkbenchHost,
-  createRuntimeRegistry: () => new RuntimeRegistry(),
-  packageExtension: resolveInstalledWorkbenchPackage,
-  scanExtensionSource,
-};
+    ),
+  };
+}
 
-function assertExtensionIdentity(
-  source: ScannedExtension,
-  expected: (typeof WORKBENCH_EXTENSIONS)[number],
-): void {
-  if (
-    source.manifest.id !== expected.id
-    || source.manifest.version !== expected.version
-  ) {
+export function createForgeaxWorkbenchHostDependencies(options: {
+  extensions: readonly WorkbenchExtensionSpec[];
+  createAdapters?: ForgeaxWorkbenchHostDependencies['createAdapters'];
+  packageExtension?: ForgeaxWorkbenchHostDependencies['packageExtension'];
+  scanExtensionSource?: typeof scanExtensionSource;
+}): ForgeaxWorkbenchHostDependencies {
+  return {
+    extensions: options.extensions,
+    createAdapters: options.createAdapters ?? createForgeaxWorkbenchAdapters,
+    createWorkbenchHost,
+    createRuntimeRegistry: () => new RuntimeRegistry(),
+    packageExtension: options.packageExtension ?? resolveInstalledWorkbenchPackage,
+    scanExtensionSource: options.scanExtensionSource ?? scanExtensionSource,
+  };
+}
+
+function assertExtensionIdentity(source: ScannedExtension, expected: WorkbenchExtensionSpec): void {
+  if (source.manifest.id !== expected.id || source.manifest.version !== expected.version) {
     throw new Error(
       `Expected ${expected.id}@${expected.version}, received ${source.manifest.id}@${source.manifest.version}`,
     );
@@ -175,23 +135,23 @@ async function createHost(
   options: ForgeaxWorkbenchHostOptions,
   dependencies: ForgeaxWorkbenchHostDependencies,
 ): Promise<WorkbenchHost> {
-  const extensions = await Promise.all(WORKBENCH_EXTENSIONS.map(async (expected) => {
+  const extensions = await Promise.all(dependencies.extensions.map(async (expected) => {
     const source = await dependencies.packageExtension(expected.id);
     const extension = await dependencies.scanExtensionSource(source);
     assertExtensionIdentity(extension, expected);
     return extension;
   }));
-
   const registry = dependencies.createRuntimeRegistry();
-  const videoExtension = extensions[0];
-  if (!videoExtension) throw new Error('ForgeaX Workbench extensions are not configured');
-  const descriptor = registry.register(videoExtension);
+  const first = extensions[0];
+  if (!first) throw new Error('ForgeaX Workbench extensions are not configured');
+  const descriptor = registry.register(first);
   for (const extension of extensions.slice(1)) registry.register(extension);
   const adapters = await dependencies.createAdapters(options, descriptor.runtimeId);
+  const trusted = new Set(dependencies.extensions.map(({ id, version }) => `${id}@${version}`));
   return dependencies.createWorkbenchHost({
     ...adapters,
     registry,
-    isExtensionTrusted: (candidate) => trustedExtensions.has(
+    isExtensionTrusted: (candidate) => trusted.has(
       `${candidate.manifest.id}@${candidate.manifest.version}`,
     ),
   });
@@ -202,11 +162,8 @@ export type ForgeaxWorkbenchHostGetter = (
 ) => Promise<WorkbenchHost>;
 
 export function createForgeaxWorkbenchHostGetter(
-  overrides: Partial<ForgeaxWorkbenchHostDependencies> = {},
+  dependencies: ForgeaxWorkbenchHostDependencies,
 ): ForgeaxWorkbenchHostGetter {
-  const dependencies = { ...defaultDependencies, ...overrides };
   let hostPromise: Promise<WorkbenchHost> | undefined;
   return (options) => (hostPromise ??= createHost(options, dependencies));
 }
-
-export const getForgeaxWorkbenchHost = createForgeaxWorkbenchHostGetter();

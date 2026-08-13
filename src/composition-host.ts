@@ -1,6 +1,18 @@
-import type { ServerCompositionContext, ServerModule } from './composition';
+import type {
+  ServerCompositionContext,
+  ServerModule,
+  ServerPrepareContext,
+  ServerProductComposition,
+} from './composition';
 
-type ServerModuleRegistryState = 'collecting' | 'activating' | 'activated' | 'failed';
+type ServerModuleRegistryState =
+  | 'collecting'
+  | 'preparing'
+  | 'prepared'
+  | 'prepare-failed'
+  | 'activating'
+  | 'activated'
+  | 'failed';
 
 export class ServerModuleRegistry {
   readonly #modules: ServerModule[] = [];
@@ -14,6 +26,12 @@ export class ServerModuleRegistry {
   }
 
   async activate(context: ServerCompositionContext): Promise<void> {
+    if (this.#state === 'preparing') {
+      throw new Error('Cannot activate server modules while preparation is in progress');
+    }
+    if (this.#state === 'prepare-failed') {
+      throw new Error('Cannot activate server modules after preparation failed');
+    }
     if (this.#state === 'activating') {
       throw new Error('Server module activation is already in progress');
     }
@@ -35,6 +53,50 @@ export class ServerModuleRegistry {
       throw error;
     }
   }
+
+  async prepare(context: ServerPrepareContext): Promise<ServerProductComposition> {
+    if (this.#state === 'preparing') {
+      throw new Error('Server module preparation is already in progress');
+    }
+    if (this.#state === 'prepared') {
+      throw new Error('Server modules have already been prepared');
+    }
+    if (this.#state === 'prepare-failed') {
+      throw new Error('Server module preparation previously failed');
+    }
+    if (this.#state !== 'collecting') {
+      throw new Error('Cannot prepare server modules after activation has started');
+    }
+    const composition: {
+      workbenchHost?: ServerProductComposition['workbenchHost'];
+      gameHostBeforeVersion?: ServerProductComposition['gameHostBeforeVersion'];
+      gameHostSeedProvider?: ServerProductComposition['gameHostSeedProvider'];
+    } = {};
+    this.#state = 'preparing';
+    try {
+      for (const module of this.#modules) {
+        if (!module.prepare) continue;
+        const prepared = await module.prepare(context);
+        if (prepared.workbenchHost !== undefined) {
+          if (composition.workbenchHost !== undefined) throw new Error('Multiple server modules provided workbenchHost');
+          composition.workbenchHost = prepared.workbenchHost;
+        }
+        if (prepared.gameHostBeforeVersion !== undefined) {
+          if (composition.gameHostBeforeVersion !== undefined) throw new Error('Multiple server modules provided gameHostBeforeVersion');
+          composition.gameHostBeforeVersion = prepared.gameHostBeforeVersion;
+        }
+        if (prepared.gameHostSeedProvider !== undefined) {
+          if (composition.gameHostSeedProvider !== undefined) throw new Error('Multiple server modules provided gameHostSeedProvider');
+          composition.gameHostSeedProvider = prepared.gameHostSeedProvider;
+        }
+      }
+      this.#state = 'prepared';
+      return composition;
+    } catch (error) {
+      this.#state = 'prepare-failed';
+      throw error;
+    }
+  }
 }
 
 const serverModules = new ServerModuleRegistry();
@@ -45,4 +107,10 @@ export function registerServerModule(module: ServerModule): void {
 
 export async function activateServerModules(context: ServerCompositionContext): Promise<void> {
   await serverModules.activate(context);
+}
+
+export async function prepareServerModules(
+  context: ServerPrepareContext,
+): Promise<ServerProductComposition> {
+  return serverModules.prepare(context);
 }

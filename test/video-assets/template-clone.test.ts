@@ -128,9 +128,17 @@ describe('VideoAssetService.cloneTemplateAssets', () => {
       resolve(sourceGameDir, 'assets/manifest.json'),
       JSON.stringify({ version: 2, assets: [templateVideo, templateImage] }),
     );
+    const copiedKinoVideo = {
+      ...templateVideo,
+      provider: {
+        kind: 'kino',
+        ref: 'https://kino.example.test/target/narr-open.mp4',
+        upstreamResourceId: 'narr-open',
+      },
+    };
     writeFileSync(
       resolve(targetGameDir, 'assets/manifest.json'),
-      JSON.stringify({ version: 2, assets: [templateVideo, templateImage] }),
+      JSON.stringify({ version: 2, assets: [copiedKinoVideo, templateImage] }),
     );
 
     const listCalls: Array<{ mediaType: string; gameId: string; page: number; pageSize: number }> = [];
@@ -230,7 +238,20 @@ describe('VideoAssetService.cloneTemplateAssets', () => {
       }],
     };
     writeFileSync(resolve(sourceGameDir, 'assets/manifest.json'), JSON.stringify(manifest));
-    writeFileSync(resolve(targetGameDir, 'assets/manifest.json'), JSON.stringify(manifest));
+    writeFileSync(
+      resolve(targetGameDir, 'assets/manifest.json'),
+      JSON.stringify({
+        version: 2,
+        assets: [{
+          ...manifest.assets[0],
+          provider: {
+            kind: 'kino',
+            ref: 'https://kino.example.test/target/narr-open.mp4',
+            upstreamResourceId: 'narr-open',
+          },
+        }],
+      }),
+    );
 
     const provider: VideoAssetProvider = {
       kind: 'kino',

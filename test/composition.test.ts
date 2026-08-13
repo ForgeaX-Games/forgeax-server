@@ -43,6 +43,121 @@ test('empty registry activation is a no-op', async () => {
   await expect(registry.activate(context())).resolves.toBeUndefined();
 });
 
+test('empty registry preparation is a no-op for the base server', async () => {
+  const registry = new ServerModuleRegistry();
+
+  await expect(registry.prepare({
+    projectRoot: '/project',
+    mediaService: {} as never,
+    modelRouter: new Hono(),
+    cloneTemplateAssets: async () => {},
+    gameDirForSlug: (slug) => `/project/.forgeax/games/${slug}`,
+  })).resolves.toEqual({});
+});
+
+test('preparation returns product-owned seams without activating modules', async () => {
+  const registry = new ServerModuleRegistry();
+  const host = {} as never;
+  const beforeVersion = () => {};
+  const seedProvider = async () => ({ blueprint: {}, assetsManifest: {} });
+  registry.register({
+    prepare: () => ({
+      workbenchHost: host,
+      gameHostBeforeVersion: beforeVersion,
+      gameHostSeedProvider: seedProvider,
+    }),
+    activate: () => {},
+  });
+
+  await expect(registry.prepare({
+    projectRoot: '/project',
+    mediaService: {} as never,
+    modelRouter: new Hono(),
+    cloneTemplateAssets: async () => {},
+    gameDirForSlug: (slug) => `/project/.forgeax/games/${slug}`,
+  })).resolves.toEqual({
+    workbenchHost: host,
+    gameHostBeforeVersion: beforeVersion,
+    gameHostSeedProvider: seedProvider,
+  });
+});
+
+test('preparation has an explicit one-shot lifecycle', async () => {
+  const registry = new ServerModuleRegistry();
+  const prepareContext = {
+    projectRoot: '/project',
+    mediaService: {} as never,
+    modelRouter: new Hono(),
+    cloneTemplateAssets: async () => {},
+    gameDirForSlug: (slug: string) => `/project/.forgeax/games/${slug}`,
+  };
+  registry.register({ prepare: () => ({}), activate: () => {} });
+
+  await registry.prepare(prepareContext);
+  await expect(registry.prepare(prepareContext)).rejects.toThrow('already been prepared');
+  expect(() => registry.register({ activate: () => {} })).toThrow('after activation has started');
+});
+
+test('failed preparation is terminal', async () => {
+  const registry = new ServerModuleRegistry();
+  const prepareContext = {
+    projectRoot: '/project',
+    mediaService: {} as never,
+    modelRouter: new Hono(),
+    cloneTemplateAssets: async () => {},
+    gameDirForSlug: (slug: string) => `/project/.forgeax/games/${slug}`,
+  };
+  registry.register({
+    prepare: () => { throw new Error('prepare failed'); },
+    activate: () => {},
+  });
+
+  await expect(registry.prepare(prepareContext)).rejects.toThrow('prepare failed');
+  await expect(registry.prepare(prepareContext)).rejects.toThrow('previously failed');
+  await expect(registry.activate(context())).rejects.toThrow('after preparation failed');
+});
+
+test('activation is blocked while preparation is in progress', async () => {
+  const registry = new ServerModuleRegistry();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const prepareContext = {
+    projectRoot: '/project',
+    mediaService: {} as never,
+    modelRouter: new Hono(),
+    cloneTemplateAssets: async () => {},
+    gameDirForSlug: (slug: string) => `/project/.forgeax/games/${slug}`,
+  };
+  registry.register({
+    prepare: async () => {
+      await gate;
+      return {};
+    },
+    activate: () => {},
+  });
+
+  const preparing = registry.prepare(prepareContext);
+  await Promise.resolve();
+  await expect(registry.activate(context())).rejects.toThrow('preparation is in progress');
+  release();
+  await preparing;
+});
+
+test('multiple modules cannot provide the same product seam', async () => {
+  const registry = new ServerModuleRegistry();
+  const host = {} as never;
+  registry.register({ prepare: () => ({ workbenchHost: host }), activate: () => {} });
+  registry.register({ prepare: () => ({ workbenchHost: host }), activate: () => {} });
+
+  await expect(registry.prepare({
+    projectRoot: '/project',
+    mediaService: {} as never,
+    modelRouter: new Hono(),
+    cloneTemplateAssets: async () => {},
+    gameDirForSlug: (slug: string) => `/project/.forgeax/games/${slug}`,
+  })).rejects.toThrow('Multiple server modules provided workbenchHost');
+});
+
 test('modules activate in registration order', async () => {
   const registry = new ServerModuleRegistry();
   const activations: string[] = [];
@@ -191,11 +306,12 @@ test('package exports expose the server entry and public composition seam only',
 test('main activates modules after app creation and before product routes', () => {
   const source = readFileSync(resolve(import.meta.dir, '../src/main.ts'), 'utf8');
   const hostImport = source.match(
-    /import \{ activateServerModules \} from '\.\/composition-host';/g,
+    /import \{ activateServerModules, prepareServerModules \} from '\.\/composition-host';/g,
   );
   const runtimeImport = source.includes("from './video-assets/index'");
   const createStart = source.indexOf('await createForgeaxApp({');
   const createEnd = source.indexOf('\n});', createStart);
+  const preparation = source.indexOf('await prepareServerModules({');
   const activation = source.indexOf('await activateServerModules({');
   const healthRoute = source.indexOf("app.get('/api/health'");
   const kinoRouter = source.indexOf("{ path: '/api/v1/kino', router: videoAssets.router }");
@@ -203,6 +319,8 @@ test('main activates modules after app creation and before product routes', () =
 
   expect(hostImport).toHaveLength(1);
   expect(runtimeImport).toBe(true);
+  expect(preparation).toBeGreaterThanOrEqual(0);
+  expect(preparation).toBeLessThan(createStart);
   expect(createStart).toBeGreaterThanOrEqual(0);
   expect(createEnd).toBeGreaterThan(createStart);
   expect(activation).toBeGreaterThan(createEnd);
