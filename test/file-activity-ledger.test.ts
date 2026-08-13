@@ -62,6 +62,35 @@ async function createSessionWithGame(
 }
 
 describe("file-activity ledger", () => {
+  test("workbench identifies the main agent as ForgeaX", async () => {
+    mkdirSync(join(projectRoot, "packages/marketplace"), { recursive: true });
+    writeFileSync(
+      join(projectRoot, "packages/marketplace/manifest.json"),
+      JSON.stringify({
+        agents: [{
+          id: "forge",
+          role: "orchestrator",
+          cardName: { zh: "主线制作人", en: "Lead Producer" },
+          color: "#A8E6B8",
+          avatar: "F",
+          default: true,
+        }],
+      }),
+      "utf-8",
+    );
+
+    const { createWorkbenchRouter } = await import("../src/game/workbench");
+    const response = await createWorkbenchRouter().fetch(new Request("http://t/agents?lang=en"));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      agents: Array<{ id: string; personName?: string; color?: string }>;
+    };
+    expect(body.agents.find((agent) => agent.id === "forge")).toMatchObject({
+      personName: "ForgeaX",
+      color: "#A8E6B8",
+    });
+  });
+
   test("writeText appends a record and clears the lock", async () => {
     const pm = getPathManager();
     const sm = initSessionManager(pm);

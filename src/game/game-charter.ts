@@ -27,5 +27,5 @@ export function buildGameCharter({ serverPort, interfacePort }: GameCharterPorts
  */
 export function buildActiveGameNote(activeSlug?: string): string {
   if (!activeSlug) return "";
-  return `The currently-active game is \`${activeSlug}\` (at \`.forgeax/games/${activeSlug}/\`). If the user asks to modify "the game", "this game", or just describes changes without naming a slug, edit files in that directory. If they explicitly say "做个新的X game" / "create a new game", scaffold a new slug instead.`;
+  return `The currently-active game is \`${activeSlug}\` (at \`.forgeax/games/${activeSlug}/\`). This session is bound to that game. If the user asks to modify "the game", "this game", or just describes changes without naming a slug, edit files in that directory. Any document, validation note, design note, or other artifact requested as part of work on this active game also belongs under that game root; repository-level \`docs/\` is not a game deliverable unless the user explicitly asks for repository documentation. If they explicitly say "做个新的X game" / "create a new game", scaffold a new slug instead.`;
 }

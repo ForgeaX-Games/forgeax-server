@@ -74,6 +74,9 @@ import { createNpcSettingsRouter } from './game/npc-settings';
 import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from './kernel/telemetry-file-sink';
 import { setHostTelemetry } from '@forgeax/orchestrator/kernel/host-telemetry';
+import { discoverProjectMcpTools, shutdownProjectMcpPool } from '@forgeax/orchestrator/kernel/project-mcp';
+import { ClaudeCodeKernel } from '@forgeax/orchestrator/kernel/claude-code-kernel';
+import { CodexKernel } from '@forgeax/orchestrator/kernel/codex-kernel';
 import type { TelemetryRecord } from '@forgeax/types';
 // UI 资产清洗作为 host 能力由 server 自身实现(game/ui-asset-cleanup.ts)，经
 // UiAssetCleanup seam 注入给 ce-api-shim —— 编排层不 source-import marketplace plugin。
@@ -309,6 +312,9 @@ const { app, npcRuntime } = await createForgeaxApp({
   // list_games / query_world / capture_frame 不再硬编码在 cli——声明 + 宿主侧执行体
   // 都在 src/game/host-tools.ts,cli 只提供通用感知往返(ctx.perception)与信任闸。
   hostTools: studioHostTools({ dispatch: editorTransportCarrier.dispatch }),
+  // 任务流计划卡依赖 todo_write。它在编排层默认关闭(保持共享层通用),由本产品
+  // 显式启用;何时调用及其与交付卡的联动由 charter(产品系统提示词)引导。
+  enabledBuiltinTools: ['todo_write'],
   resolveLlmTestRequestSource,
   // 游戏业务路由由产品壳注入(阶段A:原 cli 静态 mount 搬到此)。路由表逐条不变。
   routers: [
@@ -1097,6 +1103,21 @@ serverReady = true;
 console.log(`[forgeax-server] listening on http://${server.hostname}:${server.port}`);
 console.log(`[forgeax-server] websocket on ws://${server.hostname}:${server.port}/ws`);
 
+// Prewarm project MCP only after HTTP is listening. This keeps the server
+// responsive during boot while the shared orchestrator pool performs the
+// parallel initialize/tools-list handshake in the background. Disable it only
+// for explicitly hermetic deployments; the first turn still discovers lazily.
+if (!/^(0|false|no|off)$/i.test(process.env.FORGEAX_PROJECT_MCP_PREWARM?.trim() ?? '')) {
+  const prewarmStartedAt = Date.now();
+  void discoverProjectMcpTools(instanceRoot)
+    .then((tools) => {
+      console.log(`[forgeax-server] project MCP prewarm complete (${tools.length} tools, ${Date.now() - prewarmStartedAt}ms)`);
+    })
+    .catch((error) => {
+      console.warn(`[forgeax-server] project MCP prewarm skipped — ${(error as Error).message}`);
+    });
+}
+
 // The sidecar starts after the server in the local supervisor. Rebind from the
 // server-owned active-game selection once it becomes reachable; the client
 // retries the exact command and publishes a new generation to subscribed UI
@@ -1166,6 +1187,13 @@ const shutdown = async (sig: string) => {
   // live session（per-Session logger 各自 close）+ detach console bridge +
   // close SM 单例 logger，确保 `<userRoot>/debug.log` 尾部 buffer 落盘。
   try { await getSessionManager().shutdown(); } catch { /* SM 可能未 init */ }
+  // Claude's stream-json pool owns detached direct children and sidecar session
+  // ids that are not represented by the normal Agent scheduler. Reap them
+  // explicitly so a server restart cannot inherit stale native capabilities or
+  // leave a detached Claude process behind.
+  try { await ClaudeCodeKernel.closeSessionPool(); } catch { /* best-effort during shutdown */ }
+  try { await CodexKernel.closeAppServerPool(); } catch { /* best-effort during shutdown */ }
+  try { await shutdownProjectMcpPool(); } catch { /* best-effort during shutdown */ }
   const carrierShutdown = await runtimeCarrierSupervisor.shutdown();
   if (carrierShutdown && !carrierShutdown.ok) {
     console.error('[forgeax-server] runtime carrier shutdown failed', JSON.stringify(carrierShutdown.error));

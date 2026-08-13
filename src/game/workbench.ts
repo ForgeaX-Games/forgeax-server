@@ -414,20 +414,15 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
   const router = new Hono();
 
   // ── Active game — one authoritative read/write contract ──
-  router.get('/active-game', async (c) => {
+  router.get('/active-game', (c) => {
     const projectRoot = defaultProjectRoot();
     const activeSlug = getActiveGame(projectRoot) ?? null;
-    let runtime = options.runtimeScope?.snapshot();
-    if (options.runtimeScope !== undefined && activeSlug !== null) {
-      const game = resolveInstanceGame(projectRoot, activeSlug);
-      if (game !== undefined) {
-        // The server process outlives Vite config reloads. Reconcile the
-        // cached projection with the sidecar before handing runtime URLs to a
-        // browser; otherwise a stale ready binding makes every scoped asset
-        // request fail with 404 and leaves the editor in a false loading state.
-        runtime = await options.runtimeScope.bind(game.gameId, game.gameDir);
-      }
-    }
+    // This is a read projection, not a sidecar command. A cold/restarting Play
+    // sidecar can take seconds to answer bind; awaiting it here blocks the
+    // Studio boot path (and queues the user's subsequent PUT behind it). The
+    // explicit PUT below remains the binding authority, while startup binding
+    // publishes refreshed state through the active-game event.
+    const runtime = options.runtimeScope?.snapshot();
     return c.json({
       activeSlug,
       ...(runtime === undefined ? {} : { runtime }),
@@ -662,16 +657,16 @@ export function createWorkbenchRouter(options: WorkbenchRouterOptions = {}): Hon
         fallbackName: string,
         legacyProfession?: { zh?: string; en?: string },
       ): { naming: AgentNaming; personName?: string } => {
-        // forge：legacy-only 编排者，没有 plugin card，合成英文名 Forge。
+        // forge：legacy-only 编排者，没有 plugin card，合成产品主 agent 名 ForgeaX。
         if (id === 'forge') {
           return {
             naming: computeAgentNaming({
-              personName: 'Forge',
+              personName: 'ForgeaX',
               cnTitle: legacyProfession?.zh ?? '主线制作人',
               enTitle: legacyProfession?.en ?? 'Lead Producer',
               fallback: fallbackName,
             }, lang),
-            personName: 'Forge',
+            personName: 'ForgeaX',
           };
         }
         const card = cardById.get(id);

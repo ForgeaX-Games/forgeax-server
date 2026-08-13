@@ -119,7 +119,7 @@ describe('active game resource', () => {
     expect(binds).toEqual([{ gameId: 'game-b', gameDir: resolve(root, '.forgeax/games/game-b') }]);
   });
 
-  test('GET reconciles a cached runtime projection with the sidecar', async () => {
+  test('GET returns the cached runtime projection without waiting for the sidecar', async () => {
     setActiveGame(root, 'game-a');
     const state: RuntimeScopeState = {
       status: 'ready',
@@ -134,23 +134,12 @@ describe('active game resource', () => {
         packageUrlBase: '/preview/__pack/scopes/stale-scope/7/asset',
       },
     };
-    const repaired: RuntimeScopeState = {
-      status: 'ready',
-      binding: {
-        ...state.binding!,
-        scopeId: 'fresh-scope',
-        generation: 8,
-        catalogUrl: '/preview/__pack/scopes/fresh-scope/8/catalog.json',
-        importUrlBase: '/preview/__pack/scopes/fresh-scope/8/import',
-        packageUrlBase: '/preview/__pack/scopes/fresh-scope/8/asset',
-      },
-    };
     let binds = 0;
     const runtimeScope = {
       snapshot: () => state,
       bind: async () => {
         binds += 1;
-        return repaired;
+        return state;
       },
     } as unknown as RuntimeScopeClient;
     const runtimeApp = new Hono();
@@ -159,7 +148,7 @@ describe('active game resource', () => {
     const response = await runtimeApp.request('/api/workbench/active-game');
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ activeSlug: 'game-a', runtime: repaired });
-    expect(binds).toBe(1);
+    expect(await response.json()).toEqual({ activeSlug: 'game-a', runtime: state });
+    expect(binds).toBe(0);
   });
 });

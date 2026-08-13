@@ -139,4 +139,24 @@ describe('RuntimeScopeClient', () => {
     expect(state.binding).toBeUndefined();
     expect(client.snapshot()).toEqual(state);
   });
+
+  test('does not replay a long bind after the transport timeout', async () => {
+    let requests = 0;
+    const client = new RuntimeScopeClient({
+      secret: 'secret',
+      timeoutMs: 1,
+      retries: 8,
+      fetchImpl: (async () => {
+        requests += 1;
+        const error = new Error('runtime scope request timed out');
+        error.name = 'AbortError';
+        throw error;
+      }) as unknown as typeof fetch,
+    });
+
+    const state = await client.bind('game-a', '/project/.forgeax/games/game-a');
+
+    expect(state).toMatchObject({ status: 'unavailable', error: 'runtime scope request timed out' });
+    expect(requests).toBe(1);
+  });
 });

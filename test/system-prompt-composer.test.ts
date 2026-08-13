@@ -37,6 +37,20 @@ describe('GameSystemPromptComposer — byte-equivalence + cache-stability (Stage
     expect(charter).not.toContain('{{interfacePort}}');
   });
 
+  test('includes the task execution protocol in the loaded charter', () => {
+    const charter = buildGameCharter(PORTS);
+
+    expect(charter).toContain('## Task execution protocol');
+    expect(charter).toContain('use `ask_user` before editing');
+    expect(charter).toContain('call `todo_write` with the complete plan: 1–6 items');
+    expect(charter).toContain('stable `id` and an `activeForm`');
+    expect(charter).toContain('exactly one item `in_progress` at a time');
+    expect(charter).toContain('`id` and `content` byte-identical');
+    expect(charter).toContain('independent artifact card');
+    expect(charter).toContain('`deliver_summary` is optional');
+    expect(charter).toContain('private chain-of-thought');
+  });
+
   test('charter() === buildGameCharter(ports) — composer does not drift from the builder', () => {
     const composer = new GameSystemPromptComposer(PORTS);
     expect(composer.charter()).toBe(buildGameCharter(PORTS));
@@ -54,6 +68,7 @@ describe('GameSystemPromptComposer — byte-equivalence + cache-stability (Stage
     expect(composer.activeGameNote('my-game')).toBe(buildActiveGameNote('my-game'));
     expect(composer.activeGameNote(undefined)).toBe(buildActiveGameNote(undefined));
     expect(composer.activeGameNote(undefined)).toBe(''); // no active game ⇒ empty
+    expect(composer.activeGameNote('my-game')).toContain('repository-level `docs/` is not a game deliverable');
   });
 
   test('assembled charter block matches the historical [charter, env, note] composition', () => {

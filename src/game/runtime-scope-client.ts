@@ -56,6 +56,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isTransportTimeout(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && (error as { name?: unknown }).name === 'AbortError';
+}
+
 function isBinding(value: unknown): value is RuntimeAssetBinding {
   if (value === null || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
@@ -234,6 +240,12 @@ export class RuntimeScopeClient {
         return body;
       } catch (error) {
         lastError = error;
+        // A timeout means the sidecar accepted the request but did not finish
+        // within the cold-bind budget. Retrying the same long request eight
+        // more times made the active-game route look dead for >80s. Keep the
+        // fast retries for connection-refused/startup races, but hand a
+        // bounded timeout back to the caller so the UI can retry the command.
+        if (isTransportTimeout(error)) break;
         if (attempt >= this.retries) break;
         await new Promise((resolve) => setTimeout(resolve, this.retryDelayMs));
       }

@@ -26,3 +26,12 @@ test('main mounts the shared Workbench Host before creating the app', () => {
   expect(mainSource.slice(appCreation, mainSource.indexOf('\n});', appCreation)))
     .toContain('workbenchHost,');
 });
+
+test('main composes chat task-flow host tools without merge residue', () => {
+  expect(mainSource).toContain(
+    'hostTools: studioHostTools({ dispatch: editorTransportCarrier.dispatch }),',
+  );
+  expect(mainSource).toContain("enabledBuiltinTools: ['todo_write'],");
+  expect(mainSource).not.toMatch(/^(?:<{7}|={7}|>{7})/m);
+  expect(mainSource).not.toContain('gameplayAdapter');
+});

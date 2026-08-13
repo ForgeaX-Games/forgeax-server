@@ -24,7 +24,10 @@ import { editorTransportHostTools, type EditorTransportHostToolsDeps } from './e
 // 的编辑器腿仍走 relay-eval —— 本轮并存,迁移到 transport 记为显性债(见 docs/ai-native)。
 import { editorGatewayHostTools } from './editor-gateway-host-tools';
 import { editorUiBrowseHostTools } from './editor-ui-browse-host-tools';
-
+import {
+  DeliverSummaryClaimSchema,
+  DeliverSummarySchema,
+} from '@forgeax/types/deliver-summary';
 const GAME_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u;
 const NPC_BRAIN_FILE = 'src/npc-brain.ts';
 const NPC_DIRECTORY = 'src/npcs';
@@ -36,6 +39,74 @@ const CONFIG_START = '// <forgeax:npc-brain-config>';
 const CONFIG_END = '// </forgeax:npc-brain-config>';
 const REGISTRY_START = '// <forgeax:npc-registry>';
 const REGISTRY_END = '// </forgeax:npc-registry>';
+/** JSON Schema sent to kernels. Runtime validation remains the zod contract
+ * in @forgeax/types so wire metadata and execution cannot silently diverge. */
+export const DELIVER_SUMMARY_INPUT_SCHEMA = {
+  type: 'object',
+  required: ['outcome'],
+  properties: {
+    outcome: { type: 'string', minLength: 1, maxLength: 500 },
+    roundLabel: { type: 'string', maxLength: 24 },
+    tests: {
+      type: 'array',
+      maxItems: 20,
+      items: {
+        type: 'object',
+        required: ['name', 'pass'],
+        properties: {
+          name: { type: 'string', minLength: 1 },
+          pass: { type: 'boolean' },
+          detail: { type: 'string', maxLength: 200 },
+        },
+        additionalProperties: false,
+      },
+    },
+    next: {
+      type: 'array',
+      maxItems: 5,
+      items: { type: 'string', minLength: 1 },
+    },
+    build: { type: 'string', maxLength: 16 },
+  },
+  additionalProperties: false,
+} as const;
+
+const DELIVER_SUMMARY_DESCRIPTION =
+  'Optionally record semantic completion metadata for a meaningful task. Provide outcome as 1-5 concise, user-meaningful completion or confirmation points in the user\'s language (not a file-count statement). Include tests actually run with pass/fail and a short detail, and include up to 5 useful next recommendations or user decisions when applicable. Do not include changed files, line counts, duration, agents, cost, or artifact ids; the host derives file changes independently.';
+
+function formatDeliverSummaryIssues(error: { issues: Array<{ path: PropertyKey[]; message: string }> }): string {
+  return error.issues
+    .map((issue) => {
+      const path = issue.path.length ? issue.path.map(String).join('.') : '<root>';
+      return `${path}: ${issue.message}`;
+    })
+    .join('; ');
+}
+
+async function runDeliverSummary(args: unknown, ctx: HostToolRunCtx): Promise<unknown> {
+  const parsed = DeliverSummaryClaimSchema.safeParse(args);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: `deliver_summary arguments invalid: ${formatDeliverSummaryIssues(parsed.error)}`,
+    };
+  }
+  if (!ctx.delivery) {
+    return {
+      ok: false,
+      error: 'deliver_summary enrichment unavailable: orchestrator delivery seam is not configured',
+    };
+  }
+  const summary = await ctx.delivery.enrich(parsed.data);
+  const checked = DeliverSummarySchema.safeParse(summary);
+  if (!checked.success) {
+    return {
+      ok: false,
+      error: `deliver_summary enrichment returned an invalid summary: ${formatDeliverSummaryIssues(checked.error)}`,
+    };
+  }
+  return { ok: true, summary: checked.data };
+}
 
 /** List games from the current instance root and legacy root layout. */
 function listGames(projectRoot: string): { count: number; games: string[] } {
@@ -395,6 +466,12 @@ function wireNpc(args: Record<string, unknown>, ctx: HostToolRunCtx): unknown {
 
 export function gameHostTools(): HostToolSpec[] {
   return [
+    {
+      name: 'deliver_summary',
+      description: DELIVER_SUMMARY_DESCRIPTION,
+      inputSchema: DELIVER_SUMMARY_INPUT_SCHEMA,
+      run: runDeliverSummary,
+    },
     {
       name: 'list_games',
       description: 'List the game projects in this ForgeaX instance. Returns { count, games }. READ-ONLY: to OPEN/SWITCH to a game the way a human does, do NOT hunt for slugs or read files — call editor_ui_browse open(\'menu:file/打开最近\') to reveal the recent list visually, then append the game\'s display name to the chain and call open again.',
