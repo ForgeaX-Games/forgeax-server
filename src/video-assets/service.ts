@@ -474,7 +474,7 @@ export class VideoAssetService {
   /**
    * Prepare a browser upload using the active provider's native transport.
    * Kino returns its documented short-lived COS STS; other providers keep the
-   * existing Workbench resumable response for compatibility.
+   * existing Extension resumable response for compatibility.
    */
   async prepareBrowserUpload(
     input: PrepareUploadInput,
@@ -505,7 +505,7 @@ export class VideoAssetService {
       );
     }
     // Kino's public STS contract has no replacement/session fields. Keep the
-    // legacy Workbench session for replacement uploads so that existing
+    // legacy Extension session for replacement uploads so that existing
     // client-resource-id semantics remain unchanged.
     if (
       typeof provider.prepareBrowserUpload === 'function' &&
@@ -603,7 +603,7 @@ export class VideoAssetService {
         ? {
             productionType:
               input.type === 'CHARACTER_IMAGE' ? 'character_ref' as const : 'scene_ref' as const,
-            sourceModule: 'wb-game-video',
+            sourceModule: 'video-game',
           }
         : {}),
       createdAt: now,
@@ -717,7 +717,7 @@ export class VideoAssetService {
       parseUploadTokenFromReference(input.url, context.origin);
       legacyUploadReference = true;
     } catch {
-      // Direct Kino object URLs are intentionally not Workbench upload tokens.
+      // Direct Kino object URLs are intentionally not Extension upload tokens.
     }
     if (typeof provider.createBrowserResource === 'function' && !legacyUploadReference) {
       const created = await provider.createBrowserResource(input, context);
@@ -1238,7 +1238,7 @@ export class VideoAssetService {
         ? {
             productionType:
               input.type === 'CHARACTER_IMAGE' ? 'character_ref' as const : 'scene_ref' as const,
-            sourceModule: 'wb-game-video',
+            sourceModule: 'video-game',
           }
         : {}),
       createdAt: now,
@@ -1318,7 +1318,7 @@ export class VideoAssetService {
         ? {
             productionType:
               input.type === 'CHARACTER_IMAGE' ? 'character_ref' as const : 'scene_ref' as const,
-            sourceModule: 'wb-game-video',
+            sourceModule: 'video-game',
           }
         : {}),
       createdAt: resource.created_at,
@@ -1497,7 +1497,7 @@ export class VideoAssetService {
 
       // An empty authoritative page only needs a manifest write when it removes
       // a stale projection. Keeping an already-empty projection read-only is
-      // important for uninitialized Workbench games: creating
+      // important for uninitialized Extension games: creating
       // assets/manifest.json by itself turns the three-file package into an
       // inconsistent partial package before the user can initialize it.
       const manifest = await this.#deps.manifest.read(gameDir);

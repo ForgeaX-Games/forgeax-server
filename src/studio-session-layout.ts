@@ -24,9 +24,7 @@
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { listSessionDirs, type SessionLayout } from '@forgeax/orchestrator/fs/session-layout';
-import { safeSegment } from '@forgeax/orchestrator/fs/safe-segment';
-import { resolveUserDir } from '@forgeax/orchestrator/fs/user-dir';
+import { listSessionDirs, type SessionLayout, safeSegment, resolveUserDir } from '@forgeax/orchestrator/session-fs';
 
 export class GameSessionLayout implements SessionLayout {
   private readonly gamesRoot: string;

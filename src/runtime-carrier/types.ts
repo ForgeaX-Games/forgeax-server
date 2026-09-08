@@ -74,6 +74,36 @@ export interface RuntimeSnapshot {
   };
 }
 
+export interface RuntimeEvidenceWindow {
+  readonly windowId: string;
+  readonly carrierId: string;
+  readonly runtimeId: string;
+  readonly pageIdentity: string;
+  readonly canvasIdentity: string;
+  readonly rendererIdentity: string;
+  readonly rendererGeneration: number;
+  readonly startedAtMs: number;
+  readonly endedAtMs: number;
+}
+
+export interface RuntimeRawLogProjection {
+  readonly window: RuntimeEvidenceWindow;
+  readonly entries: readonly unknown[];
+  readonly startIndex: number;
+  readonly endIndexExclusive: number;
+  readonly totalEntries: number;
+  readonly truncated: boolean;
+  readonly continuationToken: string | null;
+}
+
+export interface RuntimeFrameStatisticsProjection {
+  readonly window: RuntimeEvidenceWindow;
+  readonly sampleCount: number;
+  readonly durationMs: number;
+  readonly averageFrameMs: number;
+  readonly fps: number;
+}
+
 export interface RuntimeActionSuccess<Action extends RuntimeAction = RuntimeAction> extends RuntimeSnapshot {
   readonly ok: true;
   readonly action: Action;

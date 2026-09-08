@@ -1,6 +1,6 @@
 /**
  * environment 渲染器(纯函数)—— system prompt 的 `# Environment` 段:
- * Paths + 当前游戏 + Workbench 插件表 + Skills 目录。
+ * Paths + 当前游戏 + Extension 插件表 + Skills 目录。
  *
  * 单一真相:`builtin/kits/workspace/slots/environment.ts`(老 slot 路径)与
  * `src/kernel/compose-turn-request.ts`(新内核装配器)都从这里 import,**只产文本**。
@@ -10,8 +10,9 @@
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { defaultProjectRoot } from '@forgeax/platform-io';
-import { getExtensionSnapshot } from "@forgeax/orchestrator/extensions/registry";
+import { getExtensionSnapshot } from "@forgeax/orchestrator/extensions";
 import { pickI18n } from "@forgeax/types";
+import { installedExtensionPages } from './installed-extension-pages';
 
 interface ForgeJson {
   id?: string;
@@ -44,7 +45,7 @@ export interface RenderEnvironmentOpts {
   slug?: string | null;
 }
 
-/** 纯函数渲染 environment 文本(Paths + Game + Workbench 插件 + Skills)。
+/** 纯函数渲染 environment 文本(Paths + Game + Extension 插件 + Skills)。
  *  老 slot(`environmentSlot`)与新内核装配器(`composeTurnRequest`)共用,单一真相。 */
 export function renderEnvironmentText(opts: RenderEnvironmentOpts): string {
   const projectRoot = opts.projectRoot ?? defaultProjectRoot();
@@ -75,19 +76,18 @@ export function renderEnvironmentText(opts: RenderEnvironmentOpts): string {
     lines.push("");
   }
 
-  // Workbench plugins + skills
+  // Extension plugins + skills
   const snap = getExtensionSnapshot();
-  const workbenches = snap.kinds.workbench;
+  const pages = installedExtensionPages(snap);
   const skills = snap.kinds.skills;
 
-  if (workbenches.length > 0 || skills.length > 0) {
-    // Workbench table
-    if (workbenches.length > 0) {
-      lines.push("## Workbench extensions");
+  if (pages.length > 0 || skills.length > 0) {
+    // Extension table
+    if (pages.length > 0) {
+      lines.push("## Extension extensions");
       lines.push("| id | data dir | skills |");
       lines.push("| --- | --- | --- |");
-      for (const wb of workbenches) {
-        if (wb.hidden) continue;
+      for (const wb of pages) {
         const wbSkills = skills
           .filter((s) => s.extensionId === wb.extensionId)
           .map((s) => {
@@ -95,14 +95,14 @@ export function renderEnvironmentText(opts: RenderEnvironmentOpts): string {
             if (trigger && trigger.kind === "slash") return `/${trigger.command}`;
             return s.definition.id;
           });
-        const dataDir = slug ? inferDataDir(wb.workbenchId, slug) : "—";
+        const dataDir = slug ? inferDataDir(wb.pageId, slug) : "—";
         const skillStr = wbSkills.length > 0 ? wbSkills.join(", ") : "—";
-        lines.push(`| ${wb.workbenchId} | ${dataDir} | ${skillStr} |`);
+        lines.push(`| ${wb.pageId} | ${dataDir} | ${skillStr} |`);
       }
       lines.push("");
     }
 
-    // Skills list (including non-workbench skills)
+    // Skills list (including non-extension skills)
     if (skills.length > 0) {
       lines.push("## Skills");
       for (const s of skills) {
@@ -119,19 +119,23 @@ export function renderEnvironmentText(opts: RenderEnvironmentOpts): string {
   return lines.join("\n");
 }
 
-function inferDataDir(workbenchId: string, slug: string): string {
-  // Known conventions for per-game plugin data directories
+function inferDataDir(pageId: string, slug: string): string {
+  // Known conventions for per-game plugin data directories.
+  // Keys are extension ids as the scanner reports them, i.e. AFTER the
+  // marketplace `` convergence (LEGACY_EXTENSION_SLUG_MIGRATIONS in
+  // @forgeax/orchestrator normalizes the pre-rename ids to these). Values are
+  // directories inside the game and are NOT affected by that rename.
   const known: Record<string, string> = {
-    "wb-character": `characters/`,
-    "wb-scene": `wb-scene/`,
-    "wb-narrative": `design/`,
-    "wb-anim": `anim/`,
-    "wb-bgm": `audio/`,
-    "wb-items": `items/`,
-    "wb-lowpoly-obj": `lowpoly-characters/`,
-    "wb-ui": `ui/`,
+    character: `characters/`,
+    "scene": `scene/`,
+    narrative: `design/`,
+    anim: `anim/`,
+    bgm: `audio/`,
+    items: `items/`,
+    "lowpoly-obj": `lowpoly-characters/`,
+    ui: `ui/`,
   };
-  const sub = known[workbenchId];
+  const sub = known[pageId];
   if (sub) return `.forgeax/games/${slug}/${sub}`;
   return "—";
 }

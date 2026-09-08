@@ -14,17 +14,24 @@
  *  memoized — ports are fixed at construction, so it is byte-stable across turns
  *  (the prompt-cache anchor). */
 
-import type { SystemPromptComposer } from '@forgeax/orchestrator/orchestration-seams';
+import type { SystemPromptComposer } from '@forgeax/orchestrator/seams';
 import { buildGameCharter, buildActiveGameNote } from './game-charter';
 import { renderEnvironmentText } from './environment';
+import {
+  DEFAULT_STUDIO_HOST_CAPABILITIES,
+  type StudioHostCapabilities,
+} from './studio-host-capabilities';
 
 export class GameSystemPromptComposer implements SystemPromptComposer {
   private readonly _charter: string;
 
-  constructor(ports: { serverPort: string; interfacePort: string }) {
+  constructor(
+    ports: { serverPort: string; interfacePort: string },
+    capabilities: StudioHostCapabilities = DEFAULT_STUDIO_HOST_CAPABILITIES,
+  ) {
     // Built once: ports are fixed for the process lifetime, so the charter is
     // byte-stable across every turn (prompt-cache prefix anchor).
-    this._charter = buildGameCharter(ports);
+    this._charter = buildGameCharter(ports, capabilities);
   }
 
   charter(): string {

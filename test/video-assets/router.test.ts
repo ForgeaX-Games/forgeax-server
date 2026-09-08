@@ -422,7 +422,7 @@ describe('createVideoAssetRouter local flow', () => {
       kind: 'image',
       mimeType: 'image/png',
       productionType: 'character_ref',
-      sourceModule: 'wb-game-video',
+      sourceModule: 'video-game',
     });
 
     const content = await app.request(

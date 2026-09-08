@@ -52,8 +52,8 @@ function sampleScenario(refs: string[]): Record<string, unknown> {
 }
 
 function writeScenario(refs: string[]): void {
-  const scenariosPath = join(gameDir, 'game-video', 'scenarios.json');
-  mkdirSync(join(gameDir, 'game-video'), { recursive: true });
+  const scenariosPath = join(gameDir, 'video-game', 'scenarios.json');
+  mkdirSync(join(gameDir, 'video-game'), { recursive: true });
   writeFileSync(
     scenariosPath,
     JSON.stringify(
@@ -356,7 +356,7 @@ describe('migrateVideoAssetDirectory', () => {
 
   test('lists legacy graph snapshots as ignored metadata', () => {
     writeFileSync(manifestPath(), `${JSON.stringify(manifestV1Fixture, null, 2)}\n`, 'utf-8');
-    writeFileSync(join(gameDir, 'game-video', 'scenarios.graph_1.json'), '{}', 'utf-8');
+    writeFileSync(join(gameDir, 'video-game', 'scenarios.graph_1.json'), '{}', 'utf-8');
 
     const report = migrateVideoAssetDirectory({ gameDir, dryRun: true });
     expect(report.legacyIgnored?.graphSnapshots).toEqual(['scenarios.graph_1.json']);

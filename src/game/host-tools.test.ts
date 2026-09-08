@@ -9,12 +9,26 @@ if (!deliverSummaryRun) {
 }
 
 describe('deliver_summary host tool', () => {
-  it('loads the product module and preserves the editor transport composition', () => {
+  it('loads the product module with the typed transport and a fail-closed relay default', () => {
     const names = studioHostTools().map((tool) => tool.name);
     expect(names).toContain('deliver_summary');
     expect(names).toContain('editor_transport');
-    expect(names).toContain('editor_ui_browse');
+    expect(names).not.toContain('editor_ui_browse');
+    expect(names).not.toContain('editor_gateway_eval');
     expect(names).not.toContain('gameplay');
+  });
+
+  it('includes DEV relay tools only for the resolved healthy capability', () => {
+    const names = studioHostTools(undefined, {
+      editorRelay: {
+        available: true,
+        baseUrl: 'http://127.0.0.1:25295',
+        reason: 'available',
+      },
+    }).map((tool) => tool.name);
+    expect(names).toContain('editor_transport');
+    expect(names).toContain('editor_ui_browse');
+    expect(names).toContain('editor_gateway_eval');
   });
 
   it('rejects malformed or host-derived args before enrichment', async () => {

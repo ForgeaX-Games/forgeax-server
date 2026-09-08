@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { RuntimeScopeClient } from '../src/game/runtime-scope-client';
+import { DEFAULT_RUNTIME_SCOPE_TIMEOUT_MS, RuntimeScopeClient } from '../src/game/runtime-scope-client';
+
+function timeoutOf(client: RuntimeScopeClient): number {
+  return (client as unknown as { timeoutMs: number }).timeoutMs;
+}
 
 function binding(gameId: string, scopeId: string, generation: number): Record<string, unknown> {
   return {
@@ -20,6 +24,27 @@ function responseForBinding(gameId: string, scopeId: string, generation: number)
 }
 
 describe('RuntimeScopeClient', () => {
+  test('uses a cold-bind-safe default timeout and supports validated environment overrides', () => {
+    const envName = 'FORGEAX_RUNTIME_SCOPE_TIMEOUT_MS';
+    const previous = process.env[envName];
+    try {
+      delete process.env[envName];
+      expect(timeoutOf(new RuntimeScopeClient())).toBe(DEFAULT_RUNTIME_SCOPE_TIMEOUT_MS);
+
+      process.env[envName] = '1234.5';
+      expect(timeoutOf(new RuntimeScopeClient())).toBe(1234.5);
+
+      process.env[envName] = 'not-a-duration';
+      expect(timeoutOf(new RuntimeScopeClient())).toBe(DEFAULT_RUNTIME_SCOPE_TIMEOUT_MS);
+
+      process.env[envName] = '1';
+      expect(timeoutOf(new RuntimeScopeClient({ timeoutMs: 2345 }))).toBe(2345);
+    } finally {
+      if (previous === undefined) delete process.env[envName];
+      else process.env[envName] = previous;
+    }
+  });
+
   test('serializes exact-game binds and validates the sidecar generation', async () => {
     const requests: Array<{ body: Record<string, unknown>; secret: string | null }> = [];
     const client = new RuntimeScopeClient({
@@ -158,5 +183,103 @@ describe('RuntimeScopeClient', () => {
 
     expect(state).toMatchObject({ status: 'unavailable', error: 'runtime scope request timed out' });
     expect(requests).toBe(1);
+  });
+
+  test('recovers a startup bind when the sidecar becomes reachable later', async () => {
+    let requests = 0;
+    const generations: number[] = [];
+    const client = new RuntimeScopeClient({
+      secret: 'secret',
+      retries: 0,
+      fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+        requests += 1;
+        const command = JSON.parse(String(init?.body)) as {
+          gameId: string;
+          scopeId: string;
+          generation: number;
+        };
+        generations.push(command.generation);
+        if (requests < 3) throw new TypeError('Unable to connect');
+        return responseForBinding(command.gameId, command.scopeId, command.generation);
+      }) as unknown as typeof fetch,
+    });
+
+    const state = await client.bindWhenAvailable(
+      'game-a',
+      '/project/.forgeax/games/game-a',
+      { retryDelayMs: 0 },
+    );
+
+    expect(state.status).toBe('ready');
+    expect(state.binding?.gameId).toBe('game-a');
+    expect(requests).toBe(3);
+    expect(generations).toHaveLength(3);
+    expect(new Set(generations).size).toBe(1);
+  });
+
+  test('stops startup recovery when a newer active game supersedes it', async () => {
+    let requests = 0;
+    let current = true;
+    const client = new RuntimeScopeClient({
+      secret: 'secret',
+      retries: 0,
+      fetchImpl: (async () => {
+        requests += 1;
+        current = false;
+        throw new TypeError('Unable to connect');
+      }) as unknown as typeof fetch,
+    });
+
+    const state = await client.bindWhenAvailable(
+      'game-a',
+      '/project/.forgeax/games/game-a',
+      { shouldContinue: () => current, retryDelayMs: 0 },
+    );
+
+    expect(state.status).toBe('unavailable');
+    expect(requests).toBe(1);
+  });
+
+  test('an explicit bind cancels an older startup recovery before its next attempt', async () => {
+    const requests: string[] = [];
+    let releaseFirstAttempt: (() => void) | undefined;
+    const firstAttemptStarted = new Promise<void>((resolve) => {
+      releaseFirstAttempt = resolve;
+    });
+    let unblockFirstAttempt: (() => void) | undefined;
+    const firstAttemptBlocked = new Promise<void>((resolve) => {
+      unblockFirstAttempt = resolve;
+    });
+    const client = new RuntimeScopeClient({
+      secret: 'secret',
+      retries: 0,
+      fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+        const command = JSON.parse(String(init?.body)) as {
+          gameId: string;
+          scopeId: string;
+          generation: number;
+        };
+        requests.push(command.gameId);
+        if (command.gameId === 'game-a') {
+          releaseFirstAttempt?.();
+          await firstAttemptBlocked;
+          throw new TypeError('Unable to connect');
+        }
+        return responseForBinding(command.gameId, command.scopeId, command.generation);
+      }) as unknown as typeof fetch,
+    });
+
+    const recovery = client.bindWhenAvailable(
+      'game-a',
+      '/project/.forgeax/games/game-a',
+      { retryDelayMs: 0 },
+    );
+    await firstAttemptStarted;
+    const explicit = client.bind('game-b', '/project/.forgeax/games/game-b');
+    unblockFirstAttempt?.();
+
+    const [, explicitState] = await Promise.all([recovery, explicit]);
+    expect(explicitState.binding?.gameId).toBe('game-b');
+    expect(requests).toEqual(['game-a', 'game-b']);
   });
 });

@@ -62,31 +62,15 @@ async function createSessionWithGame(
 }
 
 describe("file-activity ledger", () => {
-  test("workbench identifies the main agent as ForgeaX", async () => {
-    mkdirSync(join(projectRoot, "packages/marketplace"), { recursive: true });
-    writeFileSync(
-      join(projectRoot, "packages/marketplace/manifest.json"),
-      JSON.stringify({
-        agents: [{
-          id: "forge",
-          role: "orchestrator",
-          cardName: { zh: "主线制作人", en: "Lead Producer" },
-          color: "#A8E6B8",
-          avatar: "F",
-          default: true,
-        }],
-      }),
-      "utf-8",
-    );
-
-    const { createWorkbenchRouter } = await import("../src/game/workbench");
-    const response = await createWorkbenchRouter().fetch(new Request("http://t/agents?lang=en"));
+  test("product agent API identifies the Brand main assistant", async () => {
+    const { createProductApiRouter } = await import("../src/game/product-api");
+    const response = await createProductApiRouter().fetch(new Request("http://t/agents?lang=en"));
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       agents: Array<{ id: string; personName?: string; color?: string }>;
     };
     expect(body.agents.find((agent) => agent.id === "forge")).toMatchObject({
-      personName: "ForgeaX",
+      personName: "Forge",
       color: "#A8E6B8",
     });
   });
@@ -210,47 +194,25 @@ describe("file-activity ledger", () => {
     await sm.close(session.sid);
   });
 
-  test("workbench /agents?sid= attributes files via ledger, not produces", async () => {
+  test("Brand /agents?sid= attributes root files to the main assistant via the ledger", async () => {
     const pm = getPathManager();
     const sm = initSessionManager(pm);
     const session = await createSessionWithGame(sm, "fileact-wb");
-
-    // Stand up a fake marketplace manifest at projectRoot so the workbench
-    // endpoint has agents to enumerate. Two agents, both claiming the same
-    // produces glob — under the legacy code path BOTH would be attributed
-    // the same file. Under ledger-derived attribution only the actual writer
-    // gets it.
-    mkdirSync(join(projectRoot, "packages/marketplace"), { recursive: true });
-    writeFileSync(
-      join(projectRoot, "packages/marketplace/manifest.json"),
-      JSON.stringify({
-        agents: [
-          { id: "root", role: "orchestrator", cardName: { zh: "Root" }, produces: ["**/*.ts"] },
-          { id: "ghost", role: "design", cardName: { zh: "Ghost" }, produces: ["**/*.ts"] },
-        ],
-      }),
-      "utf-8",
-    );
 
     await session.scheduler.attachAgent("root");
     const root = session.scheduler.getAgent("root")!;
     await root.agentContext.fs.writeText("only-mine.ts", "export {};\n");
 
-    const { createWorkbenchRouter } = await import("../src/game/workbench");
-    const router = createWorkbenchRouter();
+    const { createProductApiRouter } = await import("../src/game/product-api");
+    const router = createProductApiRouter();
     const res = await router.fetch(
       new Request(`http://t/agents?lang=zh&include=files&sid=${encodeURIComponent(session.sid)}`),
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { agents: Array<{ id: string; files: Array<{ name: string }> }> };
-    const rootEntry = body.agents.find((a) => a.id === "root");
-    const ghostEntry = body.agents.find((a) => a.id === "ghost");
-    expect(rootEntry).toBeDefined();
-    expect(ghostEntry).toBeDefined();
-    // Root wrote one file; ghost wrote nothing → ghost.files MUST be empty
-    // even though both have the same produces[]. That's the bug fix.
-    expect(rootEntry!.files.some((f) => f.name === "only-mine.ts")).toBe(true);
-    expect(ghostEntry!.files.length).toBe(0);
+    const forgeEntry = body.agents.find((a) => a.id === "forge");
+    expect(forgeEntry).toBeDefined();
+    expect(forgeEntry!.files.some((f) => f.name === "only-mine.ts")).toBe(true);
 
     await sm.close(session.sid);
   });

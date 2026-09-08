@@ -42,6 +42,40 @@ export type {
   StopResult,
 } from './types';
 
+export interface RuntimeCarrierIdentity {
+  readonly carrierId: string;
+  readonly runtimeId: string;
+  readonly scope: RuntimeScope;
+  readonly pageIdentity: string;
+  readonly canvasIdentity: string;
+  readonly rendererIdentity: string;
+  readonly rendererGeneration: number;
+}
+
+/** Project only a live, render-ready runtime into a public carrier identity. */
+export function projectRuntimeCarrierIdentity(snapshot: RuntimeSnapshot | null): RuntimeCarrierIdentity | null {
+  if (
+    snapshot === null
+    || snapshot.lifecycle !== 'running'
+    || snapshot.liveness !== 'alive'
+    || snapshot.renderReadiness !== 'ready'
+    || snapshot.confirmedScope === null
+    || !snapshot.pageIdentity
+    || !snapshot.canvasIdentity
+    || !snapshot.rendererIdentity
+    || snapshot.rendererGeneration === undefined
+  ) return null;
+  return {
+    carrierId: `runtime:${snapshot.runtimeId}`,
+    runtimeId: snapshot.runtimeId,
+    scope: snapshot.confirmedScope,
+    pageIdentity: snapshot.pageIdentity,
+    canvasIdentity: snapshot.canvasIdentity,
+    rendererIdentity: snapshot.rendererIdentity,
+    rendererGeneration: snapshot.rendererGeneration,
+  };
+}
+
 const unsupportedHost: CarrierHost = {
   supportsReveal: false,
   async start(): Promise<CarrierHostHandle> {

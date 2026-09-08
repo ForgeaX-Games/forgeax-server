@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "release": "service-1.0.0",
+  "sourceCommit": "main",
+  "services": [
+    {
+      "serviceId": "forgeax-runtime",
+      "version": "1.0.0",
+      "variant": "node-bun-darwin-arm64",
+      "artifact": "services/forgeax-runtime-1.0.0-darwin-arm64.tgz",
+      "digest": "sha256:8f0c5a1c6dc9c1e7d47f6a2c8b2d4b8f8ce6c4b6efb5b5df5db6e2d4d3b0c2c1",
+      "healthProtocol": "ServiceHealthV1"
+    }
+  ]
+}

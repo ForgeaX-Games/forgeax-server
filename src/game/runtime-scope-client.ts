@@ -12,7 +12,8 @@ import { createHash } from 'node:crypto';
 // A first bind rebuilds the Play sidecar's scoped catalog before it can reply.
 // Cold CI and large games can legitimately take several seconds; a short
 // transport timeout turns that work into a false runtime-unavailable 503.
-const DEFAULT_RUNTIME_SCOPE_TIMEOUT_MS = 10_000;
+export const DEFAULT_RUNTIME_SCOPE_TIMEOUT_MS = 60_000;
+const RUNTIME_SCOPE_TIMEOUT_ENV = 'FORGEAX_RUNTIME_SCOPE_TIMEOUT_MS';
 
 export type RuntimeScopeStatus = 'unbound' | 'transitioning' | 'ready' | 'degraded' | 'unavailable';
 
@@ -50,6 +51,13 @@ export interface RuntimeScopeClientOptions {
   readonly retryDelayMs?: number;
 }
 
+export interface RuntimeScopeRecoveryOptions {
+  /** Stop retrying when the active-game authority has moved to another game. */
+  readonly shouldContinue?: () => boolean;
+  /** Delay between complete bind attempts; the bind's own fast retries remain bounded. */
+  readonly retryDelayMs?: number;
+}
+
 type RuntimeScopeListener = (state: RuntimeScopeState) => void;
 
 function errorMessage(error: unknown): string {
@@ -60,6 +68,13 @@ function isTransportTimeout(error: unknown): boolean {
   return typeof error === 'object'
     && error !== null
     && (error as { name?: unknown }).name === 'AbortError';
+}
+
+function envTimeoutMs(): number | undefined {
+  const raw = process.env[RUNTIME_SCOPE_TIMEOUT_ENV];
+  if (raw === undefined) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function isBinding(value: unknown): value is RuntimeAssetBinding {
@@ -107,6 +122,7 @@ export class RuntimeScopeClient {
   private readonly retryDelayMs: number;
   private readonly listeners = new Set<RuntimeScopeListener>();
   private serial: Promise<void> = Promise.resolve();
+  private recoveryGeneration = 0;
   // Start above any generation a sidecar may have retained across a server
   // restart. A monotonic in-process increment then orders same-process binds.
   private generation = Date.now();
@@ -117,7 +133,7 @@ export class RuntimeScopeClient {
     this.endpoint = `http://127.0.0.1:${port}`;
     this.secret = options.secret ?? process.env.FORGEAX_RUNTIME_SCOPE_SECRET;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.timeoutMs = options.timeoutMs ?? DEFAULT_RUNTIME_SCOPE_TIMEOUT_MS;
+    this.timeoutMs = options.timeoutMs ?? envTimeoutMs() ?? DEFAULT_RUNTIME_SCOPE_TIMEOUT_MS;
     this.retries = options.retries ?? 8;
     this.retryDelayMs = options.retryDelayMs ?? 150;
   }
@@ -139,6 +155,21 @@ export class RuntimeScopeClient {
    * of this long-lived server process.
    */
   bind(gameId: string, gameDir: string): Promise<RuntimeScopeState> {
+    // An explicit active-game bind supersedes any background startup recovery
+    // synchronously, before either command reaches the serialized sidecar queue.
+    this.recoveryGeneration += 1;
+    return this.enqueueBind(gameId, gameDir);
+  }
+
+  private enqueueBind(gameId: string, gameDir: string): Promise<RuntimeScopeState> {
+    return this.enqueueBindGeneration(gameId, gameDir);
+  }
+
+  private enqueueBindGeneration(
+    gameId: string,
+    gameDir: string,
+    requestedGeneration?: number,
+  ): Promise<RuntimeScopeState> {
     const scopeId = scopeIdFor(gameId, gameDir);
     const run = this.serial.then(async () => {
       const current = this.state.binding;
@@ -161,7 +192,8 @@ export class RuntimeScopeClient {
         }
       }
 
-      const generation = ++this.generation;
+      const generation = requestedGeneration ?? ++this.generation;
+      this.generation = Math.max(this.generation, generation);
       this.publish({ status: 'transitioning' });
       try {
         const binding = await this.requestBind({
@@ -184,6 +216,41 @@ export class RuntimeScopeClient {
     });
     this.serial = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  /**
+   * Recover the server-owned startup binding after a sidecar startup race.
+   *
+   * A normal `bind()` stays bounded because it is also used by the interactive
+   * active-game PUT route. Startup reconciliation has a different lifecycle:
+   * the Play sidecar is supervised independently and may become reachable only
+   * after the server's fast transport retries finish. Retry complete binds until
+   * the requested game is ready or the active-game authority supersedes it.
+   */
+  async bindWhenAvailable(
+    gameId: string,
+    gameDir: string,
+    options: RuntimeScopeRecoveryOptions = {},
+  ): Promise<RuntimeScopeState> {
+    const shouldContinue = options.shouldContinue ?? (() => true);
+    const retryDelayMs = options.retryDelayMs ?? 500;
+    const recoveryGeneration = ++this.recoveryGeneration;
+    // One startup recovery is one logical publication. Transport retries must
+    // reuse its generation so a slow sidecar cannot materialize a fresh DDC
+    // realm for every HTTP timeout.
+    const bindingGeneration = ++this.generation;
+    let state = this.snapshot();
+
+    while (recoveryGeneration === this.recoveryGeneration && shouldContinue()) {
+      state = await this.enqueueBindGeneration(gameId, gameDir, bindingGeneration);
+      if (
+        isReadyStatus(state.status)
+        || recoveryGeneration !== this.recoveryGeneration
+        || !shouldContinue()
+      ) return state;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+    return state;
   }
 
   /**

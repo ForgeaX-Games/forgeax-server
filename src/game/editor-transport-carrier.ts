@@ -25,6 +25,12 @@ interface EditorTransportPresence { readonly visibility: EditorTransportVisibili
 
 interface EditorTransportConnection { readonly scope: string | null; readonly role: EditorTransportRole | null; readonly presence: EditorTransportPresence }
 
+interface EditorTransportCandidateFacts extends JsonRecord {
+  readonly scope: string;
+  readonly candidates: number;
+  readonly candidatesWithGameplay: number;
+}
+
 interface EditorTransportDispatchOptions {
   /** Preserve the managed carrier fallback for explicit host operations; passive projections opt out. */
   readonly allowCarrierProvisioning?: boolean;
@@ -78,12 +84,14 @@ function carrierError(
   request: JsonRecord, code: string, hint: string,
   recoveryActions = ['editor.discover', 'request.retry'], details: JsonRecord = {},
 ): JsonRecord {
+  const expected = details.expected ?? { scope: request.scope, candidates: 1, authority: 'interactive' };
+  const observed = details.observed ?? { scope: request.scope };
   return {
     jsonrpc: '2.0',
     version: EDITOR_TRANSPORT_VERSION,
     id: request.id,
     correlationId: request.correlationId,
-    error: { code, hint, retryable: true, recoveryActions, ...details },
+    error: { code, hint, retryable: true, expected, observed, recoveryActions, ...details },
   };
 }
 
@@ -97,6 +105,8 @@ function protocolError(request: Partial<JsonRecord> = {}): JsonRecord {
       code: 'protocol-invalid-message',
       hint: 'The editor transport request does not match editor-transport/v1.',
       retryable: false,
+      expected: { version: EDITOR_TRANSPORT_VERSION },
+      observed: { version: request.version ?? null },
       recoveryActions: ['editor.discover'],
     },
   };
@@ -175,6 +185,17 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     return eligible.length === 1 ? eligible[0]![0] : null;
   };
 
+  const candidateFacts = (scope: string): EditorTransportCandidateFacts => {
+    const live = scopeConnections(scope);
+    const interactive = live.filter(([, connection]) => connection.role === 'interactive');
+    const pool = interactive.length > 0 ? interactive : live.filter(([, connection]) => connection.role === 'managed');
+    return {
+      scope,
+      candidates: pool.length,
+      candidatesWithGameplay: pool.filter(([, connection]) => connection.presence.gameplay).length,
+    };
+  };
+
   const failPending = (socket: ServerWebSocket<EditorTransportSocketData>, hint: string): void => {
     const settledScopes = new Set<string>();
     for (const [key, entry] of pending) {
@@ -182,7 +203,9 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
       clearTimeout(entry.timer);
       pending.delete(key);
       settledScopes.add(entry.scope);
-      entry.resolve(carrierError(entry.request, 'editor-carrier-unavailable', hint));
+      entry.resolve(carrierError(entry.request, 'editor-carrier-unavailable', hint, ['editor.discover', 'request.retry'], {
+        observed: candidateFacts(entry.scope),
+      }));
     }
     for (const scope of settledScopes) maybeRetireManaged(scope);
   };
@@ -223,11 +246,22 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     const deadline = Date.now() + timeoutMs;
     const key = pendingKey(scope, parsed.id as string, parsed.correlationId as string);
     const target = await acquireSocket(scope, parsed.method === 'gameplay', dispatchOptions.allowCarrierProvisioning !== false, deadline);
+    const facts = candidateFacts(scope);
     if (target === null) {
-      return carrierError(parsed, 'editor-carrier-ambiguous', `Multiple equally authoritative Studio pages can answer scope "${scope}"; engage the intended page.`, ['editor.focus', 'request.retry']);
+      return carrierError(parsed, 'editor-carrier-ambiguous', `Multiple equally authoritative Studio pages can answer scope "${scope}"; engage the intended page.`, ['editor.focus', 'request.retry'], {
+        expected: { scope, candidates: 1, authority: 'interactive', ...(parsed.method === 'gameplay' ? { capabilities: { gameplay: true } } : {}) },
+        observed: facts,
+      });
     }
     if (target === undefined) {
-      return carrierError(parsed, 'editor-carrier-unavailable', `Connect or start a Studio Editor page for scope "${scope}" before using the Editor transport.`);
+      const gameplayUnavailable = parsed.method === 'gameplay' && facts.candidates > 0 && facts.candidatesWithGameplay === 0;
+      return carrierError(parsed, 'editor-carrier-unavailable', gameplayUnavailable
+        ? `The connected Studio page for scope "${scope}" has not published gameplay readiness.`
+        : `Connect or start a Studio Editor page for scope "${scope}" before using the Editor transport.`,
+      ['editor.discover', 'request.retry'], {
+        expected: { scope, candidates: 1, authority: 'interactive', ...(parsed.method === 'gameplay' ? { capabilities: { gameplay: true } } : {}) },
+        observed: facts,
+      });
     }
     if (pending.has(key)) {
       return {
@@ -249,8 +283,14 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
           parsed,
           'editor-carrier-timeout',
           `The selected Studio editor page did not answer within ${timeoutMs}ms. Its outcome is unknown and the operation may still be running; inspect state before any manual retry.`,
-          [],
-          { retryable: false, outcome: 'unknown', operationMayStillBeRunning: true },
+          ['request.status', 'request.retry', 'editor.discover'],
+          {
+            retryable: false,
+            outcome: 'unknown',
+            operationMayStillBeRunning: true,
+            expected: { scope, outcome: 'response-within-timeout' },
+            observed: { scope, outcome: 'unknown', timeoutMs },
+          },
         ));
       }, remainingMs);
       pending.set(key, { request: parsed, socket: target, scope, resolve, timer });
@@ -260,7 +300,9 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
         clearTimeout(timer);
         pending.delete(key);
         maybeRetireManaged(scope);
-        resolve(carrierError(parsed, 'editor-carrier-unavailable', 'The Studio editor transport connection closed while sending the request.'));
+        resolve(carrierError(parsed, 'editor-carrier-unavailable', 'The Studio editor transport connection closed while sending the request.', ['editor.discover', 'request.retry'], {
+          observed: candidateFacts(scope),
+        }));
       }
     });
   };

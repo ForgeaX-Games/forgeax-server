@@ -1,9 +1,9 @@
 // Explicit "active character" binding — the SSOT for "which character the
-// user most recently produced / is handing off between workbenches" within a
+// user most recently produced / is handing off between pages" within a
 // given game.
 //
 // Why this exists (2026-06-01, "走文件连通"): the pipeline
-//   wb-character (design) → wb-anim (animate) → wb-skill (vfx) → wb-reel (output)
+//   character (design) → anim (animate) → skill (vfx) → reel (output)
 // used to hand the selected charId between iframes via a transient
 // localStorage key (`forgeax:anim-handoff`). That signal is lost on reload and
 // is not visible to server-side / AI consumers. The actual character DATA was
@@ -13,7 +13,7 @@
 // This module persists that pointer as a file, mirroring active-game.json:
 //   <projectRoot>/.forgeax/games/<slug>/active-character.json
 //     → { version: 1, charId, role }
-// Downstream workbenches read it on mount instead of waiting for a postMessage,
+// Downstream pages read it on mount instead of waiting for a postMessage,
 // so the handoff survives reloads, works across iframes, and is inspectable by
 // AI / tooling. localStorage is kept only as a best-effort fast-path signal.
 
@@ -70,7 +70,7 @@ export function getActiveCharacter(
 }
 
 /**
- * Record the user's active character for a game. Called by wb-character right
+ * Record the user's active character for a game. Called by character right
  * after it writes a character's manifest (the produce side). No-op-safe:
  * invalid slug/charId are ignored rather than throwing.
  */

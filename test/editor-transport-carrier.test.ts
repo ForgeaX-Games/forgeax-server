@@ -50,6 +50,9 @@ describe('Studio editor typed transport carrier', () => {
       correlationId: 'correlation-1',
       error: {
         code: 'editor-carrier-unavailable',
+        expected: { scope: 'game:spin-cube', candidates: 1, authority: 'interactive' },
+        observed: { scope: 'game:spin-cube', candidates: 0 },
+        hint: expect.any(String),
         retryable: true,
         recoveryActions: ['editor.discover', 'request.retry'],
       },
@@ -133,7 +136,12 @@ describe('Studio editor typed transport carrier', () => {
     await Bun.sleep(0);
     expect(interactiveAuthorities).toEqual([]);
     await expect(carrier.dispatch({ ...request, method: 'gameplay' })).resolves.toMatchObject({
-      error: { code: 'editor-carrier-unavailable' },
+      error: {
+        code: 'editor-carrier-unavailable',
+        expected: { scope: 'game:spin-cube', candidates: 1, authority: 'interactive', capabilities: { gameplay: true } },
+        observed: { scope: 'game:spin-cube', candidates: 1, candidatesWithGameplay: 0 },
+        recoveryActions: ['editor.discover', 'request.retry'],
+      },
     });
     expect(ensureCalls).toBe(0);
 
@@ -358,7 +366,13 @@ describe('Studio editor typed transport carrier', () => {
     }));
 
     await expect(carrier.dispatch(request)).resolves.toMatchObject({
-      error: { code: 'editor-carrier-ambiguous', recoveryActions: ['editor.focus', 'request.retry'] },
+      error: {
+        code: 'editor-carrier-ambiguous',
+        expected: { scope: 'game:spin-cube', candidates: 1, authority: 'interactive' },
+        observed: { scope: 'game:spin-cube', candidates: 2 },
+        hint: expect.any(String),
+        recoveryActions: ['editor.focus', 'request.retry'],
+      },
     });
     expect(userPage.sent.some((message) => JSON.parse(message).type === 'editor-transport/request')).toBe(false);
     expect(passive.sent.some((message) => JSON.parse(message).type === 'editor-transport/request')).toBe(false);
@@ -431,7 +445,14 @@ describe('Studio editor typed transport carrier', () => {
     const gameplayRequest = { ...request, timeoutMs: 5, method: 'gameplay', params: { version: 1, operation: 'capture' } };
     await expect(carrier.dispatch(gameplayRequest))
       .resolves.toMatchObject({ error: {
-        code: 'editor-carrier-timeout', retryable: false, outcome: 'unknown', operationMayStillBeRunning: true,
+        code: 'editor-carrier-timeout',
+        expected: { scope: 'game:spin-cube', outcome: 'response-within-timeout' },
+        observed: { scope: 'game:spin-cube', outcome: 'unknown', timeoutMs: 5 },
+        hint: expect.any(String),
+        recoveryActions: ['request.status', 'request.retry', 'editor.discover'],
+        retryable: false,
+        outcome: 'unknown',
+        operationMayStillBeRunning: true,
       } });
     const capped = { ...gameplayRequest, timeoutMs: 1_000, id: 'request-capped', correlationId: 'correlation-capped' };
     const startedAt = Date.now();

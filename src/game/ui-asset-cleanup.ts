@@ -1,13 +1,13 @@
 // Studio-host UI asset cleanup (sharp image normalization + canvas inspection).
 //
 // This is the server-side implementation of the `UiAssetCleanup` capability that
-// ce-api-shim injects (see main.ts → createCeApiShimRouter). In Studio, the wb-ui
-// plugin is served as static iframe assets, so its original Vite dev plugin (which
+// ce-api-shim injects (see main.ts → createCeApiShimRouter). In Studio, the ui
+// extension is served as static iframe assets, so its original Vite dev plugin (which
 // owns the same logic) does NOT run — the host must perform the cleanup itself.
 //
-// It lives IN the server package (not imported from marketplace/extensions/wb-ui/src)
+// It lives IN the server package (not imported from the @forgeax-extension/ui source)
 // to keep the layering honest: the runtime core must not source-depend on a
-// marketplace plugin — same discipline as server/game/wb-character.ts keeping its
+// marketplace plugin — same discipline as server/game/character.ts keeping its
 // host concerns local. The boundary check (scripts/check-boundaries.ts) enforces it.
 // Self-contained: the only external dependency is `sharp`.
 import sharp from 'sharp'

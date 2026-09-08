@@ -1,13 +1,9 @@
 /**
  * Engine-root detection for the web/standalone export pipeline.
  *
- * The engine source migrated from `packages/build/engine-src` to
- * `packages/editor/packages/play-runtime`. The export script
- * (`build-standalone.ts`) lives in the old engine-src but its deps (vite,
- * @forgeax/*) + the `.forgeax` games symlink only exist under the live
- * play-runtime. The packager therefore needs to know WHICH engine root to
- * run the export against — this module scans known locations and validates
- * each so the UI can offer a choice.
+ * Static game builds are owned by the Engine DevKit.  The server only chooses
+ * an installed Engine workspace and invokes its public `forgeax build` CLI;
+ * it must not reach into the retired Studio/Build standalone script.
  */
 
 import { existsSync } from 'node:fs';
@@ -18,7 +14,7 @@ export interface EngineRootCandidate {
   path: string;
   /** Short human label for the UI. */
   label: string;
-  /** Whether this root can actually run the export (deps present). */
+  /** Whether this root exposes the Engine DevKit build contract. */
   valid: boolean;
   /** Whether this is the auto-detected default. */
   recommended: boolean;
@@ -26,16 +22,27 @@ export interface EngineRootCandidate {
 
 /** Locations (relative to the studio monorepo root) that may host the engine. */
 const CANDIDATE_RELS: Array<{ rel: string; label: string }> = [
-  { rel: 'packages/editor/packages/play-runtime', label: 'play-runtime (editor)' },
-  { rel: 'packages/build/engine-src', label: 'engine-src (legacy)' },
+  { rel: 'packages/editor/packages/engine', label: 'engine (editor)' },
+  { rel: 'packages/engine', label: 'engine (standalone)' },
 ];
 
-/** A candidate can run the export only if vite + the export helpers resolve. */
+/** Relative path of the Engine-owned external-project build CLI. */
+export const ENGINE_DEVKIT_CLI_RELATIVE = join('packages', 'devkit', 'dist', 'cli.mjs');
+
+/** Resolve the public DevKit CLI for a selected Engine workspace. */
+export function engineDevkitCliPath(engineRoot: string): string {
+  return join(engineRoot, ENGINE_DEVKIT_CLI_RELATIVE);
+}
+
+/**
+ * A candidate is usable only when the packaged DevKit CLI and its package
+ * manifest are present.  Vite, pack cooking, shader compilation, and the
+ * browser runtime are implementation details of that Engine-owned CLI.
+ */
 function isValidEngineRoot(dir: string): boolean {
   return (
-    existsSync(join(dir, 'node_modules', 'vite')) &&
-    existsSync(join(dir, 'pack-catalog.ts')) &&
-    existsSync(join(dir, 'src', 'types.ts'))
+    existsSync(join(dir, 'package.json')) &&
+    existsSync(engineDevkitCliPath(dir))
   );
 }
 

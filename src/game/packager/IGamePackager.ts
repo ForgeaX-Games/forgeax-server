@@ -17,7 +17,7 @@ export interface PackageOptions {
   /** Where to write the final artefacts */
   outDir: string;
   platform: TargetPlatform;
-  /** Selected engine root (play-runtime). When unset, WebPackager auto-detects. */
+  /** Selected Engine workspace exposing packages/devkit/dist/cli.mjs. When unset, WebPackager auto-detects. */
   engineRoot?: string;
   /** Rebuild the Rust→WASM engine core before bundling (wgpu-wasm/build.sh) */
   rebuildEngine?: boolean;
@@ -52,7 +52,7 @@ export interface PackageResult {
   slug: string;
   platform: TargetPlatform;
   outDir?: string;
-  /** Human-friendly run hint (e.g. `./serve.sh` or the .exe path) */
+  /** Human-friendly run hint (e.g. `/play/<slug>/` or the .exe path) */
   runHint?: string;
   /** Whether the cached launcher shell was reused (Windows) */
   usedCachedShell?: boolean;

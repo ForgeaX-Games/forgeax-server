@@ -118,7 +118,7 @@ export function validateScenarioReferences(
 }
 
 function readScenarioFromGameDir(gameDir: string): unknown {
-  const scenariosPath = resolve(gameDir, 'game-video', 'scenarios.json');
+  const scenariosPath = resolve(gameDir, 'video-game', 'scenarios.json');
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(scenariosPath, 'utf-8'));
@@ -157,7 +157,7 @@ function readScenarioFromGameDir(gameDir: string): unknown {
 }
 
 function detectLegacyGraphSnapshots(gameDir: string): LegacyIgnoredReport {
-  const gameVideoDir = resolve(gameDir, 'game-video');
+  const gameVideoDir = resolve(gameDir, 'video-game');
   return {
     graphSnapshots: LEGACY_GRAPH_SNAPSHOTS.filter((name) =>
       existsSync(join(gameVideoDir, name)),

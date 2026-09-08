@@ -41,7 +41,10 @@ export class GamePackagerProxy implements IGamePackager {
       if (result.ok) {
         console.log(`[packager] ${opts.platform} build for "${opts.slug}" done in ${elapsed}s → ${result.outDir}`);
       } else {
-        console.error(`[packager] ${opts.platform} build for "${opts.slug}" failed after ${elapsed}s: ${result.error}`);
+        console.error(
+          `[packager] ${opts.platform} build for "${opts.slug}" failed after ${elapsed}s:`,
+          { error: result.error, detail: result.detail },
+        );
       }
       return result;
     } catch (e) {

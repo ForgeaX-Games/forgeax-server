@@ -26,7 +26,7 @@ import {
   statSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { getPathManager } from '@forgeax/orchestrator/fs/path-manager';
+import { getPathManager } from '@forgeax/orchestrator/session-fs';
 // 仅 type-only:契约形状来自 SSOT wire schema(编译期擦除,不引入运行期依赖)。
 import type { TelemetryRecord } from '@forgeax/types';
 

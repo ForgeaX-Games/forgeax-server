@@ -52,11 +52,11 @@
  * 2026-08-03/04); it stops being the right trade the moment a second team needs to
  * reuse them. Then: real modules injected once into a `__uiBrowse` namespace.
  */
-import type { HostToolRunCtx, HostToolSpec } from '@forgeax/orchestrator/orchestration-seams';
-import { dispatchAndWait, getSurfaceSnapshot, listSurfaces } from '@forgeax/orchestrator/api/bus';
-import { catalogAll } from '@forgeax/orchestrator/kernel/action-catalog';
-import { findVisibleDoor } from '@forgeax/orchestrator/kernel/action-door';
-import { getExtensionSnapshot } from '@forgeax/orchestrator/extensions/registry';
+import type { HostToolRunCtx, HostToolSpec } from '@forgeax/orchestrator/seams';
+import { dispatchAndWait, getSurfaceSnapshot, listSurfaces } from '@forgeax/orchestrator';
+import { catalogAll, findVisibleDoor } from '@forgeax/orchestrator/kernel';
+import { getExtensionSnapshot } from '@forgeax/orchestrator/extensions';
+import { installedExtensionPages } from './installed-extension-pages';
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -109,32 +109,24 @@ interface ShellDeps {
   snapshot?: (surfaceId: string) => unknown;
   list?: () => ShellSurfaceSlim[];
   /** ActionCatalog(ui_invoke 的动作清单)。find 用它亮出 headless 能力。 */
-  actions?: () => ReadonlyArray<{ id: string; title?: string; description?: string }>;
-  /** 已安装 workbench 插件全量(extensions registry)。find 用它揪出"孤儿界面"。 */
-  plugins?: () => ReadonlyArray<{ id: string; workbenchId?: string; label: string; hidden?: boolean }>;
+  actions?: () => ReadonlyArray<{
+    id: string;
+    title?: string;
+    description?: string;
+    preconditions?: readonly string[];
+    door?: { menuCommandId?: string };
+  }>;
+  /** 已安装 extension 插件全量(extensions registry)。find 用它揪出"孤儿界面"。 */
+  plugins?: () => ReadonlyArray<{ id: string; pageId?: string; label: string; hidden?: boolean }>;
 }
 
 /** 默认实现:进程内读 extensions registry,把 manifest displayName 拍平成可匹配文本。 */
-function installedWorkbenchPlugins(): Array<{ id: string; workbenchId?: string; label: string; hidden?: boolean }> {
+function installedExtensionPlugins(): Array<{ id: string; pageId?: string; label: string; hidden?: boolean }> {
   try {
-    const snap = getExtensionSnapshot();
-    const names = new Map<string, string>();
-    for (const wrapper of snap.manifests as Array<{ manifest?: { id?: unknown; displayName?: unknown } }>) {
-      const manifest = wrapper.manifest;
-      if (!manifest || typeof manifest.id !== 'string') continue;
-      const dn = manifest.displayName;
-      const label = typeof dn === 'string'
-        ? dn
-        : dn && typeof dn === 'object'
-          ? Object.values(dn as Record<string, unknown>).filter((value): value is string => typeof value === 'string').join(' / ')
-          : manifest.id;
-      names.set(manifest.id, label || manifest.id);
-    }
-    return (snap.kinds.workbench as Array<{ extensionId: string; workbenchId: string; hidden?: boolean }>).map((entry) => ({
+    return installedExtensionPages(getExtensionSnapshot()).map((entry) => ({
       id: entry.extensionId,
-      workbenchId: entry.workbenchId,
-      label: names.get(entry.extensionId) ?? entry.extensionId,
-      ...(entry.hidden ? { hidden: true } : {}),
+      pageId: entry.pageId,
+      label: entry.label,
     }));
   } catch {
     return [];
@@ -287,7 +279,7 @@ const SHELL_SETTLE_POLL_MS = 100;
 
 interface ShellState {
   mode: 'scene' | 'ai';
-  workbenchTab: string;
+  pageTab: string;
   entries: Array<{ id: string; label: string; kind?: string }>;
 }
 
@@ -304,7 +296,7 @@ function readShell(deps: EditorUiBrowseDeps): ShellState | null {
     return null;
   }
   if (!raw || typeof raw !== 'object') return null;
-  const snapshot = raw as { mode?: unknown; workbenchTab?: unknown; entries?: unknown };
+  const snapshot = raw as { mode?: unknown; pageTab?: unknown; entries?: unknown };
   if (snapshot.mode !== 'scene' && snapshot.mode !== 'ai') return null;
   const entries = Array.isArray(snapshot.entries)
     ? snapshot.entries.flatMap((entry) => {
@@ -320,7 +312,7 @@ function readShell(deps: EditorUiBrowseDeps): ShellState | null {
     : [];
   return {
     mode: snapshot.mode,
-    workbenchTab: typeof snapshot.workbenchTab === 'string' ? snapshot.workbenchTab : '',
+    pageTab: typeof snapshot.pageTab === 'string' ? snapshot.pageTab : '',
     entries,
   };
 }
@@ -400,7 +392,7 @@ const DESCRIPTION =
   + "act(op) = one EditorOp through the gateway as origin 'ai' (undo/ledger), or {surface, action, args} for any published surface action. "
   + "MULTI-STEP EDITS: submit ONE act with {kind:'transaction', label:'...', commands:[op, op, ...]} — the gateway's own batch primitive: atomic (all or none), ONE undo entry, one repaint. Prefer it whenever a task changes more than one field or entity WITH DOCUMENT OPS: setComponent, spawnEntity, destroyEntity, duplicateEntity, rename, reparent, setHidden, addComponent, removeComponent, setSceneOverride, removeSceneOverride, instantiateSceneAsset, applyVisualQualityPreset, destroyAsset, renameAsset, duplicateAsset. "
   + "It CANNOT carry asset-binding or disk ops — bindAssetRef, createMaterial, saveDocToDisk, importAsset and friends run in a different domain and the gateway rejects the whole batch with UNKNOWN_OP (nothing is applied, so the refusal is safe but the batch is wasted). Recolouring N objects is therefore N separate acts, each individually undoable; say so to the user up front, because undoing that job takes N undos rather than one. "
-  + "act's return (rev, after, ledger) IS the verification for editor edits — do NOT re-open the entity, enter Play, read consoles or take screenshots to confirm a field change. "
+  + "act always returns an explicit fieldReadback boolean: true means rev + a non-empty per-field after map were both observed, so that return IS the field-level verification and you must not re-open the entity, enter Play, read consoles or take screenshots. false means the return does not prove the requested field values — follow its own instruction before reporting specifics. "
   + "open('entity:...') walks the exact human path: SELECTS the entity (hierarchy highlight) AND brings the 物体属性 inspector panel to front, then returns per-field ready-to-submit `affordance.op` — the same fields the user now sees on screen; copy, edit the value, submit with act and the panel updates live. "
   + "PERSISTENCE: a successful act lands in the live document and undo ledger, not on disk; the scene/pack file lags until someone saves — that is normal. Persist with act({kind:'saveDocToDisk'}). Never read or edit scene/pack files to check or force anything. "
   + "Every open verifies visually and returns `visible_change`; only claim something opened when it is non-null. "
@@ -453,11 +445,11 @@ function editorForegroundFailure(deps: EditorUiBrowseDeps): BrowseFailure | unde
       // 2026-08-06 外审 B1:不再指路 open('rail:editor') —— rail 门无发布者,那条
       // 路必死。此闸只有在 shell 面真实注册时才会触发(readShell 非空),届时 rail
       // 门也随之复活,可以恢复指路;在那之前如实请用户自己点。
-      hint: `工作区当前在 AI 侧(rail tab: ${shell.workbenchTab || '未知'}),编辑器视口没有挂载,读写编辑器的通道此刻不通。`
+      hint: `工作区当前在 AI 侧(rail tab: ${shell.pageTab || '未知'}),编辑器视口没有挂载,读写编辑器的通道此刻不通。`
         + '两条路都不丢改动:①请用户点左上 rail 的 Scene 页签(他看得见);'
         + '②你自己用 ui_act_app_set_mode({mode:"scene"}) 后台切 —— 活的,但屏幕不展示切换过程,用了要如实说明。先问用户选哪条。',
       retryable: true,
-      shell: { mode: shell.mode, workbenchTab: shell.workbenchTab },
+      shell: { mode: shell.mode, pageTab: shell.pageTab },
     },
   };
 }
@@ -719,7 +711,7 @@ function describeScreenChange(before: unknown, after: unknown): string | null {
   if ((a.dialogs ?? 0) > (b.dialogs ?? 0)) notes.push('浮层已关闭');
   if (a.overlay !== b.overlay && b.overlay && (a.dialogs ?? 0) === (b.dialogs ?? 0)) notes.push(`浮层切到「${b.overlay}」`);
   if (a.fullscreen !== b.fullscreen) notes.push(b.fullscreen ? '进入全屏' : '退出全屏');
-  if (a.tab !== b.tab && b.tab) notes.push(`工作台切到 ${b.tab}`);
+  if (a.tab !== b.tab && b.tab) notes.push(`扩展页切到 ${b.tab}`);
   const beforePanels = new Set(a.panels ?? []);
   const afterPanels = new Set(b.panels ?? []);
   const added = [...afterPanels].filter((id) => !beforePanels.has(id));
@@ -763,27 +755,27 @@ async function runOpenRail(
   // real dispatch plus settle wait (400-770ms) that changed nothing. Answer for free.
   const alreadyThere = target.action === 'setMode'
     ? shell.mode === 'scene'
-    : shell.mode === 'ai' && shell.workbenchTab === target.args.tab;
+    : shell.mode === 'ai' && shell.pageTab === target.args.tab;
   if (alreadyThere) {
     return {
       ok: true,
       via: `${SHELL_SURFACE}.${target.action}`,
       mode: shell.mode,
-      workbenchTab: shell.workbenchTab,
+      pageTab: shell.pageTab,
       stateChanged: false,
       alreadyThere: true,
       visible_change: null,
       hint: target.action === 'setMode'
         ? '编辑器本来就在前台,没有派发任何动作 —— 直接继续读写场景即可。'
-        : `${target.label} 本来就是当前工作台,没有派发任何动作。`,
+        : `${target.label} 本来就是当前扩展页,没有派发任何动作。`,
     };
   }
 
   const wanted = (raw: unknown): boolean => {
-    const state = raw as { mode?: unknown; workbenchTab?: unknown } | null;
+    const state = raw as { mode?: unknown; pageTab?: unknown } | null;
     return target.action === 'setMode'
       ? state?.mode === 'scene'
-      : state?.mode === 'ai' && state?.workbenchTab === target.args.tab;
+      : state?.mode === 'ai' && state?.pageTab === target.args.tab;
   };
   const moved = await dispatchShellAction(deps, SHELL_SURFACE, target.action, target.args, wanted);
   if (isFailure(moved)) return moved;
@@ -795,21 +787,21 @@ async function runOpenRail(
     via: `${SHELL_SURFACE}.${target.action}`,
     ...(moved.token ? { token: moved.token } : {}),
     mode: after.mode,
-    workbenchTab: after.workbenchTab,
-    stateChanged: after.mode !== shell.mode || after.workbenchTab !== shell.workbenchTab,
+    pageTab: after.pageTab,
+    stateChanged: after.mode !== shell.mode || after.pageTab !== shell.pageTab,
     // 多页时 moved.reached 证明不了"用户那一页动了" —— 它只证明**某一页**动了。
     visible_change: moved.reached && !manyPages
-      ? (target.action === 'setMode' ? '编辑器工作区已切回前台,场景视口重新显示' : `${target.label} 工作台已在左侧显示`)
+      ? (target.action === 'setMode' ? '编辑器工作区已切回前台,场景视口重新显示' : `${target.label} 扩展页已在左侧显示`)
       : null,
     ...(manyPages ? { multiplePages: manyPages } : {}),
     ...(moved.reached || manyPages
       ? {}
-      : { hint: `已回执,但 shell 回读到的是 mode=${after.mode} tab=${after.workbenchTab},与目标不符 —— 不要向用户声称已打开。` }),
+      : { hint: `已回执,但 shell 回读到的是 mode=${after.mode} tab=${after.pageTab},与目标不符 —— 不要向用户声称已打开。` }),
     ...(target.action === 'setMode' ? {} : { editorRelayOffline: true }),
     // 门内边界:wb: 插件的内部还没发布 agent 可读接口。墙必须看得见,否则 agent
     // 会用截图/DOM/源码/别的浏览器去翻(2026-08-04 三次实测,最长一次折腾 20+ 调用)。
     ...(target.action === 'selectTab' && target.args.tab.startsWith('wb:')
-      ? { interior: '插件内部尚未发布 agent 可读接口:嵌入画布截图呈黑色、a11y 树到 iframe 为止,都是边界不是故障。可用信息=manifest 描述(workbench.list_plugins)+ 用户亲眼所见;不足以深入讲解时,如实说"深度文档未发布"并停下,不要用其他工具翻墙。' }
+      ? { interior: '插件内部尚未发布 agent 可读接口:嵌入画布截图呈黑色、a11y 树到 iframe 为止,都是边界不是故障。可用信息=manifest 描述(page.list_extensions)+ 用户亲眼所见;不足以深入讲解时,如实说"深度文档未发布"并停下,不要用其他工具翻墙。' }
       : {}),
   };
 }
@@ -842,11 +834,11 @@ function isFailure(value: unknown): value is BrowseFailure {
 
 function compileLook(): string {
   return `(async () => {
-  const gamesRes = await fetch('/api/workbench/games').then(r=>r.json());
+  const gamesRes = await fetch('/api/projects').then(r=>r.json());
   const slug = gamesRes.activeSlug ?? 'default';
-  const wb = JSON.parse(localStorage.getItem(\`forgeax:project:\${slug}:workbenches\`)||'{}');
+  const wb = JSON.parse(localStorage.getItem(\`forgeax:project:\${slug}:pages\`)||'{}');
   const activeId = wb.activeId ?? 'scene';
-  const layoutRaw = localStorage.getItem(\`forgeax:project:\${slug}:workbench-layout:\${activeId}\`) || '';
+  const layoutRaw = localStorage.getItem(\`forgeax:project:\${slug}:page-layout:\${activeId}\`) || '';
   let openPanels = [], activePanel = null, panels = [];
   try {
     const api = window.__dockApi;
@@ -869,7 +861,7 @@ function compileLook(): string {
 const uiBrowsePageId = () => { try { return window.__uiBrowsePageId || (window.__uiBrowsePageId = 'p' + Math.random().toString(36).slice(2,9)); } catch (e) { return null; } };
   const menus = [...document.querySelectorAll('[data-menu]')].map(e => e.getAttribute('data-menu'));
   let rail = null;
-  try { const s = window.__dev.getState(); rail = { active: s.workbenchTab, sidebarCollapsed: s.sidebarCollapsed }; } catch {}
+  try { const s = window.__dev.getState(); rail = { active: s.pageTab, sidebarCollapsed: s.sidebarCollapsed }; } catch {}
   let unsavedOnDisk = null;
   try { unsavedOnDisk = typeof gateway.hasPendingDiskSave === 'function' ? gateway.hasPendingDiskSave() : null; } catch {}
   // 实体花名册:中文指代("树干")对英文注册名(TreeTrunk)是常态。花名册在手,
@@ -1145,7 +1137,7 @@ function compileResolveUiReferent(kind: 'panel' | 'menu', queryText: string): st
   if (matches.length > 1) return JSON.stringify({ ok:false, error:{ code:'AMBIGUOUS_REFERENT', hint:kind + ' 名称命中多个候选；请指定其一或问用户', candidates:matches.map((item) => ({ node:kind + ':' + item.node, label:item.label, where:item.where })) } });
   if (matches.length === 1) return JSON.stringify({ ok:true, id:matches[0].id || raw, label:matches[0].label, node:kind + ':' + matches[0].node, matched:true });
   // 未命中就是未命中。放行一个"看起来像 id"的串会让 compileOpenPanel 对不存在的
-  // 组件 addPanel,而 Dockview 布局是持久化的(saveWorkbenchLayout → localStorage)
+  // 组件 addPanel,而 Dockview 布局是持久化的(saveExtensionLayout → localStorage)
   // —— 一个拼错的面板名会永久留在用户保存的布局里。零副作用不能只对模糊指代成立。
   return JSON.stringify({ ok:false, error:{ code:'NOT_FOUND', kind, hint:'没有已注册的 ' + kind + ' 文案匹配 ' + raw,
     candidates:items.map((item) => ({ node:kind + ':' + item.node, label:item.label, where:item.where })) } });
@@ -1298,7 +1290,7 @@ function compileVerifySnapshot(): string {
   let ledgerTail = [];
   try { ledgerTail = gateway.auditLog().slice(-25).map((entry) => ({ kind: entry.op?.kind ?? null, origin: entry.origin ?? null })); } catch {}
   let overlay = null, tab = null;
-  try { const s = window.__dev.getState(); tab = s.workbenchTab ?? null; overlay = s.activeOverlay ?? null; } catch {}
+  try { const s = window.__dev.getState(); tab = s.pageTab ?? null; overlay = s.activeOverlay ?? null; } catch {}
   let panels = [];
   try { panels = window.__dockApi.panels.map((p) => p.id).sort(); } catch {}
   let selection = null;
@@ -1321,7 +1313,7 @@ function compileScreenFingerprint(): string {
   return `(() => {
   const uiBrowsePageId = () => { try { return window.__uiBrowsePageId || (window.__uiBrowsePageId = 'p' + Math.random().toString(36).slice(2,9)); } catch (e) { return null; } };
   let overlay = null, tab = null;
-  try { const s = window.__dev.getState(); tab = s.workbenchTab ?? null; overlay = s.activeOverlay ?? null; } catch {}
+  try { const s = window.__dev.getState(); tab = s.pageTab ?? null; overlay = s.activeOverlay ?? null; } catch {}
   let panels = [];
   try { panels = window.__dockApi.panels.map((p) => p.id).sort(); } catch {}
   let rev = null, selection = null;
@@ -1575,24 +1567,50 @@ async function diagnoseDeadRelay(
   } catch {
     connected = null;
   }
+  // 「连不上中继」和「页面坏了」是两种病,合成一条 hint 会同时误诊和自伤:Studio 的
+  // web-dev 栈根本不起这个 DEV 环回中继(runtime-state.ts 只把 gatewayBridge 当外部 peer
+  // 的配置,run.ts 里连 VITE_FORGEAX_BRIDGE 都被 fx.spec 明令禁止),那不是故障,是一种
+  // 受支持的形态。旧文案却让 agent「请用户修好页面,然后重试同一个调用」—— 而 agent.ts
+  // 的断路器按 [工具名, 入参] 计数,照做第二次就掐掉整轮(2026-08-24 实测两次:同一句
+  // hint 把两趟整局游戏生成都终结在 editor_ui_browse 上,连玩法都没写完)。charter 说
+  // 「别重试」也压不住它 —— 工具回执比系统提示更贴身。所以中继缺席这条单独成文:
+  // 不喊冤、不重试、指回还活着的那条轨。
+  if (connected === null) {
+    return {
+      ok: false,
+      error: {
+        code: 'EDITOR_TRANSPORT_DOWN',
+        hint: `连不上中继 ${base} —— 这台栈没在跑那个 DEV 环回中继(或者它挂了)。`
+          + '**这不是页面故障,不要让用户去修页面**:行走协议(editor_ui_browse / editor_gateway_eval)'
+          + '在本次任务里就当它不存在。编辑器事实与受支持的编辑改用 typed `editor_transport`,'
+          + '游戏代码与资产照常用文件/资源工具 —— 这两条都不经中继,足够把活干完。'
+          + `【不要绕路】${NO_SIDE_DOOR}`
+          + '也不要因为它缺席就去读仓库源码考古。用一句话告诉用户这条通道在这台栈上不可用,然后继续干活;'
+          + '**不要重试同一个调用** —— 重试只会让本轮被断路器掐断。',
+        retryable: false,
+        owner: 'system',
+        observed: observed.error.code,
+        pageConnected: null,
+      },
+    };
+  }
+  // connected === null 已在上面单独返回,这里只剩两种页面级病因。
   const cause = connected === false
     ? '编辑器页面没有连上中继(relay 报 pageConnected=false)。请打开或刷新 http://localhost:38920 的编辑器标签页。'
-    : connected === true
-      // 2026-08-06 自探:**先说最常见也最无害的那个病因**。"页面连着但不跑帧循环"
-      // 的头号原因是用户此刻待在 AI 工作区(编辑器视口没挂载),点一下 Scene 页签
-      // 就好;而旧文案直接让用户"关掉其他页面并刷新" —— 刷新会丢掉尚未落盘的编辑,
-      // 而"改动先在文档、磁盘落后"正是这套设计的前提。本该无害的误诊变成有害建议。
-      // (前台闸本应先拦住这种情况,但它依赖 host.sidebar 投影,而 rail 至今没有
-      // 发布者,所以那道闸在生产里从未触发过 —— 见 pending-team-handoffs H2。)
-      ? '有页面连着中继但不响应。**最常见的原因是编辑器视口没有挂载** —— 用户此刻在 AI/工作台一侧,'
-        + '编辑器帧循环不在跑。你有两条路,都不会丢失未保存的改动:'
-        + '①请用户点左上 rail 的 Scene 页签切回编辑器(他看得见这一步);'
-        + '②你自己用 ui_act_app_set_mode({mode:"scene"}) 后台切回去 —— 这条是活的、不依赖 rail 投影,'
-        + '但屏幕上不会展示切换过程,用它就必须如实说明"我在后台切的,你没看到点击动作"。'
-        + '默认先问用户选哪条,别默认替他决定。若他确认已经在编辑器里,再考虑第二种可能:'
-        + '开了不止一个 ForgeaX 页面(另一个窗口/应用内浏览器/自动化浏览器抢走了执行权)——'
-        + '**那时才**请他只保留一个页面。刷新会丢掉尚未落盘的编辑,不要一上来就让他刷新。'
-      : `无法连上中继 ${base}。开发栈或中继可能没在跑。`;
+    // 2026-08-06 自探:**先说最常见也最无害的那个病因**。"页面连着但不跑帧循环"
+    // 的头号原因是用户此刻待在 AI 工作区(编辑器视口没挂载),点一下 Scene 页签
+    // 就好;而旧文案直接让用户"关掉其他页面并刷新" —— 刷新会丢掉尚未落盘的编辑,
+    // 而"改动先在文档、磁盘落后"正是这套设计的前提。本该无害的误诊变成有害建议。
+    // (前台闸本应先拦住这种情况,但它依赖 host.sidebar 投影,而 rail 至今没有
+    // 发布者,所以那道闸在生产里从未触发过 —— 见 pending-team-handoffs H2。)
+    : '有页面连着中继但不响应。**最常见的原因是编辑器视口没有挂载** —— 用户此刻在 AI/扩展页一侧,'
+      + '编辑器帧循环不在跑。你有两条路,都不会丢失未保存的改动:'
+      + '①请用户点左上 rail 的 Scene 页签切回编辑器(他看得见这一步);'
+      + '②你自己用 ui_act_app_set_mode({mode:"scene"}) 后台切回去 —— 这条是活的、不依赖 rail 投影,'
+      + '但屏幕上不会展示切换过程,用它就必须如实说明"我在后台切的,你没看到点击动作"。'
+      + '默认先问用户选哪条,别默认替他决定。若他确认已经在编辑器里,再考虑第二种可能:'
+      + '开了不止一个 ForgeaX 页面(另一个窗口/应用内浏览器/自动化浏览器抢走了执行权)——'
+      + '**那时才**请他只保留一个页面。刷新会丢掉尚未落盘的编辑,不要一上来就让他刷新。';
   return {
     ok: false,
     error: {
@@ -1791,9 +1809,14 @@ function runFind(args: Record<string, unknown>, deps: EditorUiBrowseDeps): unkno
   if (menus) for (const nodes of Object.values(menus)) collectCommands(nodes);
   // door 事实必须带出来:门对账靠它认"同一能力两个名字"(game.switch 的菜单门是
   // game.pick)。不带 = 下面又得自己判一次门,那正是本轮修掉的第二套判断。
-  let catalogEntries: ReadonlyArray<{
-    id: string; title?: string; description?: string; door?: { menuCommandId?: string };
-  }> = [];
+  type CatalogProjectionEntry = {
+    id: string;
+    title?: string;
+    description?: string;
+    preconditions?: readonly string[];
+    door?: { menuCommandId?: string };
+  };
+  let catalogEntries: ReadonlyArray<CatalogProjectionEntry> = [];
   try {
     catalogEntries = (deps.shell?.actions ?? catalogAll)();
   } catch {
@@ -1801,25 +1824,25 @@ function runFind(args: Record<string, unknown>, deps: EditorUiBrowseDeps): unkno
   }
   // 孤儿界面:已安装、AI 能打开,但 rail/更多插件里没有 —— 人类没有点击路径。
   // 必须在定位阶段亮牌,否则 agent 会向用户教一条不存在的进入路径(2026-08-04 实测)。
-  let plugins: ReadonlyArray<{ id: string; workbenchId?: string; label: string; hidden?: boolean }> = [];
+  let plugins: ReadonlyArray<{ id: string; pageId?: string; label: string; hidden?: boolean }> = [];
   try {
-    plugins = (deps.shell?.plugins ?? installedWorkbenchPlugins)();
+    plugins = (deps.shell?.plugins ?? installedExtensionPlugins)();
   } catch {
     plugins = [];
   }
   const railIds = new Set((shell?.entries ?? []).map((entry) => entry.id));
   // 2026-08-05 修正:上一版这里断言"用户自己点不到" —— 只对了 rail 一个账源就下
-  // "没有"的结论。经实测,工作台网格(installed − hidden)列出全部插件且 tile 可点:
-  // 打开任一插件 → 右上角 × 返回工作台 → 点 tile。"不在 rail"只证明不在 rail。
-  const ORPHAN_NOTE = '该插件已安装,但不在 rail 的固定分类清单里 —— rail 和「更多插件」里都看不到它。用户仍可从**工作台网格**点到:打开任一插件后点右上角 × 返回工作台,再点对应 tile。教路径请教这一条真实存在的,不要描述「点更多插件进入」;并把"未收录进 rail 分类"作为产品缺口反馈。';
+  // "没有"的结论。经实测,扩展页网格(installed − hidden)列出全部插件且 tile 可点:
+  // 打开任一插件 → 右上角 × 返回扩展页 → 点 tile。"不在 rail"只证明不在 rail。
+  const ORPHAN_NOTE = '该插件已安装,但不在 rail 的固定分类清单里 —— rail 和「更多插件」里都看不到它。用户仍可从**扩展页网格**点到:打开任一插件后点右上角 × 返回扩展页,再点对应 tile。教路径请教这一条真实存在的,不要描述「点更多插件进入」;并把"未收录进 rail 分类"作为产品缺口反馈。';
   // rail 投影缺席(页面没开/刚重启还没重新注册)时不做孤儿指控 —— 空对账源会把
   // 全部插件误判成孤儿(2026-08-04 活验踩到),宁可漏报不冤枉。
   const orphans = railIds.size === 0
     ? []
-    : plugins.filter((plugin) => !plugin.hidden && plugin.workbenchId && !railIds.has(`wb:${plugin.workbenchId}`));
+    : plugins.filter((plugin) => !plugin.hidden && plugin.pageId && !railIds.has(`wb:${plugin.pageId}`));
 
   const HEADLESS_NOTE = '菜单与 rail 的投影里都没有它的入口 —— 大概率是 headless 能力(界面上没有对应控件,人点不出来),只能经 ui_invoke 后台直调。使用前后都要向用户说明:屏幕上不会有任何变化;若用户指出界面上其实有按钮,以用户所见为准。';
-  // 排除 workbench.*(门在 rail,action-door 已单独对账)与 app./panel. 命名空间
+  // 排除 extension.*(门在 rail,action-door 已单独对账)与 app./panel. 命名空间
   // (shell 级动作,门是 rail 页签/侧栏控件,不在菜单树里)。这是 catalog 自己的
   // 命名空间语义,不是同义词表;精确到每个 action 的门位对账是 87 能力映射的正题。
   // 菜单投影缺席时不做 headless 指控 —— 空对账源会把**每一个**有菜单门的 action 都
@@ -1832,9 +1855,34 @@ function runFind(args: Record<string, unknown>, deps: EditorUiBrowseDeps): unkno
   const railEntries = shell?.entries ?? null;
   const isHeadless = (entry: { id: string; door?: { menuCommandId?: string } }): boolean =>
     findVisibleDoor({ menus, rail: railEntries, fact: entry.door }, entry.id).certainty === 'none';
+  const catalogDetails = (entry: CatalogProjectionEntry) => ({
+    ...(entry.description ? { description: entry.description } : {}),
+    ...(entry.preconditions?.length ? {
+      preconditions: [...entry.preconditions],
+      preconditionsNote: 'State facts that must hold before execution; not an operation sequence.',
+    } : {}),
+  });
   const headless = menus === null ? [] : catalogEntries
     .filter(isHeadless)
-    .map((entry) => ({ actionId: entry.id, title: entry.title ?? entry.id, door: 'none' as const }));
+    .map((entry) => ({
+      actionId: entry.id,
+      title: entry.title ?? entry.id,
+      door: 'none' as const,
+      ...catalogDetails(entry),
+    }));
+  const catalogPreconditions = catalogEntries
+    .filter((entry) => (entry.preconditions?.length ?? 0) > 0)
+    .map((entry) => ({
+      actionId: entry.id,
+      preconditions: [...entry.preconditions!],
+    }));
+  const tableWithCatalog = {
+    ...table,
+    catalogPreconditions: {
+      note: '仅投影声明了 preconditions 的 ActionCatalog 条目；按 actionId 与菜单/动作表关联。它们是执行前世界事实,不是操作顺序。',
+      items: catalogPreconditions,
+    },
+  };
 
   // 菜单投影缺席 = 这张表**不是**功能全集,而是一张读不到的表。
   // 2026-08-06 自探:上一版只给派生结论(headless/孤儿指控)加了 menus===null 豁免,
@@ -1851,12 +1899,21 @@ function runFind(args: Record<string, unknown>, deps: EditorUiBrowseDeps): unkno
     if (PROJECTION_BLIND) {
       return { ok: false, error: { code: 'PROJECTION_UNAVAILABLE', hint: BLIND_NOTE } };
     }
-    return { ok: true, table: { ...table,
+    return { ok: true, table: { ...tableWithCatalog,
       headlessActions: { note: HEADLESS_NOTE, items: headless },
       railUnlisted: { note: ORPHAN_NOTE, items: orphans.map((plugin) => ({ extensionId: plugin.id, label: plugin.label })) } },
       hint: '这是 ForgeaX 的静态功能表(菜单树/rail/各面动作)。定位到目标后,用 open("menu:<top>/<项>/...") 沿人类路径逐级打开;链尾是命令项则会经菜单自己的命令入口执行。动态内容(最近游戏、场景实体、资产)不在表里,展开对应层级后才可见。' };
   }
-  const matches: Array<{ node: string; label: string; kind: string; keybinding?: string }> = [];
+  const matches: Array<{
+    node: string;
+    label: string;
+    kind: string;
+    keybinding?: string;
+    description?: string;
+    preconditions?: string[];
+    preconditionsNote?: string;
+    door?: string;
+  }> = [];
   const walkMenu = (menuId: string, nodes: MenuTreeNode[], prefix: string[]): void => {
     for (const node of nodes) {
       const hit = node.label.toLocaleLowerCase().includes(query) || node.id.toLocaleLowerCase().includes(query);
@@ -1884,7 +1941,7 @@ function runFind(args: Record<string, unknown>, deps: EditorUiBrowseDeps): unkno
   for (const plugin of orphans) {
     if (!`${plugin.id} ${plugin.label}`.toLocaleLowerCase().includes(query)) continue;
     matches.push({
-      node: `ui_invoke {actionId:'workbench.open_plugin', args:{extensionId:'${plugin.id}'}}`,
+      node: `ui_invoke {actionId:'page.open_extension', args:{extensionId:'${plugin.id}'}}`,
       label: plugin.label,
       kind: 'rail-unlisted-plugin',
       door: ORPHAN_NOTE,
@@ -1904,7 +1961,8 @@ function runFind(args: Record<string, unknown>, deps: EditorUiBrowseDeps): unkno
         label: entry.title ?? entry.id,
         kind: 'headless-action',
         door: HEADLESS_NOTE,
-      } as never);
+        ...catalogDetails(entry),
+      });
       continue;
     }
     if ((door.certainty === 'found' || door.certainty === 'declared') && door.path) {
@@ -1913,7 +1971,8 @@ function runFind(args: Record<string, unknown>, deps: EditorUiBrowseDeps): unkno
         label: entry.title ?? entry.id,
         kind: 'catalog-action-with-door',
         door: door.hint,
-      } as never);
+        ...catalogDetails(entry),
+      });
       continue;
     }
     // unknown / 有门但拿不到 path(如 argsDiffer):照样进 matches,hint 已经写明
@@ -1923,15 +1982,16 @@ function runFind(args: Record<string, unknown>, deps: EditorUiBrowseDeps): unkno
       label: entry.title ?? entry.id,
       kind: 'catalog-action',
       door: door.hint,
-    } as never);
+      ...catalogDetails(entry),
+    });
   }
   return {
     ok: true,
     matches,
     ...(matches.length === 0
       ? PROJECTION_BLIND
-        ? { table, projectionUnavailable: true, hint: BLIND_NOTE }
-        : { table, hint: `没有静态功能匹配「${args.query}」。上表是全部静态功能。动态内容不在表里:场景实体(如"树干")直接用 look —— 它自带全部实体的名字花名册;游戏在 open("menu:file/打开最近") 展开后可见;资产在 open("panel:ep:assets")。` }
+        ? { table: tableWithCatalog, projectionUnavailable: true, hint: BLIND_NOTE }
+        : { table: tableWithCatalog, hint: `没有静态功能匹配「${args.query}」。上表是全部静态功能。动态内容不在表里:场景实体(如"树干")直接用 look —— 它自带全部实体的名字花名册;游戏在 open("menu:file/打开最近") 展开后可见;资产在 open("panel:ep:assets")。` }
       : {}),
   };
 }
@@ -1952,7 +2012,7 @@ async function runLook(key: string, deps: EditorUiBrowseDeps): Promise<unknown> 
       shell: { ...shell, surface: SHELL_SURFACE, surfaces },
       editor: null,
       // 2026-08-06 外审 B1:不再指路 open('rail:editor')(rail 门无发布者,必死)。
-      hint: `工作区在 AI 侧(rail tab: ${shell.workbenchTab || '未知'}),编辑器视口没有挂载,读不到场景。要看/改场景请用户点左上 rail 的 Scene 页签切回编辑器。`,
+      hint: `工作区在 AI 侧(rail tab: ${shell.pageTab || '未知'}),编辑器视口没有挂载,读不到场景。要看/改场景请用户点左上 rail 的 Scene 页签切回编辑器。`,
     };
   }
   const looked = await relayAsyncCode(compileLook(), deps);
@@ -2075,23 +2135,28 @@ async function runSingleAct(
 function annotateWorldVisibility(result: unknown, op: Record<string, unknown>, deps: EditorUiBrowseDeps): unknown {
   if (!result || typeof result !== 'object' || isFailure(result)) return result;
   const r = result as Record<string, unknown>;
-  if ('visible_change' in r) return r;
-  const manyPages = multiPageWarning(deps, MENUBAR_SURFACE);
-  if (manyPages) {
-    return { ...r, visible_change: null, multiplePages: manyPages };
-  }
   const rev = r.rev;
   const after = r.after;
+  const fieldReadback = typeof rev === 'number'
+    && !!after
+    && typeof after === 'object'
+    && !Array.isArray(after)
+    && Object.keys(after as object).length > 0;
+  const annotated = { ...r, fieldReadback };
+  if ('visible_change' in r) return annotated;
+  const manyPages = multiPageWarning(deps, MENUBAR_SURFACE);
+  if (manyPages) {
+    return { ...annotated, visible_change: null, multiplePages: manyPages };
+  }
   // 回读**有没有真的发生**:`compileAct` 的 readAfter() 对不带 entity/component 的
-  // op(transaction / deleteEntity / createMaterial / saveDocToDisk / createSceneFile)
+  // op(transaction / destroyEntity / createMaterial / saveDocToDisk / createSceneFile)(例——判据是 op 不带 entity/component,勿抄名单)
   // 第一行就 `return {}` —— 空对象是"没读",不是"读到了空"。只判 typeof object 的话,
   // `{}` 会通过,于是对着零回读宣称"after=字段回读值"。而 transaction 正是工具主动
   // 推荐的多步路径,charter 又教 agent"act 的返回就是验证" —— 三者叠起来就是
   // 08-04 树冠事故的完整形状,只是换了个入口(2026-08-06 自探,本轮 B2 修复引入)。
-  const readBack = !!after && typeof after === 'object' && Object.keys(after as object).length > 0;
-  if (typeof rev === 'number' && readBack) {
+  if (fieldReadback) {
     return {
-      ...r,
+      ...annotated,
       visible_change: `编辑器文档已按 ${String(op.kind)} 变更(rev=${rev},after=字段回读值)`
         + '—— 这是文档级测量,属性面板与视口由同一文档驱动;不是视口像素比对。',
     };
@@ -2101,16 +2166,15 @@ function annotateWorldVisibility(result: unknown, op: Record<string, unknown>, d
     // 改成了什么。如实分级,别冒领字段级确认。
     const ledgerKind = (r.ledger as { kind?: unknown } | undefined)?.kind;
     return {
-      ...r,
+      ...annotated,
       visible_change: `编辑器文档已变更(rev=${rev}${typeof ledgerKind === 'string' ? `,账本记为 ${ledgerKind}` : ''})`
         + ` —— 本 op(${String(op.kind)})不做逐字段回读,只证明"文档动了",**证明不了每一项都改成了你要的值**。`
         + '要向用户确认具体结果,请 look 或 open 目标实体回读。',
-      fieldReadback: false,
     };
   }
   // 连代际都没有(如异步操作尚未回灌):按"测过、没变"从严 —— 宁可逼一次 verify,
   // 也不许 agent 据 ok:true 向用户宣称"改好了"。
-  return { ...r, visible_change: null };
+  return { ...annotated, visible_change: null };
 }
 
 /** A shell-surface op: `{surface, action, args}`. Any surface, any action it

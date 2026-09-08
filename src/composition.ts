@@ -1,9 +1,11 @@
 import type { Hono } from 'hono';
 import type { ExtensionCapabilityControl } from '@forgeax/types';
+import type { ProductContext } from '@forgeax/orchestrator';
 import type { VideoAssetProviderControl } from './video-assets/contracts';
 import type { VideoAssetService } from './video-assets/service';
-import type { WorkbenchHost } from '@forgeax/workbench-host/node';
 export { registerServerModule } from './composition-host';
+// Product setup must configure the same registry that the public server reads.
+export { configureNpmExtensionDirs } from '@forgeax/orchestrator/extensions';
 
 export type {
   DirectUploadInstruction,
@@ -70,7 +72,7 @@ export interface ServerPrepareContext {
 }
 
 export interface ServerProductComposition {
-  readonly workbenchHost?: WorkbenchHost;
+  readonly extensionHost?: ProductContext['extensionHost'];
   readonly gameHostBeforeVersion?: (args: {
     slug: string;
     gameDir: string;

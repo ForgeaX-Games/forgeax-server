@@ -27,10 +27,18 @@ function value(value: unknown) {
 function toolsFor(
   respond: (code: string, index: number) => unknown,
   calls: Array<{ url: string; code: string }> = [],
+  /** What `/health` answers when the transport is diagnosed. `null` = the relay
+   *  process is not reachable at all, which is what a Studio stack that never
+   *  starts one looks like — a supported shape, not a broken page. */
+  health: boolean | null = null,
 ) {
   const tools = editorUiBrowseHostTools({
     bridgeUrl: relay,
     fetch: async (url, init) => {
+      if (String(url).endsWith('/health')) {
+        if (health === null) throw new Error('ECONNREFUSED');
+        return new Response(JSON.stringify({ pageConnected: health }), { status: 200 });
+      }
       const code = String(JSON.parse(String(init?.body)).code);
       calls.push({ url: String(url), code });
       return new Response(JSON.stringify(respond(code, calls.length - 1)), { status: 200 });
@@ -246,7 +254,7 @@ describe('editorUiBrowseHostTools', () => {
     expect(calls[0]?.code).not.toContain('setActive()');
     expect(calls[0]?.code).not.toContain('addPanel(');
     expect(calls[0]?.code).not.toContain('dispatchEvent');
-    expect(calls[0]?.code).not.toContain('setWorkbenchTab(');
+    expect(calls[0]?.code).not.toContain('setExtensionTab(');
   });
 
   test('panel post-check can return null plus a no-visible-claim hint', async () => {
@@ -341,6 +349,7 @@ describe('editorUiBrowseHostTools', () => {
       op: { kind: 'bindAssetRef', entity: 3, component: 'MeshRenderer', field: 'materials', guids: ['mat'], requestId: '<auto>' },
     }, ctx('act'))).resolves.toEqual({
       ...acted,
+      fieldReadback: true,
       visible_change: '编辑器文档已按 bindAssetRef 变更(rev=4,after=字段回读值)—— 这是文档级测量,属性面板与视口由同一文档驱动;不是视口像素比对。',
     });
     const actCode = calls.find((call) => call.code.includes('gateway.dispatch'))?.code ?? '';
@@ -349,6 +358,65 @@ describe('editorUiBrowseHostTools', () => {
     expect(actCode).toContain('gateway.auditLog().at(-1)');
     expect(actCode).toContain('after:readAfter()');
     expect(actCode).toMatch(/"requestId":"ui-browse-[^"]+"/);
+  });
+
+  test('有 after 但没有 rev 仍须 fieldReadback:false —— 字段值不能脱离文档代际冒充已验证', async () => {
+    const acted = { ok: true, after: { materials: [21] }, ledger: { kind: 'setComponent', origin: 'ai' } };
+    const { tools } = toolsFor((code) => code.includes('gateway.dispatch') ? value(acted) : value(signal(4)));
+
+    const result = await tools[0]!.run!({
+      verb: 'act',
+      op: { kind: 'setComponent', entity: 3, component: 'MeshRenderer', patch: { materials: [21] } },
+    }, ctx('readback-no-rev')) as Record<string, unknown>;
+
+    expect(result.fieldReadback).toBe(false);
+    expect(result.visible_change).toBeNull();
+  });
+
+  test('上游自带 visible_change 也必须补齐 fieldReadback 正向与负向语义', async () => {
+    const operation = {
+      verb: 'act',
+      op: { kind: 'setComponent', entity: 3, component: 'MeshRenderer', patch: { materials: [21] } },
+    };
+    const positive = toolsFor((code) => code.includes('gateway.dispatch')
+      ? value({ ok: true, rev: 4, after: { materials: [21] }, visible_change: '上游已测量' })
+      : value(signal(4)));
+    const negative = toolsFor((code) => code.includes('gateway.dispatch')
+      ? value({ ok: true, rev: 4, after: {}, visible_change: '仅确认文档变化' })
+      : value(signal(4)));
+
+    await expect(positive.tools[0]!.run!(operation, ctx('readback-upstream-positive'))).resolves.toMatchObject({
+      fieldReadback: true,
+      visible_change: '上游已测量',
+    });
+    await expect(negative.tools[0]!.run!(operation, ctx('readback-upstream-negative'))).resolves.toMatchObject({
+      fieldReadback: false,
+      visible_change: '仅确认文档变化',
+    });
+  });
+
+  test('多页面只降级界面可见性,不许抹掉明确的字段回读结果', async () => {
+    const acted = { ok: true, rev: 4, after: { materials: [21] }, ledger: { kind: 'setComponent', origin: 'ai' } };
+    const tools = editorUiBrowseHostTools({
+      bridgeUrl: relay,
+      fetch: async (_url, init) => {
+        const code = String(JSON.parse(String(init?.body)).code);
+        const response = code.includes('gateway.dispatch') ? value(acted) : value(signal(4));
+        return new Response(JSON.stringify(response), { status: 200 });
+      },
+      shell: {
+        list: () => [{ id: 'host.menubar', layer: 'host', pages: 2, actions: [{ id: 'invoke' }] }],
+      },
+    });
+
+    const result = await tools[0]!.run!({
+      verb: 'act',
+      op: { kind: 'setComponent', entity: 3, component: 'MeshRenderer', patch: { materials: [21] } },
+    }, ctx('readback-multi-page')) as Record<string, unknown>;
+
+    expect(result.fieldReadback).toBe(true);
+    expect(result.visible_change).toBeNull();
+    expect(String(result.multiplePages)).toContain('2 个 ForgeaX 页面');
   });
 
   test('act corrects op.id into a complete executable op.kind example', async () => {
@@ -492,9 +560,9 @@ describe('editorUiBrowseHostTools', () => {
     expect(reloaded).toContain('rev 99 → 1');
   });
 
-  test('a dead transport becomes one hard refusal that forbids going around the door', async () => {
+  test('a page that is not connected is the user\'s to fix, and the door stays shut', async () => {
     const envelope = { ok: false, error: { code: 'PAGE_NOT_CONNECTED', hint: 'open the editor' } };
-    const { tools } = toolsFor(() => envelope);
+    const { tools } = toolsFor(() => envelope, [], false);
 
     const result = await tools[0]!.run!({ verb: 'open', node: 'panel:viewport' }, ctx('relay-error'));
 
@@ -505,6 +573,30 @@ describe('editorUiBrowseHostTools', () => {
     const { hint } = (result as { error: { hint: string } }).error;
     expect(hint).toContain('不要改磁盘上的场景/资产文件');
     expect(hint).toContain('不要开自动化浏览器');
+  });
+
+  // 2026-08-24,连着两趟整局游戏生成都死在这里:Studio 的 web-dev 栈从不启动那个 DEV
+  // 环回中继,于是第一次 editor_ui_browse 就 DOWN;旧 hint 让 agent「请用户修好页面,
+  // 然后重试同一个调用」,而 agent.ts 的断路器按 [工具名, 入参] 计数,第二次同样的调用
+  // 直接终止整轮 —— 玩法还没写完就没了。中继缺席和页面故障必须分开诊断:前者谁都不用修,
+  // 也不该重试,只该换到不经中继的那条轨(typed editor_transport + 文件工具)继续干活。
+  test('an absent relay is not a broken page: no user blame, no retry, and it names the live track', async () => {
+    const { tools } = toolsFor(() => ({ ok: false, error: { code: 'RELAY_UNAVAILABLE', hint: 'timeout' } }), [], null);
+
+    const result = await tools[0]!.run!({ verb: 'look' }, ctx('no-relay'));
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'EDITOR_TRANSPORT_DOWN', retryable: false, owner: 'system', pageConnected: null },
+    });
+    const { hint } = (result as { error: { hint: string } }).error;
+    expect(hint).toContain('不要重试同一个调用');
+    expect(hint).toContain('editor_transport');
+    expect(hint).not.toContain('请他修好页面');
+    // The side-door ban survives the softer diagnosis — a missing relay is not a
+    // licence to hand-edit scene files or drive a second browser.
+    expect(hint).toContain('不要开自动化浏览器');
+    expect(hint).toContain('不要因为它缺席就去读仓库源码考古');
   });
 
   test('a gateway-level failure is NOT treated as a dead transport', async () => {
@@ -687,20 +779,26 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
 
   function shellTools(options: {
     mode?: 'scene' | 'ai';
-    workbenchTab?: string;
+    pageTab?: string;
     /** Shell state observed AFTER a dispatch acks; defaults to the move not landing. */
-    after?: { mode: 'scene' | 'ai'; workbenchTab: string };
+    after?: { mode: 'scene' | 'ai'; pageTab: string };
     ack?: { ok: boolean; error?: string; timedOut?: boolean; result?: unknown; token?: string; started?: boolean };
     snapshot?: (id: string) => unknown;
     list?: () => Array<{ id: string; layer?: string; pages?: number; actions?: Array<{ id: string; exposedToAI?: boolean; argsSchema?: unknown }> }>;
-    actions?: () => ReadonlyArray<{ id: string; title?: string; description?: string }>;
-    plugins?: () => ReadonlyArray<{ id: string; workbenchId?: string; label: string; hidden?: boolean }>;
+    actions?: () => ReadonlyArray<{
+      id: string;
+      title?: string;
+      description?: string;
+      preconditions?: readonly string[];
+      door?: { menuCommandId?: string };
+    }>;
+    plugins?: () => ReadonlyArray<{ id: string; pageId?: string; label: string; hidden?: boolean }>;
     relayRespond?: (code: string, record: { url: string; code: string }) => unknown;
   } = {}) {
     const sent: Array<{ surfaceId: string; action: string; args: unknown }> = [];
     const relayCalls: Array<{ url: string; code: string }> = [];
     let dispatched = false;
-    const state = { mode: options.mode ?? 'scene', workbenchTab: options.workbenchTab ?? 'agents' };
+    const state = { mode: options.mode ?? 'scene', pageTab: options.pageTab ?? 'agents' };
     const tools = editorUiBrowseHostTools({
       bridgeUrl: relay,
       fetch: async (url, init) => {
@@ -718,7 +816,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
         snapshot: options.snapshot ?? ((id: string) => {
           if (id !== 'host.sidebar') return null;
           const live = dispatched && options.after ? options.after : state;
-          return { workbenchTab: live.workbenchTab, mode: live.mode, entries: ENTRIES };
+          return { pageTab: live.pageTab, mode: live.mode, entries: ENTRIES };
         }),
         dispatch: async (surfaceId, action, args) => {
           sent.push({ surfaceId, action, args });
@@ -746,8 +844,8 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
     // 证明不了用户那一页动了。2026-08-04 事故的同一个病,换到 shell 这扇门上。
     const { tool } = shellTools({
       mode: 'scene',
-      workbenchTab: 'agents',
-      after: { mode: 'ai', workbenchTab: 'agents' },
+      pageTab: 'agents',
+      after: { mode: 'ai', pageTab: 'agents' },
       list: () => [
         { id: 'host.sidebar', layer: 'host', pages: 2, actions: [{ id: 'selectTab' }, { id: 'setMode' }] },
       ],
@@ -764,8 +862,8 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
   test('a single live page keeps the plain assertion — the warning is not a permanent tax', async () => {
     const { tool } = shellTools({
       mode: 'scene',
-      workbenchTab: 'agents',
-      after: { mode: 'ai', workbenchTab: 'agents' },
+      pageTab: 'agents',
+      after: { mode: 'ai', pageTab: 'agents' },
       ack: { ok: true, token: 'host.sidebar-1-railtok' },
       list: () => [
         { id: 'host.sidebar', layer: 'host', pages: 1, actions: [{ id: 'selectTab' }, { id: 'setMode' }] },
@@ -774,14 +872,14 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
 
     const result = await tool.run!({ verb: 'open', node: 'rail:agents' }, ctx('single-page')) as Record<string, unknown>;
 
-    expect(result.visible_change).toBe('Agents 工作台已在左侧显示');
+    expect(result.visible_change).toBe('Agents 扩展页已在左侧显示');
     // rail 门与 menubar 门共用 token 穿透:回执 token = ui-events 那条记录的键。
     expect(result.token).toBe('host.sidebar-1-railtok');
     expect(result.multiplePages).toBeUndefined();
   });
 
   test('open(rail:agents) drives the shell surface, not the editor relay', async () => {
-    const { tool, sent, relayCalls } = shellTools({ mode: 'scene', workbenchTab: 'agents', after: { mode: 'ai', workbenchTab: 'agents' } });
+    const { tool, sent, relayCalls } = shellTools({ mode: 'scene', pageTab: 'agents', after: { mode: 'ai', pageTab: 'agents' } });
 
     const result = await tool.run!({ verb: 'open', node: 'rail:agents' }, ctx('shell-a'));
 
@@ -791,13 +889,13 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
       ok: true,
       via: 'host.sidebar.selectTab',
       mode: 'ai',
-      visible_change: 'Agents 工作台已在左侧显示',
+      visible_change: 'Agents 扩展页已在左侧显示',
       editorRelayOffline: true,
     });
   });
 
   test('a rail label resolves to the tab id the shell published', async () => {
-    const { tool, sent } = shellTools({ after: { mode: 'ai', workbenchTab: 'wb:character' } });
+    const { tool, sent } = shellTools({ after: { mode: 'ai', pageTab: 'wb:character' } });
 
     await tool.run!({ verb: 'open', node: 'rail:Character Editor' }, ctx('shell-label'));
 
@@ -805,7 +903,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
   });
 
   test('open(rail:editor) is a mode change back to the scene workspace', async () => {
-    const { tool, sent } = shellTools({ mode: 'ai', workbenchTab: 'agents', after: { mode: 'scene', workbenchTab: 'agents' } });
+    const { tool, sent } = shellTools({ mode: 'ai', pageTab: 'agents', after: { mode: 'scene', pageTab: 'agents' } });
 
     const result = await tool.run!({ verb: 'open', node: 'rail:editor' }, ctx('shell-back'));
 
@@ -815,7 +913,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
   });
 
   test('an ack that does not move the shell reports visible_change null instead of success', async () => {
-    const { tool } = shellTools({ mode: 'scene', workbenchTab: 'agents', after: { mode: 'scene', workbenchTab: 'agents' } });
+    const { tool } = shellTools({ mode: 'scene', pageTab: 'agents', after: { mode: 'scene', pageTab: 'agents' } });
 
     const result = await tool.run!({ verb: 'open', node: 'rail:agents' }, ctx('shell-stuck')) as Record<string, unknown>;
 
@@ -869,7 +967,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
             { id: 'help.shortcuts', label: '快捷键', kind: 'command', commandId: 'overlay.open' },
           ] } };
         }
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
       relayRespond: (code) => {
@@ -899,7 +997,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
             { id: 'help.shortcuts', label: '快捷键', kind: 'command', commandId: 'overlay.open' },
           ] } };
         }
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
       relayRespond: (code) => {
@@ -929,7 +1027,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
             { id: 'edit.undo', label: '撤销', kind: 'command', commandId: 'editor.undo' },
           ] } };
         }
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
       relayRespond: (code) => {
@@ -963,7 +1061,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
             { id: 'window.outline', label: '层级', kind: 'command', commandId: 'app.panel.toggle', args: { id: 'ep:hierarchy' } },
           ] } };
         }
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
       relayRespond: (code) => code.includes('kind === \'panel\'') || code.includes('uiBrowseVis')
@@ -990,7 +1088,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
         if (id === 'host.menubar') {
           return { menus: { edit: [{ id: 'edit.undo', label: '撤销', kind: 'command', commandId: 'editor.undo' }] } };
         }
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
       relayRespond: (code) => {
@@ -1028,7 +1126,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
             { id: 'edit.copyPath', label: '复制路径', kind: 'command', commandId: 'editor.copyPath' },
           ] } };
         }
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
       relayRespond: (code) => {
@@ -1053,7 +1151,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
     // 等于向用户隐瞒真实的人类点击路径。孤儿那一路已按同样原则 fail-open。
     const { tool } = shellTools({
       snapshot: (id: string) => (id === 'host.sidebar'
-        ? { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES }
+        ? { pageTab: 'agents', mode: 'scene', entries: ENTRIES }
         : null), // host.menubar 缺席
       actions: () => [{ id: 'editor.save', title: '保存' }, { id: 'editor.undo', title: '撤销' }],
     });
@@ -1087,7 +1185,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
             { id: 'file.openRecent', label: '打开最近', kind: 'submenu', dynamic: true },
           ] } };
         }
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
     });
@@ -1110,7 +1208,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
         if (id === 'host.menubar') {
           return { menus: { window: [{ id: 'window.chat', label: '聊天', kind: 'command', commandId: 'panel.toggle_chatpanel' }] } };
         }
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
       actions: () => [
@@ -1134,20 +1232,87 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
     expect(sent).toHaveLength(0);
   });
 
-  test('find tells the truth about rail-unlisted plugins: not in rail, still clickable via the workbench grid', async () => {
+  test('find preserves ActionCatalog preconditions in query results and the full table', async () => {
+    const preconditions = [
+      'The selected entity must still exist.',
+      'The editor document must be writable.',
+    ];
+    const { tool } = shellTools({
+      snapshot: (id: string) => {
+        if (id === 'host.menubar') {
+          return { menus: { file: [{ id: 'file.save', label: '保存', kind: 'command', commandId: 'editor.save' }] } };
+        }
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
+        return null;
+      },
+      actions: () => [
+        {
+          id: 'trajectory.read',
+          title: '读取操作轨迹',
+          description: 'Read the recent trajectory of UI operations',
+          preconditions,
+        },
+        {
+          id: 'editor.save',
+          title: '保存',
+          description: 'Save the editor document',
+          preconditions: ['The editor document must be writable.'],
+          door: { menuCommandId: 'editor.save' },
+        },
+      ],
+    });
+
+    const hit = await tool.run!({ verb: 'find', query: '轨迹' }, ctx('find-preconditions')) as {
+      matches: Array<Record<string, unknown>>;
+    };
+    expect(hit.matches).toHaveLength(1);
+    expect(hit.matches[0]).toMatchObject({
+      kind: 'headless-action',
+      description: 'Read the recent trajectory of UI operations',
+      preconditions,
+      preconditionsNote: 'State facts that must hold before execution; not an operation sequence.',
+    });
+
+    const doored = await tool.run!({ verb: 'find', query: '保存' }, ctx('find-preconditions-door')) as {
+      matches: Array<Record<string, unknown>>;
+    };
+    expect(doored.matches.find((match) => match.kind === 'catalog-action-with-door')).toMatchObject({
+      description: 'Save the editor document',
+      preconditions: ['The editor document must be writable.'],
+      preconditionsNote: 'State facts that must hold before execution; not an operation sequence.',
+    });
+
+    const all = await tool.run!({ verb: 'find' }, ctx('find-preconditions-table')) as {
+      table: {
+        headlessActions: { items: Array<Record<string, unknown>> };
+        catalogPreconditions: { items: Array<Record<string, unknown>> };
+      };
+    };
+    expect(all.table.headlessActions.items[0]).toMatchObject({
+      actionId: 'trajectory.read',
+      description: 'Read the recent trajectory of UI operations',
+      preconditions,
+    });
+    expect(all.table.catalogPreconditions.items.find((entry) => entry.actionId === 'editor.save')).toEqual({
+      actionId: 'editor.save',
+      preconditions: ['The editor document must be writable.'],
+    });
+  });
+
+  test('find tells the truth about rail-unlisted plugins: not in rail, still clickable via the extension grid', async () => {
     // 2026-08-05 修正:上一版断言"用户自己点不到" —— 只对了 rail 一个账源。实测
-    // 工作台网格列出全部非隐藏插件且 tile 可点,所以正确的话术是"rail 里看不到,
+    // 扩展页网格列出全部非隐藏插件且 tile 可点,所以正确的话术是"rail 里看不到,
     // 网格里点得到",并给出那条真实存在的路径。
     const { tool } = shellTools({
       plugins: () => [
-        { id: '@forgeax-extension/wb-observatory', workbenchId: 'observatory', label: 'Observatory · 轨迹观察台' },
-        { id: '@forgeax-extension/wb-anim', workbenchId: 'anim', label: '动画设计' },
+        { id: '@forgeax-extension/observatory', pageId: 'observatory', label: 'Observatory · 轨迹观察台' },
+        { id: '@forgeax-extension/anim', pageId: 'anim', label: '动画设计' },
       ],
       // 菜单投影必须在场:缺席时 find 现在整体拒答(PROJECTION_UNAVAILABLE),
       // 而本例考的是"在 rail 里找不到的插件该怎么措辞",不是投影可用性。
       snapshot: (id: string) => {
         if (id === 'host.menubar') return { menus: { file: [{ id: 'file.save', label: '保存', kind: 'command', commandId: 'editor.save' }] } };
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
     });
@@ -1157,12 +1322,12 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
     const unlisted = hit.matches.find((m) => m.kind === 'rail-unlisted-plugin')!;
     expect(unlisted).toBeDefined();
     expect(unlisted.label).toBe('Observatory · 轨迹观察台');
-    expect(String(unlisted.door)).toContain('工作台网格');
+    expect(String(unlisted.door)).toContain('扩展页网格');
     expect(String(unlisted.door)).not.toContain('点不到');
     expect(String(unlisted.door)).toContain('不要描述「点更多插件进入」'); // 禁令以原文出现,而非旧版的假断言
 
     const all = await tool.run!({ verb: 'find' }, ctx('find-orphan-table')) as { table: { railUnlisted: { items: Array<{ extensionId: string }> } } };
-    expect(all.table.railUnlisted.items.map((i) => i.extensionId)).toEqual(['@forgeax-extension/wb-observatory']);
+    expect(all.table.railUnlisted.items.map((i) => i.extensionId)).toEqual(['@forgeax-extension/observatory']);
   });
 
   test('a menu chain expands the static prefix and reports the revealed level', async () => {
@@ -1195,7 +1360,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
             { id: 'file.openRecent', label: '打开最近', kind: 'submenu', dynamic: true },
           ] } };
         }
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
       relayRespond: (code, record) => {
@@ -1233,7 +1398,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
         if (id === 'host.menubar') {
           return { menus: { help: [{ id: 'help.shortcuts', label: '快捷键', kind: 'command', commandId: 'overlay.open' }] } };
         }
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
       relayRespond: (code, record) => {
@@ -1268,7 +1433,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
         if (id === 'host.menubar') {
           return { menus: { help: [{ id: 'help.shortcuts', label: '快捷键', kind: 'command', commandId: 'overlay.open' }] } };
         }
-        if (id === 'host.sidebar') return { workbenchTab: 'agents', mode: 'scene', entries: ENTRIES };
+        if (id === 'host.sidebar') return { pageTab: 'agents', mode: 'scene', entries: ENTRIES };
         return null;
       },
       relayRespond: (code, record) => {
@@ -1310,7 +1475,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
   test('a rail move that is already done costs nothing and claims nothing', async () => {
     // 被拒过一次的 agent 会开始给每一步加 open('rail:editor') 护栏 —— 实测一个任务里
     // 出现 8 次,每次都是真派发 + 等待。已经在目标状态就直接回答。
-    const { tool, sent } = shellTools({ mode: 'scene', workbenchTab: 'agents' });
+    const { tool, sent } = shellTools({ mode: 'scene', pageTab: 'agents' });
 
     const result = await tool.run!({ verb: 'open', node: 'rail:editor' }, ctx('already-there'));
 
@@ -1348,7 +1513,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
   });
 
   test('act drives ANY published surface action, not just the rail', async () => {
-    const { tool, sent } = shellTools({ after: { mode: 'ai', workbenchTab: 'wb:anim' } });
+    const { tool, sent } = shellTools({ after: { mode: 'ai', pageTab: 'wb:anim' } });
 
     const result = await tool.run!(
       { verb: 'act', op: { surface: 'host.sidebar', action: 'selectTab', args: { tab: 'wb:anim' } } },
@@ -1411,7 +1576,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
   });
 
   test('look publishes the whole shell tree, each surface with its argsSchema', async () => {
-    const { tool } = shellTools({ mode: 'ai', workbenchTab: 'agents' });
+    const { tool } = shellTools({ mode: 'ai', pageTab: 'agents' });
 
     const result = await tool.run!({ verb: 'look' }, ctx('shell-tree')) as {
       shell: { surfaces: Array<{ id: string; actions: Array<{ id: string; argsSchema?: unknown }> }> };
@@ -1427,7 +1592,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
   });
 
   test('editor verbs refuse in one hop while the editor is not in front', async () => {
-    const { tool, relayCalls } = shellTools({ mode: 'ai', workbenchTab: 'agents' });
+    const { tool, relayCalls } = shellTools({ mode: 'ai', pageTab: 'agents' });
 
     for (const args of [
       { verb: 'open', node: 'entity:TreeTrunk' },
@@ -1453,14 +1618,14 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
   });
 
   test('look answers from the shell alone while the editor is unmounted', async () => {
-    const { tool, relayCalls } = shellTools({ mode: 'ai', workbenchTab: 'agents' });
+    const { tool, relayCalls } = shellTools({ mode: 'ai', pageTab: 'agents' });
 
     const result = await tool.run!({ verb: 'look' }, ctx('shell-look-ai'));
 
     expect(relayCalls).toHaveLength(0);
     expect(result).toMatchObject({
       editor: null,
-      shell: { mode: 'ai', workbenchTab: 'agents', surface: 'host.sidebar' },
+      shell: { mode: 'ai', pageTab: 'agents', surface: 'host.sidebar' },
     });
     // 2026-08-06 外审 B1:死门不指路 —— recoveryActions 撤除,hint 请用户自己点。
     expect((result as { recoveryActions?: unknown }).recoveryActions).toBeUndefined();
@@ -1469,7 +1634,7 @@ describe('editor_ui_browse shell door (host.sidebar surface)', () => {
   });
 
   test('look in scene mode keeps the editor view and adds the shell half', async () => {
-    const { tool, relayCalls } = shellTools({ mode: 'scene', workbenchTab: 'agents' });
+    const { tool, relayCalls } = shellTools({ mode: 'scene', pageTab: 'agents' });
 
     const result = await tool.run!({ verb: 'look' }, ctx('shell-look-scene')) as Record<string, unknown>;
 

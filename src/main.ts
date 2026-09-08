@@ -4,7 +4,7 @@
 // silently disappear when the server is started outside `bun run` from root.
 // existing process.env wins (so explicit shell exports still override file).
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 {
   const root = process.env.FORGEAX_PROJECT_ROOT ?? resolve(import.meta.dir, '../../..');
   if (!process.env.FORGEAX_PROJECT_ROOT) process.env.FORGEAX_PROJECT_ROOT = root;
@@ -31,23 +31,29 @@ import {
   createNpcWebSocketHandler,
   getExtensionCapabilityControl,
 } from '@forgeax/orchestrator';
-import { listAvailableKernels } from '@forgeax/orchestrator/kernel/resolve-kernel';
 import { getVersion } from '@forgeax/platform-io';
-import { loadBrand } from '@forgeax/orchestrator/brand';
+import { loadBrand } from '@forgeax/orchestrator';
 import { defaultProjectRoot } from '@forgeax/platform-io';
 import { friendlyPath } from '@forgeax/platform-io';
-import { mp, interfaceDist as resolveInterfaceDist } from '@forgeax/platform-io';
-import { FsWatcher } from '@forgeax/orchestrator/api/lib/watcher';
-import { WsHub, createWsHandler, type WsClientData } from '@forgeax/orchestrator/ws';
-import { getSessionManager } from '@forgeax/orchestrator/core/session-manager';
+import { interfaceDist as resolveInterfaceDist } from '@forgeax/platform-io';
+import { FsWatcher, getSessionManager, ensureSessionWithBootstrap } from '@forgeax/orchestrator';
+import { WsHub, createWsHandler, type WsClientData } from '@forgeax/orchestrator';
+import { getExtensionSnapshot } from '@forgeax/orchestrator';
 import { getActiveGame, setActiveGame } from './game/active-game';
 import { resolveInstanceGame } from './game/instance-game';
 import { GameSessionLayout } from './studio-session-layout';
-import { ensureSessionWithBootstrap } from '@forgeax/orchestrator/api/lib/session-create';
+import {
+  resolveExtensionRuntimeStaticRoot,
+  resolveNativeExtensionPackageRoot,
+} from './extension-static-root';
+import { hostApiOriginAllowed } from './host-api-origin';
+import { sceneProxyRequest, sceneProxyWsUrl } from './scene-proxy';
+// 上传目的地/凭据默认值(共享仓 + 共享写 token)是产品策略/凭据,由产品壳持有并注入编排层;
+// 原先硬编码在编排层 upload/config.ts。env override(FORGEAX_UPLOAD_*)仍在编排层 resolve 时最高优先。
+import { uploadDefaults } from './upload-defaults';
 // 游戏业务路由(阶段A:从 @forgeax/orchestrator 搬入产品壳)—— 经 ctx.routers 注入编排层。
-import { createWorkbenchRouter } from './game/workbench';
+import { createProductApiRouter } from './game/product-api';
 import { createGameTemplatesRouter } from './game/game-templates';
-import { createGameTemplatesRouter as createWorkbenchGameTemplatesRouter } from './game/workbench';
 import {
   PARTY_WS_PATH,
   handlePartyClose,
@@ -56,8 +62,8 @@ import {
   isPartyWsData,
   type PartyWsData,
 } from './game/party-signal';
-import { createCharacterRouter } from './game/wb-character';
-import { createBgmRouter } from './game/wb-bgm';
+import { createCharacterRouter } from './game/character';
+import { createBgmRouter } from './game/bgm';
 import { createGenerativeVisualsRouter, getFluxRtWsUpstreamUrl } from './game/generative-visuals';
 import {
   bindGenerativeVisualConnection,
@@ -66,16 +72,34 @@ import {
 import { createCeApiShimRouter } from './game/ce-api-shim';
 import { GameSystemPromptComposer } from './game/system-prompt-composer';
 import { studioHostTools } from './game/host-tools';
+import { resolveStudioHostCapabilities } from './game/studio-host-capabilities';
 import { createAssetCanvasInputsRouter } from './game/asset-canvas-inputs';
 import { resolveLlmTestRequestSource } from './game/llm-test-source';
 import { createNpcSettingsRouter } from './game/npc-settings';
+import { createFeedbackRouter } from './game/feedback';
+import { FeedbackDeliveryCoordinator } from './game/feedback/delivery';
+import { FeedbackRepository } from './game/feedback/repository';
+import { createActiveGameVersionControlHandler } from './game/version-control';
 // 产品壳装配原生内核(DIP):编排层不依赖具体内核,这里把 forgeax-core 注册进共享 registry。
 import { registerForgeaxCoreKernel } from './kernel/forgeax-core-adapter';
 import { createTelemetryFileSink } from './kernel/telemetry-file-sink';
-import { setHostTelemetry } from '@forgeax/orchestrator/kernel/host-telemetry';
-import { discoverProjectMcpTools, shutdownProjectMcpPool } from '@forgeax/orchestrator/kernel/project-mcp';
-import { ClaudeCodeKernel } from '@forgeax/orchestrator/kernel/claude-code-kernel';
-import { CodexKernel } from '@forgeax/orchestrator/kernel/codex-kernel';
+// P3/D-3: kernel boot/shutdown ordering is internalized in the orchestrator
+// facade. The server shell only injects product params (`createKernelRuntime` +
+// `.boot()`) and holds the handle to tear it down (`shutdownKernel`). The
+// remaining kernel symbols (`setHostTelemetry` sink injection,
+// `listAvailableKernels` for the permission registry, `discoverProjectMcpTools`
+// prewarm, `kernelStackGuarded` soul-pack guard) come from the same curated
+// `@forgeax/orchestrator/kernel` surface — the server no longer reaches into
+// individual kernel/* modules.
+import {
+  createKernelRuntime,
+  shutdownKernel,
+  type KernelRuntime,
+  setHostTelemetry,
+  listAvailableKernels,
+  discoverProjectMcpTools,
+  kernelStackGuarded,
+} from '@forgeax/orchestrator/kernel';
 import type { TelemetryRecord } from '@forgeax/types';
 // UI 资产清洗作为 host 能力由 server 自身实现(game/ui-asset-cleanup.ts)，经
 // UiAssetCleanup seam 注入给 ce-api-shim —— 编排层不 source-import marketplace plugin。
@@ -177,7 +201,7 @@ const runtimeScopeClient = new RuntimeScopeClient();
 // root on every (re)start. Best-effort: packaged mode may not contain the
 // source-side engine mount, and a real directory at the link path is non-fatal.
 {
-  const { repointEngineForgeaXSymlink } = await import('@forgeax/orchestrator/api/lib/engine-symlink');
+  const { repointEngineForgeaXSymlink } = await import('@forgeax/orchestrator');
   try {
     repointEngineForgeaXSymlink(instanceRoot);
   } catch (e) {
@@ -214,34 +238,60 @@ if (!process.env.FORGEAX_KERNEL_IMPL?.trim()) {
   process.env.FORGEAX_KERNEL_IMPL = 'forgeax-core';
 }
 let productForgeaxCoreKernel: ReturnType<typeof registerForgeaxCoreKernel> | undefined;
-if (process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core') {
-  // observability v3 / B 档:把 hub.broadcast 注入 adapter,让 forgeax-core serve 经
-  // RPC `telemetry` 推回的 span/log 既落盘(<sid>/logs/{trace,log}.jsonl)又广播给
-  // 浏览器 viewer(WS `{ type:'telemetry', records }`)。
-  productForgeaxCoreKernel = registerForgeaxCoreKernel({
+// Product-owned native kernel registrar: constructs + registers the connected
+// forgeax-core adapter (it imports agent-host + product concepts, so it stays in
+// the server) and returns the shared-registry handle. `registerForgeaxCoreKernel`
+// is idempotent (getKernel guard), so running it synchronously here (to capture
+// the handle for the kernelProvider below) and again as the facade's injected
+// registrar is a safe no-op the second time.
+const registerNativeForgeaxCoreKernel = (): ReturnType<typeof registerForgeaxCoreKernel> =>
+  registerForgeaxCoreKernel({
     broadcast: (msg) => hub.broadcast(msg as Parameters<typeof hub.broadcast>[0]),
     telemetrySink,
   });
-  // 冷启动消除:server boot 即预热 agent-host(fire-and-forget),让首轮 chat 命中"已存在实例"
-  // 的快路径,而非在首轮里现 `Bun.spawn`——后者在 Windows 上冷启可能超过 ensureSidecar 的 spawn
-  // 窗口,误报 "sidecar (agent-host) not reachable after spawn"。kernel-only 路径(下方)已会
-  // 自行预热并擦 key,这里只覆盖默认(非 kernel-only)路径;预热失败不阻塞 boot(首轮仍会自行
-  // spawn + 重试)。
-  if (process.env.FORGEAX_KERNEL_ONLY !== '1') {
-    void (async (): Promise<void> => {
-      const { sidecarEnabled } = await import('@forgeax/orchestrator/kernel/kernel-mode');
-      if (!sidecarEnabled()) return;
-      const { ensureSidecar } = await import('@forgeax/orchestrator/kernel/sidecar-singleton');
-      await ensureSidecar();
-    })().catch(() => { /* 预热失败不阻塞 boot;首轮 chat 会自行 spawn+重试 */ });
-  }
+const useForgeaxCoreKernel = process.env.FORGEAX_KERNEL_IMPL.trim() === 'forgeax-core';
+if (useForgeaxCoreKernel) {
+  // observability v3 / channel B: inject hub.broadcast into the adapter so the
+  // span/log the forgeax-core serve pushes back over RPC `telemetry` both lands
+  // on disk (<sid>/logs/{trace,log}.jsonl) and broadcasts to the browser viewer
+  // (WS `{ type:'telemetry', records }`). The product registers + holds the
+  // handle synchronously here for the kernelProvider (permission discovery) below.
+  productForgeaxCoreKernel = registerNativeForgeaxCoreKernel();
 }
+
+// P3/D-3: the kernel boot order (register self-hosted -> registerNativeKernel ->
+// ensureSidecar when kernelStackGuarded -> wipe real model keys when kernel-only
+// and the sidecar is up) is internalized in the orchestrator facade. The server
+// shell only injects product params and holds the KernelRuntime handle for
+// shutdown. Build the handle synchronously via createKernelRuntime (no side
+// effect fires) then fire-and-forget `.boot()`: the handle is ready synchronously
+// for shutdown while the cold-start prewarm stays non-blocking (a failure never
+// aborts boot; the first chat turn re-spawns + retries). registerNativeKernel is
+// idempotent (no conflict with the synchronous registration above); a non
+// forgeax-core kernel injects no native registrar. The two hand-written boot
+// sites main.ts used to own (spawn-guard prewarm + R3-02 kernel-only key wipe)
+// collapse into this single runtime boot sequence.
+const kernelRuntime: KernelRuntime = createKernelRuntime({
+  projectRoot: instanceRoot,
+  env: process.env as Record<string, string | undefined>,
+  registerNativeKernel: useForgeaxCoreKernel ? registerNativeForgeaxCoreKernel : undefined,
+});
+void kernelRuntime.boot().catch(() => {
+  /* prewarm / key-wipe failure never blocks boot; the first chat turn re-spawns + retries */
+});
 
 // 初始化编排层 + 注入产品上下文。createForgeaxApp(@forgeax/orchestrator)负责 boot(path /
 // session / plugins / cli-providers / brand)并挂载全部 /api 路由,返回已就绪的 Hono
 // app。产品壳(本文件)只在其上叠加:静态资源(SPA / 插件 dist)、引擎/界面反向代理、
 // WS、Bun.serve、文件 watcher。这是"产品层初始化并注入编排层"的落点;换产品 = 换这层注入。
 const shimEnv = process.env as Record<string, string | undefined>;
+const feedbackRepository = new FeedbackRepository(defaultProjectRoot);
+const feedbackDelivery = new FeedbackDeliveryCoordinator({
+  repository: feedbackRepository,
+  getProjectRoot: defaultProjectRoot,
+  kernel: productForgeaxCoreKernel,
+  env: process.env,
+});
 const videoAssets = createVideoAssetRuntime({ getProjectRoot: defaultProjectRoot });
 const ceApiRouter = createCeApiShimRouter({
   projectRoot: instanceRoot,
@@ -257,6 +307,11 @@ const productComposition = await prepareServerModules({
 });
 const runtimeCarrierSupervisor = createRuntimeCarrierSupervisor({
   host: createPlaywrightCarrierHost({
+    // desktop-prod serves the Studio SPA from the dynamically reserved Server
+    // origin, not the source default :18920. Keep managed typed-transport
+    // carriers on the same resolved origin as the user-facing product.
+    baseUrl: process.env.FORGEAX_SERVER_URL
+      ?? `http://127.0.0.1:${process.env.FORGEAX_INTERFACE_PORT ?? '18920'}`,
     timeoutMs: Number(process.env.FORGEAX_CARRIER_TIMEOUT_MS) || undefined,
     resolveScope: () => {
       const root = defaultProjectRoot();
@@ -286,8 +341,22 @@ const editorTransportCarrier = createEditorTransportCarrier({
   },
 });
 registerEditorAssetImportCapability(getExtensionCapabilityControl(), editorTransportCarrier.dispatch);
+const studioHostCapabilities = await resolveStudioHostCapabilities();
+const studioTools = studioHostTools(
+  { dispatch: editorTransportCarrier.dispatch },
+  studioHostCapabilities,
+);
+console.log(
+  `[forgeax-server] editor relay: ${studioHostCapabilities.editorRelay.available ? 'available' : studioHostCapabilities.editorRelay.reason}`,
+);
 const { app, npcRuntime } = await createForgeaxApp({
   instanceRoot,
+  // A compiled desktop sidecar has no source-tree-relative `builtin/` path.
+  // The IDE stages Orchestrator's runtime-discovered kits under this explicit
+  // resource root so file tools and ask_user remain available after packaging.
+  ...(process.env.FORGEAX_STARTUP_PROFILE === 'desktop-prod' && process.env.FORGEAX_RESOURCE_ROOT
+    ? { resourceRoot: join(process.env.FORGEAX_RESOURCE_ROOT, 'server-runtime', 'orchestrator') }
+    : {}),
   version: VERSION,
   ...productComposition,
   // Permission capability discovery must use the same product-owned registry
@@ -307,14 +376,30 @@ const { app, npcRuntime } = await createForgeaxApp({
   systemPromptComposer: new GameSystemPromptComposer({
     serverPort: process.env.FORGEAX_SERVER_PORT ?? '18900',
     interfacePort: process.env.FORGEAX_INTERFACE_PORT ?? '18920',
-  }),
+  }, studioHostCapabilities),
   // 游戏语义 host 工具由产品壳经 seam 注入(P1-7 落地阶段A §3 设计意图):
   // list_games / query_world / capture_frame 不再硬编码在 cli——声明 + 宿主侧执行体
   // 都在 src/game/host-tools.ts,cli 只提供通用感知往返(ctx.perception)与信任闸。
-  hostTools: studioHostTools({ dispatch: editorTransportCarrier.dispatch }),
-  // 任务流计划卡依赖 todo_write。它在编排层默认关闭(保持共享层通用),由本产品
-  // 显式启用;何时调用及其与交付卡的联动由 charter(产品系统提示词)引导。
-  enabledBuiltinTools: ['todo_write'],
+  hostTools: studioTools,
+  // All builtin tools are opt-in in the reusable orchestration layer. The
+  // Studio product explicitly enables the capabilities its charter and UI
+  // rely on; adding a new orchestrator builtin must therefore be an
+  // intentional product change rather than an accidental release change.
+  enabledBuiltinTools: [
+    'ask_user',
+    'delegate_to_subagent',
+    'list_subagents',
+    'todo_write',
+    'memory_search',
+    'remember',
+    'soul_create',
+    'npc_wire',
+    'ui_snapshot',
+    'ui_invoke',
+    'ui_screenshot',
+  ],
+  // 共享上传目的地 + 共享写 token 由产品壳注入(见文件顶部 import 说明)。
+  uploadDefaults,
   resolveLlmTestRequestSource,
   // 游戏业务路由由产品壳注入(阶段A:原 cli 静态 mount 搬到此)。路由表逐条不变。
   routers: [
@@ -322,8 +407,16 @@ const { app, npcRuntime } = await createForgeaxApp({
     { path: '/api/npc-settings', router: createNpcSettingsRouter({ getProjectRoot: defaultProjectRoot }) },
     { path: '/api', router: createGameTemplatesRouter() },
     {
-      path: '/api/workbench',
-      router: createWorkbenchRouter({
+      path: '/api/feedback',
+      router: createFeedbackRouter({
+        getProjectRoot: defaultProjectRoot,
+        repository: feedbackRepository,
+        delivery: feedbackDelivery,
+      }),
+    },
+    {
+      path: '/api',
+      router: createProductApiRouter({
         cloneTemplateAssets: (input) => videoAssets.service.cloneTemplateAssets(input),
         runtimeScope: runtimeScopeClient,
         ensureSessionForGame: async (slug) => {
@@ -332,9 +425,8 @@ const { app, npcRuntime } = await createForgeaxApp({
         },
       }),
     },
-    { path: '/api/game-templates', router: createWorkbenchGameTemplatesRouter() },
-    { path: '/api/wb/character', router: createCharacterRouter({ projectRoot: instanceRoot, env: shimEnv }) },
-    { path: '/api/wb/bgm', router: createBgmRouter({ projectRoot: instanceRoot }) },
+    { path: '/api/extensions/character', router: createCharacterRouter({ projectRoot: instanceRoot, env: shimEnv }) },
+    { path: '/api/extensions/bgm', router: createBgmRouter({ projectRoot: instanceRoot }) },
     {
       path: '/api/generative-visuals',
       router: createGenerativeVisualsRouter({ accessPolicy: generativeVisualAccessPolicy }),
@@ -359,6 +451,16 @@ const { app, npcRuntime } = await createForgeaxApp({
   // state root 与 session layout 使用同一 instance root。
   stateRootFactory: (root) => join(root, '.forgeax', 'state'),
 });
+feedbackDelivery.start();
+
+// The in-process Studio Editor uses the same version-control Host contract as
+// standalone. Bind it to the server-owned active game; the browser never
+// chooses a filesystem root.
+const activeGameVersionControlHandler = createActiveGameVersionControlHandler({
+  projectRoot: defaultProjectRoot,
+});
+app.all('/api/version-control', (c) => activeGameVersionControlHandler(c.req.raw));
+app.all('/api/version-control/*', (c) => activeGameVersionControlHandler(c.req.raw));
 
 await activateServerModules({
   app,
@@ -392,7 +494,7 @@ app.route(
 mountRuntimeCarrierApi(app, runtimeCarrierSupervisor);
 
 // The instance root is private runtime infrastructure. The active user project
-// is always the game slug returned by /api/workbench/games.
+// is always the game slug returned by /api/projects.
 app.get('/api/health', (c) => {
   // Process resource usage for the status-bar diagnostics "运行时" section
   // (rss = resident set, heapUsed = V8 heap). Read per-request so it's live.
@@ -406,6 +508,13 @@ app.get('/api/health', (c) => {
     instanceRoot: friendlyPath(defaultProjectRoot()),
     instanceRootAbs: defaultProjectRoot(),
     wsClients: hub.size(),
+    hostTools: studioTools.map(({ name }) => name),
+    capabilities: {
+      editorRelay: {
+        available: studioHostCapabilities.editorRelay.available,
+        reason: studioHostCapabilities.editorRelay.reason,
+      },
+    },
     mem: { rss: mu.rss, heapUsed: mu.heapUsed },
     // Live native-path model id (read from process.env, which /api/settings/env
     // live-applies). The UI's useModelLabel() falls back to this instead of the
@@ -445,13 +554,13 @@ console.log(`[forgeax-server] instance root = ${instanceRoot}`);
 // HTTP surface scope (post-runtime-rewrite cleanup):
 //   Server owns session-management-and-below — file/fs browsing, settings,
 //   version, changelog, boot splash,
-//   workbench (game/agent UI list). Anything agent-level (chat, sessions,
+//   extension (game/agent UI list). Anything agent-level (chat, sessions,
 //   threads, runs, daemons) was deleted along with the cli daemon model.
 //   The runtime/ rewrite (docs/features/runtime-rewrite-core-plan.md) will
 //   bring those back via the agenteam-style commands transport (3 endpoints:
 //   list / query / execute) instead of one HTTP route per concern.
-// Plugin iframe assets — wb-character vite build lives in the marketplace
-// submodule and is served verbatim under /extensions/wb-character/*. Path is
+// Plugin iframe assets — character vite build lives in the marketplace
+// submodule and is served verbatim under /extensions/character/*. Path is
 // resolved from main.ts source location so it works regardless of process.cwd.
 
 // 插件 iframe 入口 html 禁用缓存:dist 资源文件名带内容 hash(可长缓存),但
@@ -476,7 +585,7 @@ app.use('/extensions/*', async (c, next) => {
   c.header('Cross-Origin-Resource-Policy', 'cross-origin');
 });
 
-// wb-gen3d generated 3D assets — content-addressed blobs (GLB/PNG) live under
+// gen3d generated 3D assets — content-addressed blobs (GLB/PNG) live under
 // the project root, NOT the marketplace dir. LocalBlobStore persists each
 // manifest file's localUrl as `/api/gen3d-blobs/<storageKey>` where storageKey
 // is `blobs/<sha[0:2]>/<sha>.<ext>`; this route maps the prefix back to the
@@ -492,7 +601,7 @@ app.use('/api/gen3d-blobs/*', serveStatic({
   },
 }));
 
-// wb-gen3d per-game 3D assets (M9 / ADR-0002). The plugin's per-game store
+// gen3d per-game 3D assets (M9 / ADR-0002). The plugin's per-game store
 // writes generation output to
 // `.forgeax/games/<slug>/assets/3d/{characters|meshes}/<name>.glb` (+ preview
 // sidecar) and persists each file's localUrl as
@@ -528,7 +637,7 @@ app.get('/api/game-assets/:slug/*', async (c) => {
   return new Response(file);
 });
 
-// wb-gen3d scratch (transfer) artifacts — pose-standardized images, etc. The
+// gen3d scratch (transfer) artifacts — pose-standardized images, etc. The
 // plugin's per-game store writes these to
 // `.forgeax/games/<slug>/.gen3d/tmp/<sha>.<ext>` and persists localUrl as
 // `/api/gen3d-scratch/<slug>/<sha>.<ext>`. NOT assets: no manifest, no delete UI.
@@ -561,28 +670,43 @@ app.get('/api/gen3d-scratch/:slug/*', async (c) => {
 
 // ── Extension static hosting (ADR 0025 M3) ──────────────────────────────
 // One convention-driven mount replaces the former per-plugin serveStatic
-// blocks (wb-character / wb-items / … — see git history for each plugin's
+// blocks (character / items / … — see git history for each plugin's
 // original notes). Root resolution mirrors scripts/build-plugins.ts
 // distDirFor(): <dir>/dist → <dir>/viz/dist → <dir>/frontend/editor/dist →
-// <dir> (source-served scaffolds like wb-lowpoly-obj / wb-agent-persona /
-// wb-diffusion-renderer). '/' rewrites to /index.html; vite `base` contracts
+// <dir> (source-served scaffolds like lowpoly-obj / agent-persona /
+// diffusion-renderer). '/' rewrites to /index.html; vite `base` contracts
 // ('./' relative or absolute '/extensions/<id>/') both resolve under this mount.
 // Roots are cached per id (negative too) — adding a brand-new extension dir
 // still requires a server restart, same as the old hand-written blocks.
 const EXTENSION_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const extensionStaticRoots = new Map<string, string>();
+const extensionIdSlug = (fullId: string): string => fullId.replace(/^@[^/]+\//, '');
+function extensionDistCandidates(dir: string): string[] {
+  return [join(dir, 'dist'), join(dir, 'viz', 'dist'), join(dir, 'frontend', 'editor', 'dist'), dir];
+}
 function resolveExtensionStaticRoot(id: string): string | null {
   if (!EXTENSION_ID_RE.test(id)) return null;
   const cached = extensionStaticRoots.get(id);
   if (cached !== undefined) return cached === '' ? null : cached;
   let root = '';
-  for (const candidate of [
-    mp(id, 'dist'),
-    mp(id, 'viz', 'dist'),
-    mp(id, 'frontend', 'editor', 'dist'),
-    mp(id),
-  ]) {
-    if (existsSync(join(candidate, 'index.html'))) { root = candidate; break; }
+  // Origin-agnostic: resolve the served dist from the registry snapshot's
+  // originPath (dirname of the extension's forgeax-extension.json), so
+  // builtin/user/project/npm extensions are served from wherever they actually
+  // live — including an npm-sourced extension resolved into node_modules.
+  const match = getExtensionSnapshot().manifests.find((m) => extensionIdSlug(m.manifest.id) === id);
+  if (match) {
+    const extensionDir = dirname(match.originPath);
+    root = resolveNativeExtensionPackageRoot(extensionDir) ?? '';
+    if (!root) {
+      const declaredEntry = match.manifest.entry?.frontend;
+      if (declaredEntry) {
+        root = resolveExtensionRuntimeStaticRoot(extensionDir, declaredEntry) ?? '';
+      } else {
+        for (const candidate of extensionDistCandidates(extensionDir)) {
+          if (existsSync(join(candidate, 'index.html'))) { root = candidate; break; }
+        }
+      }
+    }
   }
   extensionStaticRoots.set(id, root);
   return root === '' ? null : root;
@@ -612,19 +736,13 @@ app.use('/extensions/:id/*', async (c, next) => {
 
 
 
-// wb-scene backend API proxy. Plugin's Fastify backend listens on port
-// `WB_SCENE_API_PORT` (default 9557) and exposes /api/v1/* + /ws/*. The host
+// scene backend API proxy. Plugin's Fastify backend listens on port
+// `FORGEAX_EXTENSION_SCENE_API_PORT` (default 9557) and exposes /api/v1/* + /ws/*. The host
 // proxies same-origin so the iframe sees /api/v1/* without CORS.
 app.all('/api/v1/*', async (c) => {
-  const port = process.env.WB_SCENE_API_PORT ?? '9557';
+  const port = process.env.FORGEAX_EXTENSION_SCENE_API_PORT ?? '9557';
   const target = `http://127.0.0.1:${port}`;
-  const url = new URL(c.req.url);
-  const resp = await fetch(`${target}${url.pathname}${url.search}`, {
-    method: c.req.method,
-    headers: c.req.raw.headers,
-    body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
-    duplex: 'half',
-  });
+  const resp = await fetch(await sceneProxyRequest(c.req, target));
   return new Response(resp.body, { status: resp.status, headers: resp.headers });
 });
 
@@ -651,8 +769,8 @@ app.all('/api/narrative/*', async (c) => {
     });
     return new Response(resp.body, { status: resp.status, headers: resp.headers });
   } catch {
-    // narrative backend (wb-narrative standalone on :8900) is only started by
-    // run.sh when wb-narrative/.env has GEMINI_API_KEY or LLM_PROXY_URL. Without
+    // narrative backend (narrative standalone on :8900) is only started by
+    // run.sh when narrative/.env has GEMINI_API_KEY or LLM_PROXY_URL. Without
     // it the port is dead and this proxy fetch throws ECONNREFUSED — Hono would
     // surface that as a 500 and the viz/copilot poller (every 4s) floods the
     // console. Return a friendly 503 envelope instead so the iframe degrades
@@ -660,7 +778,7 @@ app.all('/api/narrative/*', async (c) => {
     return c.json(
       {
         success: false,
-        error: 'narrative 服务未启动（需在 packages/marketplace/extensions/wb-narrative/.env 配置 GEMINI_API_KEY 或 LLM_PROXY_URL 后重启 app）',
+        error: 'narrative 服务未启动（需在 packages/marketplace/extensions/narrative/.env 配置 GEMINI_API_KEY 或 LLM_PROXY_URL 后重启 app）',
         narrativeOffline: true,
       },
       503,
@@ -690,7 +808,7 @@ const SERVE_SPA = process.env.FORGEAX_SERVE_SPA !== '0' && existsSync(interfaceD
 if (SERVE_SPA) {
   // Backend/asset namespaces the SPA fallback must NEVER swallow. Without this
   // guard, an unmatched request under these prefixes (e.g. a plugin whose dist
-  // isn't built yet, like /extensions/wb-reel/*) would fall through to the
+  // isn't built yet, like /extensions/reel/*) would fall through to the
   // index.html fallback below and load the *studio shell* inside the plugin
   // iframe — an infinite "booting shell…" loop. These must 404 instead so the
   // host can tell the plugin simply isn't available. Studio client routes live
@@ -702,7 +820,7 @@ if (SERVE_SPA) {
   // it's included in RESERVED_PREFIX so this SPA fallback never swallows it
   // (which would return index.html for the preview iframe and recurse the whole
   // Studio SPA — Studio-in-Studio).
-  const RESERVED_PREFIX = /^\/(api|extensions|__ce-api__|__workbench__|preview|ws)(\/|$)/;
+  const RESERVED_PREFIX = /^\/(api|extensions|__ce-api__|__extensions__|preview|ws)(\/|$)/;
   const staticAssets = serveStatic({ root: interfaceDist });
   const spaIndex = serveStatic({ path: 'index.html', root: interfaceDist });
   // Static assets (hashed JS/CSS, /brand/*, favicon, etc.).
@@ -713,11 +831,10 @@ if (SERVE_SPA) {
   console.log(`[forgeax-server] serving interface SPA from ${friendlyPath(interfaceDist)}`);
 }
 
-// wb-scene WS reverse-proxy —— editor (host:18900/extensions/wb-scene/) 走
-// `ws://${host}/ws/{render,editor,log}` 上来；这里把它桥接到 wb-scene backend
+// scene WS reverse-proxy —— editor (host:18900/extensions/scene/) 走
+// `ws://${host}/ws/{render,editor,log}` 上来；这里把它桥接到 scene backend
 // 9557。renderer (:9556) / assetstore (:9560) 自己的 vite dev server 已配
 // /ws proxy，不经此处。
-const WB_SCENE_WS_PATHS = new Set(['/ws/render', '/ws/editor', '/ws/log']);
 const baseWsHandler = createWsHandler(hub);
 const npcWsHandler = createNpcWebSocketHandler(npcRuntime);
 // Must match npc-brain/runtime.ts server-side frame guard. Keep the public
@@ -744,6 +861,88 @@ function boundedPositiveEnv(name: string, fallback: number, maximum: number): nu
 }
 
 type WsProxyPayload = Parameters<WebSocket['send']>[0];
+const HOST_API_METHODS = new Set(['OPTIONS', 'GET', 'POST', 'PUT']);
+const HOST_API_ALLOWED_HEADERS = new Set([
+  'accept',
+  'cache-control',
+  'content-type',
+  'x-forgeax-reader-realm',
+]);
+const hostApiMutationFlights = new Map<string, Promise<Response>>();
+
+function isServerOwnedHostApi(pathname: string): boolean {
+  return pathname === '/api/projects'
+    || pathname.startsWith('/api/projects/')
+    || pathname === '/api/agents'
+    || pathname.startsWith('/api/agents/')
+    || pathname === '/api/project-builds'
+    || pathname.startsWith('/api/project-builds/')
+    || pathname === '/api/version-control'
+    || pathname.startsWith('/api/version-control/');
+}
+
+function hostApiOrigin(req: Request): string | null {
+  const origin = req.headers.get('origin');
+  if (origin === null) return null;
+  return hostApiOriginAllowed(origin) ? origin : '';
+}
+
+function hostApiHeaders(req: Request, origin: string | null): Headers {
+  const headers = new Headers({
+    'Cache-Control': 'no-store',
+    'Vary': 'Origin',
+    'Access-Control-Allow-Methods': 'OPTIONS, GET, POST, PUT',
+    'Access-Control-Allow-Headers': 'Accept, Cache-Control, Content-Type, X-Forgeax-Reader-Realm',
+    'Access-Control-Expose-Headers': 'Cache-Control, X-Forgeax-Reader-Realm',
+  });
+  if (origin) headers.set('Access-Control-Allow-Origin', origin);
+  const readerRealm = req.headers.get('x-forgeax-reader-realm');
+  if (readerRealm) headers.set('X-Forgeax-Reader-Realm', readerRealm);
+  return headers;
+}
+
+function hostApiJson(req: Request, body: Record<string, unknown>, status: number, origin: string | null): Response {
+  const response = Response.json(body, { status });
+  const headers = hostApiHeaders(req, origin);
+  for (const [key, value] of response.headers) headers.set(key, value);
+  return new Response(response.body, { status: response.status, headers });
+}
+
+function hostApiResponse(req: Request, response: Response, origin: string | null): Response {
+  const headers = new Headers(response.headers);
+  const corsHeaders = hostApiHeaders(req, origin);
+  for (const [key, value] of corsHeaders) headers.set(key, value);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+function hostApiRequest(req: Request, body?: string): Request {
+  if (req.method !== 'POST' && req.method !== 'PUT') return req;
+  const headers = new Headers(req.headers);
+  headers.set('content-type', 'text/plain;charset=UTF-8');
+  return new Request(req.url, { method: req.method, headers, body: body ?? '' });
+}
+
+function hostApiPreflightHeadersAllowed(req: Request): boolean {
+  const requested = req.headers.get('access-control-request-headers');
+  if (!requested) return true;
+  return requested.split(',').every((header) => HOST_API_ALLOWED_HEADERS.has(header.trim().toLowerCase()));
+}
+
+async function forwardHostApi(req: Request, connectionAddress: string | undefined, origin: string | null): Promise<Response> {
+  const isMutation = req.method === 'POST' || req.method === 'PUT';
+  const body = isMutation ? await req.clone().text() : '';
+  const key = isMutation ? `${req.method}:${new URL(req.url).pathname}:${body}` : null;
+  let flight = key === null ? undefined : hostApiMutationFlights.get(key);
+  if (flight === undefined) {
+    flight = Promise.resolve(app.fetch(bindGenerativeVisualConnection(hostApiRequest(req, body), connectionAddress)));
+    if (key !== null) hostApiMutationFlights.set(key, flight);
+  }
+  try {
+    return hostApiResponse(req, (await flight).clone() as unknown as Response, origin);
+  } finally {
+    if (key !== null && hostApiMutationFlights.get(key) === flight) hostApiMutationFlights.delete(key);
+  }
+}
 function originHeaderAllowed(req: Request, url: URL): boolean {
   const origin = req.headers.get('origin');
   if (!origin) return true;
@@ -1019,10 +1218,9 @@ try {
       if (upgraded) return undefined;
       return new Response('upgrade required', { status: 426 });
     }
-    if (WB_SCENE_WS_PATHS.has(url.pathname)) {
-      const port = process.env.WB_SCENE_API_PORT ?? '9557';
-      const upstreamUrl = `ws://127.0.0.1:${port}${url.pathname}${url.search}`;
-      const data: WsClientData = { id: crypto.randomUUID(), proxy: { url: upstreamUrl } };
+    const sceneWsUrl = sceneProxyWsUrl(url.pathname, url.search, process.env.FORGEAX_EXTENSION_SCENE_API_PORT ?? '9557');
+    if (sceneWsUrl) {
+      const data: WsClientData = { id: crypto.randomUUID(), proxy: { url: sceneWsUrl } };
       const upgraded = srv.upgrade(req, { data });
       if (upgraded) return undefined;
       return new Response('upgrade required', { status: 426 });
@@ -1061,6 +1259,16 @@ try {
       }).catch(
         (e) => new Response(`engine preview unavailable: ${e}`, { status: 502 }),
       );
+    }
+    if (isServerOwnedHostApi(url.pathname)) {
+      const origin = hostApiOrigin(req);
+      if (origin === '') return hostApiJson(req, { ok: false, error: { code: 'origin-not-allowed', hint: 'Only the local public IDE origin is allowed.' } }, 403, null);
+      if (!HOST_API_METHODS.has(req.method)) return hostApiJson(req, { ok: false, error: { code: 'method-not-allowed', hint: 'Only OPTIONS, GET, POST, and PUT are allowed.' } }, 405, origin);
+      if (req.method === 'OPTIONS') {
+        if (!hostApiPreflightHeadersAllowed(req)) return hostApiJson(req, { ok: false, error: { code: 'headers-not-allowed', hint: 'The requested CORS headers are not part of the Host API contract.' } }, 400, origin);
+        return hostApiJson(req, { ok: true, methods: ['OPTIONS', 'GET', 'POST', 'PUT'] }, 200, origin);
+      }
+      return forwardHostApi(req, connectionAddress, origin);
     }
     return app.fetch(bindGenerativeVisualConnection(req, connectionAddress));
   },
@@ -1116,7 +1324,12 @@ if (!/^(0|false|no|off)$/i.test(process.env.FORGEAX_PROJECT_MCP_PREWARM?.trim() 
   const activeSlug = getActiveGame(instanceRoot);
   const game = activeSlug === undefined ? undefined : resolveInstanceGame(instanceRoot, activeSlug);
   if (game !== undefined) {
-    void runtimeScopeClient.bind(game.gameId, game.gameDir).then((runtime) => {
+    void runtimeScopeClient.bindWhenAvailable(game.gameId, game.gameDir, {
+      shouldContinue: () => getActiveGame(instanceRoot) === game.gameId,
+    }).then((runtime) => {
+      // A user may switch games while the startup recovery is waiting. The
+      // newer selection owns publication; never replay the stale startup game.
+      if (getActiveGame(instanceRoot) !== game.gameId) return;
       setActiveGame(instanceRoot, game.gameId, runtime, { forceEvent: true });
       if (runtime.status === 'unavailable') {
         console.warn(`[forgeax-server] active game runtime unavailable: ${runtime.error ?? 'unknown error'}`);
@@ -1130,34 +1343,22 @@ if (!/^(0|false|no|off)$/i.test(process.env.FORGEAX_PROJECT_MCP_PREWARM?.trim() 
 try {
   const importedDir = `${process.env.FORGEAX_PROJECT_ROOT ?? process.cwd()}/.forgeax/souls-imported`;
   const { existsSync, readdirSync } = await import('node:fs');
-  const { kernelEnabled, sidecarEnabled } = await import('@forgeax/orchestrator/kernel/kernel-mode');
-  const guarded = kernelEnabled() && sidecarEnabled();
+  // Live evaluation (honors the .forgeax/use-cli / FORGEAX_* escape hatches at
+  // runtime); the public-surface equivalent of the old inline
+  // `kernelEnabled() && sidecarEnabled()` composite (SSOT: the producer owns the
+  // composite predicate).
+  const guarded = kernelStackGuarded();
   if (!guarded && existsSync(importedDir) && readdirSync(importedDir).length > 0) {
     console.warn('[forgeax-server] ⚠️  user-imported soul-pack 存在但内核/sidecar 被关 —— 不可信 pack 缺凭据保险箱/进程监督。移除 FORGEAX_KERNEL=cli / FORGEAX_SIDECAR=off / .forgeax/use-cli 以恢复保护。');
   }
 } catch { /* ignore */ }
 
-// R3-02 / ship-gate 闸#3:**kernel-only 模式**(FORGEAX_KERNEL_ONLY=1)下,把真模型 key 交给 sidecar
-// 后从 **server 进程 env 擦除** —— 真 key 连 server 都不持(防 server 被攻破泄密)。默认关:旧 in-process
-// 路径(auto-resolver / claude-code provider)+ 设置页仍需 key,故仅在显式 kernel-only(内核为唯一对话
-// 路径)时才擦。擦前先确保 sidecar 起来且拿到 key;sidecar 起不来则**不擦**(否则无可用路径)。
-if (process.env.FORGEAX_KERNEL_ONLY === '1') {
-  try {
-    const { kernelEnabled, sidecarEnabled } = await import('@forgeax/orchestrator/kernel/kernel-mode');
-    if (!kernelEnabled() || !sidecarEnabled()) {
-      console.warn('[forgeax-server] FORGEAX_KERNEL_ONLY=1 但内核/sidecar 未启用 —— 跳过擦 key(否则无可用模型路径)。');
-    } else {
-      const { ensureSidecar } = await import('@forgeax/orchestrator/kernel/sidecar-singleton');
-      await ensureSidecar(); // boot 即起 sidecar,真 key 随 spawn env 交给它(cred-vault 持有)
-      const before = Boolean(process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY);
-      delete process.env.ANTHROPIC_API_KEY;
-      delete process.env.OPENAI_API_KEY;
-      console.log(`[forgeax-server] 🔒 kernel-only:真模型 key 已交 sidecar 并从 server env 擦除(was present=${before})。子进程经 cred-vault scoped token,server 不再持真 key(R3-02)。`);
-    }
-  } catch (e) {
-    console.warn(`[forgeax-server] kernel-only 擦 key 跳过(sidecar 起不来:${(e as Error).message})—— 保留 key 以免无可用路径。`);
-  }
-}
+// R3-02 / ship-gate #3 (under kernel-only mode FORGEAX_KERNEL_ONLY=1: hand the
+// real model keys to the sidecar then wipe them from the server process env) is
+// now internalized in the kernel facade boot sequence (step 4 of the
+// createKernelRuntime().boot() above): wipe only once the sidecar is up and holds
+// the key, skip the wipe otherwise (else no usable path). The server shell no
+// longer owns this timing, so it is not repeated here.
 
 const shutdown = async (sig: string) => {
   if (shuttingDown) return;
@@ -1177,13 +1378,13 @@ const shutdown = async (sig: string) => {
   // live session（per-Session logger 各自 close）+ detach console bridge +
   // close SM 单例 logger，确保 `<userRoot>/debug.log` 尾部 buffer 落盘。
   try { await getSessionManager().shutdown(); } catch { /* SM 可能未 init */ }
-  // Claude's stream-json pool owns detached direct children and sidecar session
-  // ids that are not represented by the normal Agent scheduler. Reap them
-  // explicitly so a server restart cannot inherit stale native capabilities or
-  // leave a detached Claude process behind.
-  try { await ClaudeCodeKernel.closeSessionPool(); } catch { /* best-effort during shutdown */ }
-  try { await CodexKernel.closeAppServerPool(); } catch { /* best-effort during shutdown */ }
-  try { await shutdownProjectMcpPool(); } catch { /* best-effort during shutdown */ }
+  // P3/D-3: kernel-stack teardown (Claude stream-json session pool / Codex
+  // app-server pool / project-MCP pool, plus the sidecar singleton) is
+  // internalized by the facade in the server's original order. The server shell
+  // only holds the KernelRuntime handle and calls shutdownKernel once; each step
+  // is best-effort (the facade's internal try/catch never lets one failure abort
+  // the rest), equivalent to the three separate inline try/catch blocks.
+  try { await shutdownKernel(kernelRuntime); } catch { /* best-effort during shutdown */ }
   const carrierShutdown = await runtimeCarrierSupervisor.shutdown();
   if (carrierShutdown && !carrierShutdown.ok) {
     console.error('[forgeax-server] runtime carrier shutdown failed', JSON.stringify(carrierShutdown.error));

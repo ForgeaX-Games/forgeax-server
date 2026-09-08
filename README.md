@@ -6,8 +6,8 @@
 
 `@forgeax/server` is the single runtime process behind ForgeaX Studio. It listens on
 **`:18900`** and is the UI's only entrypoint. It spawns and supervises the engine and interface
-subprocesses, loads the agent kernel (`@forgeax/orchestrator`) **in-process**, exposes the entire
-Workbench API, and runs the filesystem/HMR bridge that turns the agent's code edits into a live
+subprocesses, loads the agent kernel (`@forgeax/orchestrator`) **in-process**, exposes the product
+APIs, and runs the filesystem/HMR bridge that turns the agent's code edits into a live
 preview. No Docker, no microservice sprawl — one process, started in seconds.
 
 ## Why it matters
@@ -34,7 +34,7 @@ preview. No Docker, no microservice sprawl — one process, started in seconds.
 |:--|:--|
 | `core` / `runtime` | server bootstrap, lifecycle, subprocess orchestration |
 | `agent` / `agents` / `cli` / `cli-providers` | in-process host of the agent kernel + driver layer |
-| `api` | the Hono HTTP routes (the Workbench + Studio API surface) |
+| `api` | the Hono HTTP routes (projects, agents, builds, and shared Studio services) |
 | `ws` | WebSocket handlers (chat-stream / file-event / agent-status push) |
 | `fs` | `/api/files` read/write + chokidar watcher → `file-event` |
 | `packs` / `plugins` / `skills` / `commands` / `tools` / `kits` | the capability + content surfaces the UI and agents consume |
@@ -43,8 +43,8 @@ preview. No Docker, no microservice sprawl — one process, started in seconds.
 
 ## The API surface (selected)
 
-`/api/chat` · `/api/sessions` · `/api/threads` · `/api/files` · `/api/workbench/games` · `/api/assets`
-· `/api/game-assets/:slug/*` · `/api/workbench` · `/api/packs` · `/api/plugins` · `/api/skills`
+`/api/chat` · `/api/sessions` · `/api/threads` · `/api/files` · `/api/projects` · `/api/agents`
+· `/api/project-builds` · `/api/assets` · `/api/game-assets/:slug/*` · `/api/packs` · `/api/plugins` · `/api/skills`
 · `/api/commands` · `/api/tools` · `/api/llm` · `/api/brand` · `/api/usage` · `/api/health`.
 Everything the UI needs is one HTTP/WS endpoint away.
 

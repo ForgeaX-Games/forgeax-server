@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { detectActiveSlug } from '../src/game/active-slug';
 
-// Locks the shared detectActiveSlug consumed by both api/workbench.ts and
+// Locks the shared detectActiveSlug consumed by both api/extension.ts and
 // cli-providers/providers/claude-code.ts. Used to scope "把背景改成蓝色"
 // ambiguous edits onto the most-recent .forgeax/games/<slug>/.
 

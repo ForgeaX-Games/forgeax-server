@@ -1,8 +1,8 @@
 import { describe, test, expect } from 'bun:test';
 import { GAME_SLUG_RE } from '../src/game/game-slug';
 
-// Locks the workbench game-slug validation regex used by both
-// POST /api/workbench/games (create) and DELETE /api/workbench/games/:slug.
+// Locks the extension game-slug validation regex used by both
+// POST /api/projects (create) and DELETE /api/projects/:slug.
 // Slugs become both filesystem dirs (`.forgeax/games/<slug>/`) and engine
 // query params (`/preview/?slug=<x>`) — picky about URL/path-safe chars
 // + lowercase to keep case-sensitivity gotchas off the table.

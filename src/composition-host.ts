@@ -68,7 +68,7 @@ export class ServerModuleRegistry {
       throw new Error('Cannot prepare server modules after activation has started');
     }
     const composition: {
-      workbenchHost?: ServerProductComposition['workbenchHost'];
+      extensionHost?: ServerProductComposition['extensionHost'];
       gameHostBeforeVersion?: ServerProductComposition['gameHostBeforeVersion'];
       gameHostSeedProvider?: ServerProductComposition['gameHostSeedProvider'];
     } = {};
@@ -77,9 +77,9 @@ export class ServerModuleRegistry {
       for (const module of this.#modules) {
         if (!module.prepare) continue;
         const prepared = await module.prepare(context);
-        if (prepared.workbenchHost !== undefined) {
-          if (composition.workbenchHost !== undefined) throw new Error('Multiple server modules provided workbenchHost');
-          composition.workbenchHost = prepared.workbenchHost;
+        if (prepared.extensionHost !== undefined) {
+          if (composition.extensionHost !== undefined) throw new Error('Multiple server modules provided extensionHost');
+          composition.extensionHost = prepared.extensionHost;
         }
         if (prepared.gameHostBeforeVersion !== undefined) {
           if (composition.gameHostBeforeVersion !== undefined) throw new Error('Multiple server modules provided gameHostBeforeVersion');

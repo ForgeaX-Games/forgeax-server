@@ -57,12 +57,12 @@ test('empty registry preparation is a no-op for the base server', async () => {
 
 test('preparation returns product-owned seams without activating modules', async () => {
   const registry = new ServerModuleRegistry();
-  const host = {} as never;
+  const extensionHost = {} as never;
   const beforeVersion = () => {};
   const seedProvider = async () => ({ blueprint: {}, assetsManifest: {} });
   registry.register({
     prepare: () => ({
-      workbenchHost: host,
+      extensionHost,
       gameHostBeforeVersion: beforeVersion,
       gameHostSeedProvider: seedProvider,
     }),
@@ -76,7 +76,7 @@ test('preparation returns product-owned seams without activating modules', async
     cloneTemplateAssets: async () => {},
     gameDirForSlug: (slug) => `/project/.forgeax/games/${slug}`,
   })).resolves.toEqual({
-    workbenchHost: host,
+    extensionHost,
     gameHostBeforeVersion: beforeVersion,
     gameHostSeedProvider: seedProvider,
   });
@@ -143,11 +143,11 @@ test('activation is blocked while preparation is in progress', async () => {
   await preparing;
 });
 
-test('multiple modules cannot provide the same product seam', async () => {
+test('multiple modules cannot provide the same extension host seam', async () => {
   const registry = new ServerModuleRegistry();
-  const host = {} as never;
-  registry.register({ prepare: () => ({ workbenchHost: host }), activate: () => {} });
-  registry.register({ prepare: () => ({ workbenchHost: host }), activate: () => {} });
+  const extensionHost = {} as never;
+  registry.register({ prepare: () => ({ extensionHost }), activate: () => {} });
+  registry.register({ prepare: () => ({ extensionHost }), activate: () => {} });
 
   await expect(registry.prepare({
     projectRoot: '/project',
@@ -155,7 +155,7 @@ test('multiple modules cannot provide the same product seam', async () => {
     modelRouter: new Hono(),
     cloneTemplateAssets: async () => {},
     gameDirForSlug: (slug: string) => `/project/.forgeax/games/${slug}`,
-  })).rejects.toThrow('Multiple server modules provided workbenchHost');
+  })).rejects.toThrow('Multiple server modules provided extensionHost');
 });
 
 test('modules activate in registration order', async () => {
@@ -341,8 +341,8 @@ test('public composition wrapper registers a module without exposing host APIs',
     import { activateServerModules } from './src/composition-host.ts';
     import { VideoAssetProviderRegistry } from './src/video-assets/provider-registry.ts';
 
-    const exported = Object.keys(composition);
-    if (exported.length !== 1 || exported[0] !== 'registerServerModule') {
+    const exported = Object.keys(composition).sort();
+    if (exported.join(',') !== 'configureNpmExtensionDirs,registerServerModule') {
       throw new Error('unexpected public exports: ' + exported.join(','));
     }
 

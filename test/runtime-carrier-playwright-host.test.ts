@@ -1,8 +1,11 @@
 import { expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
+import { chromium } from 'playwright';
 import { createPlaywrightCarrierHost, resolveCarrierHeadless } from '../src/runtime-carrier/playwright-host';
 import { createRuntimeCarrierSupervisor } from '../src/runtime-carrier/supervisor';
 
 const scope = { projectId: 'project-smoke', gameId: 'game-smoke' };
+const chromiumInstalled = existsSync(chromium.executablePath());
 
 test('managed carrier stays headless unless diagnostics explicitly opt out', () => {
   expect(resolveCarrierHeadless(undefined, {})).toBe(true);
@@ -11,7 +14,7 @@ test('managed carrier stays headless unless diagnostics explicitly opt out', () 
   expect(resolveCarrierHeadless(false, { FORGEAX_CARRIER_HEADLESS: '1' })).toBe(false);
 });
 
-test('headless host preserves current surface identity across reveal', async () => {
+test.skipIf(!chromiumInstalled)('headless host preserves current surface identity across reveal', async () => {
   const html = `<!doctype html><canvas id="canvas-smoke"></canvas><script>
     const params = new URLSearchParams(location.search);
     const runtimeId = params.get('runtimeId');

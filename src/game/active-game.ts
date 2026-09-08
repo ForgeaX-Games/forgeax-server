@@ -14,18 +14,18 @@
 // `getActiveGame()` returns that slug when it still resolves to a real game
 // dir, and only falls back to the mtime heuristic when no explicit binding
 // exists (fresh instance / pre-existing installs). Consumers (claude-code
-// provider, /api/workbench endpoints, session defaultDir bootstrap) read this
+// provider, /api/extension endpoints, session defaultDir bootstrap) read this
 // single function so they cannot drift.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { getEventBus } from '@forgeax/orchestrator/events/bus';
+import { getEventBus } from '@forgeax/orchestrator';
 import { detectActiveSlug } from './active-slug';
 import { isGameSlug } from './game-slug';
 import { resolveInstanceGame } from './instance-game';
 import type { RuntimeScopeState } from './runtime-scope-client';
 
-export const ACTIVE_GAME_CHANGED_TOPIC = 'workbench.active-game.changed';
+export const ACTIVE_GAME_CHANGED_TOPIC = 'extension.active-game.changed';
 
 export interface ActiveGameSelection {
   activeSlug: string | null;

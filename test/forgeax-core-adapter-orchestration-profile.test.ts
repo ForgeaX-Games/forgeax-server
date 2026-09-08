@@ -16,3 +16,34 @@ test('server forgeax-core adapter declares hostOwnedHistory:true', () => {
   const profile = orchestrationProfileOf(kernel);
   expect(profile.hostOwnedHistory).toBe(true);
 });
+
+test('server adapter resolves a packaged host ask from its own pending registry', async () => {
+  const kernel = createForgeaxCoreKernel() as unknown as {
+    waitForHostedAsk(sid: string, agentPath: string, args: unknown): Promise<string>;
+    resolveAskReply(
+      sid: string,
+      agentPath: string,
+      values: Array<{ questionId: string; values: string[] }>,
+      identity?: Record<string, unknown>,
+    ): boolean;
+  };
+
+  const pending = kernel.waitForHostedAsk('sid-1', 'forge', {
+    questions: [
+      { id: 'color', prompt: 'Color?' },
+      { id: 'speed', prompt: 'Speed?' },
+    ],
+  });
+
+  expect(kernel.resolveAskReply('sid-1', 'forge', [
+    { questionId: 'color', values: ['Red'] },
+    { questionId: 'speed', values: ['Fast'] },
+  ])).toBe(true);
+  expect(JSON.parse(await pending)).toEqual({
+    ok: true,
+    questions: [
+      { questionId: 'color', values: ['Red'] },
+      { questionId: 'speed', values: ['Fast'] },
+    ],
+  });
+});

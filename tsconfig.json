@@ -30,10 +30,9 @@
       "@/*": ["*"],
       "@forgeax/bus": ["bus/index.ts"],
       "@forgeax/bus/*": ["bus/*"],
-      "@forgeax/types": ["../../contracts/types/src/index.ts"],
-      "@forgeax/types/*": ["../../contracts/types/src/*"],
-      "@forgeax/agent-runtime": ["../../contracts/agent-runtime/src/index.ts"],
-      "@forgeax/agent-runtime/*": ["../../contracts/agent-runtime/src/*"],
+      // @forgeax/types + @forgeax/agent-runtime 现在从 npm 消费(contracts 子仓已随
+      // 一仓一包拆分退役),不再映射到源码路径 —— 留着会指向不存在的目录,让 tsc 在
+      // 本地残留文件上「假绿」而在干净 clone 里报 TS2307。
       "@forgeax/cli": ["../../cli/src/index.ts"],
       "@forgeax/cli/*": ["../../cli/src/*"],
       // orchestrator SOURCE (pulled in via the @forgeax/orchestrator/* paths below) imports these two
@@ -47,6 +46,13 @@
       "@server-lib/character-forge/*": ["../../orchestrator/src/lib/character-forge/*"],
       "@forgeax/orchestrator": ["../../orchestrator/src/index.ts"],
       "@forgeax/orchestrator/builtin/*": ["../../orchestrator/builtin/*.ts"],
+      // A3 public-facade: three export keys whose subpath name differs from the
+      // internal file path, so the generic `*` rule (src/*.ts | src/*/index.ts)
+      // cannot resolve them. bun honors package.json `exports` at runtime; tsc
+      // needs these explicit paths. They MUST precede the `*` catch-all.
+      "@forgeax/orchestrator/seams": ["../../orchestrator/src/orchestration-seams.ts"],
+      "@forgeax/orchestrator/gateways": ["../../orchestrator/src/lib/gateways/index.ts"],
+      "@forgeax/orchestrator/session-fs": ["../../orchestrator/src/fs/index.ts"],
       "@forgeax/orchestrator/*": ["../../orchestrator/src/*.ts", "../../orchestrator/src/*/index.ts"]
     }
   },

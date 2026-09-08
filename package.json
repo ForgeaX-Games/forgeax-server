@@ -8,7 +8,7 @@
   "exports": {
     ".": "./src/main.ts",
     "./composition": "./src/composition.ts",
-    "./workbench/runtime": "./src/workbench/runtime.ts"
+    "./extension-host/runtime": "./src/extension-host-integration/runtime.ts"
   },
   "bin": {
     "forgeax-server": "./bin/forgeax-server"
@@ -18,19 +18,27 @@
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "test:public-lifecycle": "bun test src/runtime/services/public-lifecycle.test.ts test/server-public-bin-lifecycle.test.ts",
+    "test:public-bin": "bun test src/runtime/services/public-bin.test.ts",
+    "test:manifest-html": "bun test test/extension-static-root.test.ts",
     "migrate:video-assets": "bun scripts/migrate-video-assets.ts",
     "e2e:inner-ring": "bun test/inner-ring-e2e.ts",
     "e2e:full": "bun test/full-flow-e2e.ts"
+    ,"service:release:verify": "bun scripts/service-release-verify.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1091.0",
     "@aws-sdk/s3-request-presigner": "^3.1091.0",
     "@forgeax/agent-host": "workspace:*",
-    "@forgeax/agent-runtime": "workspace:*",
+    "@forgeax/agent-runtime": "^0.1.2",
     "@forgeax/cli": "workspace:*",
+    "@forgeax/extension-platform": "0.2.1",
     "@forgeax/orchestrator": "workspace:*",
-    "@forgeax/platform-io": "workspace:*",
-    "@forgeax/workbench-host": "0.2.6",
+    "@forgeax/platform-io": "0.1.0",
+    "@forgeax/toolkit": "0.1.2",
+    "@forgeax/types": "^0.1.3",
+    "@forgeax/extension-host": "0.3.0",
+    "@opentelemetry/api": "^1.9.0",
     "cos-nodejs-sdk-v5": "^3.0.0",
     "hono": "^4.6.0",
     "playwright": "^1.61.1",

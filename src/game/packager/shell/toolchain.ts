@@ -258,17 +258,27 @@ async function installRustUnix(
 }
 
 /**
- * Run `wasm-pack build` for the engine WASM core (wgpu-wasm).
+ * Run `wasm-pack build` for the Engine WASM core (wgpu-wasm).
+ *
+ * The selected Engine workspace is the source of truth.  Keeping the root as
+ * an argument is important because the server can run from a packaged Studio
+ * resource tree or from an external Engine checkout; neither is guaranteed to
+ * have the old `packages/engine` path at the Studio root.
  */
 export async function buildWasmCore(
   onProgress?: (phase: string, line?: string) => void,
+  engineRoot?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   const paths = await ensureRust(onProgress);
   const env = buildEnv(paths);
   const ext = osPlatform() === 'win32' ? '.exe' : '';
 
   const wasmPack = join(paths.cargoBin, `wasm-pack${ext}`);
-  const wasmDir = join(studioRoot(), 'packages', 'engine', 'packages', 'wgpu-wasm');
+  const wasmDir = join(
+    engineRoot ?? resolve(studioRoot(), 'packages', 'editor', 'packages', 'engine'),
+    'packages',
+    'wgpu-wasm',
+  );
 
   if (!existsSync(wasmDir)) {
     return { ok: false, error: `wgpu-wasm not found at ${wasmDir}` };

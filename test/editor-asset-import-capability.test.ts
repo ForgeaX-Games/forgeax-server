@@ -7,10 +7,10 @@ import {
 import type { ExtensionCapabilityInvocationContext } from '@forgeax/types';
 
 const context: ExtensionCapabilityInvocationContext = {
-  caller: { kind: 'workbench', agentId: 'lowpoly-ui', sessionId: 'studio-session' },
+  caller: { kind: 'extension', agentId: 'lowpoly-ui', sessionId: 'studio-session' },
   toolId: 'lowpoly:import-glb',
   env: {},
-  cwd: '/extensions/wb-3d-lowpoly',
+  cwd: '/extensions/3d-lowpoly',
   projectRoot: '/workspace',
   game: 'demo-game',
 };

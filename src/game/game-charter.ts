@@ -1,21 +1,42 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  DEFAULT_STUDIO_HOST_CAPABILITIES,
+  type StudioHostCapabilities,
+} from "./studio-host-capabilities";
 
 export interface GameCharterPorts {
   serverPort: string;
   interfacePort: string;
 }
 
-const GAME_CHARTER_TEMPLATE = readFileSync(
-  new URL("./game-charter.md", import.meta.url),
-  "utf8",
-).trimEnd();
+export function gameCharterTemplatePath(
+  resourceRoot = process.env.FORGEAX_STARTUP_PROFILE === "desktop-prod"
+    ? process.env.FORGEAX_RESOURCE_ROOT?.trim()
+    : undefined,
+  moduleUrl = import.meta.url,
+): string | URL {
+  return resourceRoot
+    ? join(resourceRoot, "server-runtime", "assets", "game-charter.md")
+    : new URL("./game-charter.md", moduleUrl);
+}
+
+const GAME_CHARTER_TEMPLATE = readFileSync(gameCharterTemplatePath(), "utf8").trimEnd();
+const EDITOR_RELAY_BLOCK = /<!-- forgeax:editor-relay:start -->[\s\S]*?<!-- forgeax:editor-relay:end -->\n?/g;
+const EDITOR_RELAY_MARKER = /<!-- forgeax:editor-relay:(?:start|end) -->\n?/g;
 
 /**
  * Load the game-authoring contract from its Markdown SSOT and bind the live
  * Studio ports used by the verify and preview instructions.
  */
-export function buildGameCharter({ serverPort, interfacePort }: GameCharterPorts): string {
-  return GAME_CHARTER_TEMPLATE
+export function buildGameCharter(
+  { serverPort, interfacePort }: GameCharterPorts,
+  capabilities: StudioHostCapabilities = DEFAULT_STUDIO_HOST_CAPABILITIES,
+): string {
+  const capabilityBound = capabilities.editorRelay.available
+    ? GAME_CHARTER_TEMPLATE.replaceAll(EDITOR_RELAY_MARKER, "")
+    : GAME_CHARTER_TEMPLATE.replaceAll(EDITOR_RELAY_BLOCK, "");
+  return capabilityBound
     .replaceAll("{{serverPort}}", serverPort)
     .replaceAll("{{interfacePort}}", interfacePort);
 }

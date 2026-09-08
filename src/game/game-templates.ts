@@ -50,7 +50,7 @@ export async function listGameTemplates(): Promise<GameTemplate[]> {
 export function createGameTemplatesRouter(): Hono {
   const router = new Hono();
 
-  router.get('/game-templates', async (c) => {
+  router.get('/projects/templates', async (c) => {
     try {
       return c.json({ templates: await listGameTemplates() });
     } catch (error) {

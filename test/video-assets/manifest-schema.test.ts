@@ -58,13 +58,13 @@ describe('shared video asset manifest schema', () => {
     expect(validated.assets[0]).not.toBe((input.assets as unknown[])[0]);
   });
 
-  test('accepts a Kino-backed generated video with the workbench production type', () => {
+  test('accepts a Kino-backed generated video with the extension production type', () => {
     const input = validManifest();
     const assets = input.assets as Array<Record<string, unknown>>;
     assets[0] = {
       ...assets[0],
       productionType: 'video_clip',
-      sourceModule: 'wb-game-video',
+      sourceModule: 'video-game',
       provider: {
         kind: 'kino',
         ref: 'https://cdn.example.test/generated.mp4',

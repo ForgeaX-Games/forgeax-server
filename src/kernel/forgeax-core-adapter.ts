@@ -40,21 +40,34 @@ import {
   type TurnRequest,
   type ForkExtractRequest,
   type ForkExtractResult,
-  getKernel,
-  registerKernel,
 } from '@forgeax/agent-runtime';
 import { connect, type RpcConnection } from '@forgeax/agent-host';
-import { NATIVE_KERNEL_PROFILE } from '@forgeax/orchestrator/kernel/kernel-profile';
+// P3/§2.5: consume the curated public kernel surface instead of reaching into
+// individual kernel/* modules. Every symbol below is re-exported by
+// `@forgeax/orchestrator/kernel` (profile constants, permission config, sidecar
+// singleton, host-tool bridge, env/key helpers) and `@forgeax/orchestrator/gateways`
+// (the LLM gateway catalog face) — the adapter no longer knows the internal
+// module layout.
 import {
+  getKernel,
+  registerKernel,
+  NATIVE_KERNEL_PROFILE,
   CORE_DEFAULT_PERMISSION_MODE,
   CORE_SUPPORTED_PERMISSION_MODES,
-} from '@forgeax/orchestrator/kernel/permission-config';
-import { ensureSidecar } from '@forgeax/orchestrator/kernel/sidecar-singleton';
-import { loadGatewayCatalog, gatewayCatalogToKernelModels } from '@forgeax/orchestrator/lib/llm-gateway/gateway-catalog';
-import { makeInProcessExecuteTool, type HostExecuteToolFn } from '@forgeax/orchestrator/kernel/host-tool-bridge';
-import { materializeEnv, stripModelKeys } from '@forgeax/orchestrator/kernel/sidecar-spawn';
-import { tt, ttEnabled } from '@forgeax/orchestrator/lib/turn-trace';
-import { getConsoleRouterSnapshot } from '@forgeax/orchestrator/core/logger';
+  ensureSidecar,
+  makeInProcessExecuteTool,
+  type HostExecuteToolFn,
+  materializeEnv,
+  stripModelKeys,
+  tt,
+  ttEnabled,
+  getConsoleRouterSnapshot,
+  resolveAsk,
+  setExternalAskReplyResolver,
+  type AskReply,
+  type AskReplyIdentity,
+} from '@forgeax/orchestrator/kernel';
+import { loadGatewayCatalog, gatewayCatalogToKernelModels } from '@forgeax/orchestrator/gateways';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -79,7 +92,7 @@ const CORE_SERVE_ENTRY = resolveCoreServeEntry();
 
 /** bun 解释器:用**绝对路径**(运行本 server 的 bun 自身),而非裸名 `'bun'`。
  *  spec 经 RPC 传给 agent-host,后者用 `child_process.spawn(cmd, args)`(无 shell)起进程;
- *  Windows 下裸名不走 PATHEXT 解析 → `uv_spawn 'bun'` ENOENT。与 workbench/packager 同款。 */
+ *  Windows 下裸名不走 PATHEXT 解析 → `uv_spawn 'bun'` ENOENT。与 extension/packager 同款。 */
 const BUN_BIN = process.execPath || 'bun';
 
 // forkExtract:经复用 serve 会话发 forkExtract RPC,sidecar 内 facade 跑 cache-safe fork(已实现)。
@@ -246,6 +259,13 @@ interface ServeSession {
   closing: boolean;
 }
 
+interface PendingHostedAsk {
+  sid: string;
+  agentPath: string;
+  questionIds: string[];
+  resolve: (result: string) => void;
+}
+
 /** stable serve sessionId(命名空间避免与 rented 内核(codex 等)的 sessionId 撞)。 */
 function serveSessionId(key: string): string {
   return `fxcore:${key}`;
@@ -266,10 +286,33 @@ class ForgeaxCoreServeKernel implements AgentKernel {
     defaultMode: CORE_DEFAULT_PERMISSION_MODE,
   } as const;
 
+  /** Resolve an interactive ask in the exact orchestrator module graph used
+   * by this adapter's host-tool bridge. The packaged server may also contain
+   * the package-root graph used by the HTTP router, so resolving only there
+   * can otherwise report `no-pending` for a live card. */
+  resolveAskReply(
+    sid: string,
+    agentPath: string,
+    values: AskReply | string[],
+    identity: AskReplyIdentity = {},
+  ): boolean {
+    if (resolveAsk(sid, agentPath, values, identity)) return true;
+    const exact = this.pendingHostedAsks.get(`${sid}::${agentPath}`);
+    const sessionMatches = [...this.pendingHostedAsks.values()].filter((entry) => entry.sid === sid);
+    const pending = exact ?? (sessionMatches.length === 1 ? sessionMatches[0] : undefined);
+    if (!pending) return false;
+    this.pendingHostedAsks.delete(`${pending.sid}::${pending.agentPath}`);
+    const grouped = typeof values[0] === 'string'
+      ? [{ questionId: pending.questionIds[0] ?? 'question-1', values: values as string[] }]
+      : values as AskReply;
+    pending.resolve(JSON.stringify({ ok: true, questions: grouped }));
+    return true;
+  }
+
   /** 模型目录 = LLM gateway 目录(disk models.json ∩ LiteLLM live)。原生内核
    *  经 gateway 路由,能跑的模型集合就是 gateway 的集合——委托共享实现
-   *  (@forgeax/orchestrator/lib/llm-gateway/gateway-catalog,与无参 list_models 同一份,
-   *  SSOT)。这消掉了旧 models.ts「unknown providerId 巧合穿透 gateway」的隐契约。 */
+   *  (`@forgeax/orchestrator/gateways` catalog face, same source the arg-less
+   *  list_models uses, SSOT)。这消掉了旧 models.ts「unknown providerId 巧合穿透 gateway」的隐契约。 */
   async listModels(): Promise<KernelModelCatalog> {
     return gatewayCatalogToKernelModels(await loadGatewayCatalog());
   }
@@ -281,6 +324,9 @@ class ForgeaxCoreServeKernel implements AgentKernel {
   private readonly starting = new Map<string, Promise<ServeSession>>();
   /** callId → serve 会话(供 openHandle 软取消寻址)。 */
   private readonly callSession = new Map<string, ServeSession>();
+  /** Adapter-owned blocking asks avoid source/dist registry identity splits in
+   * packaged binaries while keeping the model-facing tool result unchanged. */
+  private readonly pendingHostedAsks = new Map<string, PendingHostedAsk>();
   /** WS 广播(telemetry → 浏览器 viewer);未注入 = noop。 */
   private readonly broadcast: (msg: { type: string; [k: string]: unknown }) => void;
   /** host-side telemetry 落盘 sink。 */
@@ -297,6 +343,8 @@ class ForgeaxCoreServeKernel implements AgentKernel {
         // 不再各算各的路径(方案B PR1 D1:删 projectSessionLogsDir,收口到 PathManager)。
         onError: (err) => tt('adapter.telemetry-sink-error', { err: String(err) }),
       });
+    setExternalAskReplyResolver((sid, agentPath, values, identity) =>
+      this.resolveAskReply(sid, agentPath, values, identity));
   }
 
   /** out-of-band telemetry notify 路由:method==='telemetry' → 消费(落盘+广播)并返 true;
@@ -341,6 +389,25 @@ class ForgeaxCoreServeKernel implements AgentKernel {
 
   private sessionKeyOf(req: TurnRequest): string {
     return `${req.hostSessionId || req.session.threadId || req.session.agentId || 'forge'}`;
+  }
+
+  private waitForHostedAsk(sid: string, agentPath: string, args: unknown): Promise<string> {
+    const record = args && typeof args === 'object' && !Array.isArray(args)
+      ? args as Record<string, unknown>
+      : {};
+    const rows = Array.isArray(record.questions) ? record.questions : [record];
+    const questionIds = rows.map((row, index) => {
+      const item = row && typeof row === 'object' && !Array.isArray(row)
+        ? row as Record<string, unknown>
+        : {};
+      return typeof item.id === 'string' && item.id.trim() ? item.id.trim() : `question-${index + 1}`;
+    });
+    const key = `${sid}::${agentPath}`;
+    const prior = this.pendingHostedAsks.get(key);
+    if (prior) prior.resolve('(问题已取消)');
+    return new Promise<string>((resolve) => {
+      this.pendingHostedAsks.set(key, { sid, agentPath, questionIds, resolve });
+    });
   }
 
   async *runTurn(req: TurnRequest, signal: AbortSignal): AsyncIterable<KernelEvent> {
@@ -501,7 +568,12 @@ class ForgeaxCoreServeKernel implements AgentKernel {
       if (method === 'hostTool') {
         const p = (params ?? {}) as { name: string; args: unknown; sid?: string; agentId?: string };
         // p.agentId = facade 透来的本轮真实 agent(委派轮 = mochi 等);桥按它求 trustTier / 弹卡 / 选 context。
-        return this.hostBridge(p.name, p.args, p.sid ?? s.hostSessionId, p.agentId);
+        const sid = p.sid ?? s.hostSessionId ?? '';
+        const agentPath = p.agentId ?? 'forge';
+        if (p.name === 'ask_user' || p.name === 'ask_user_question') {
+          return this.waitForHostedAsk(sid, agentPath, p.args);
+        }
+        return this.hostBridge(p.name, p.args, sid, p.agentId);
       }
       throw Object.assign(new Error(`unknown method: ${method}`), { code: -32601 });
     });
@@ -611,7 +683,12 @@ class ForgeaxCoreServeKernel implements AgentKernel {
       if (method === 'hostTool') {
         const p = (params ?? {}) as { name: string; args: unknown; sid?: string; agentId?: string };
         // p.agentId 优先(facade 透来的本轮真实 agent);缺省回落本轮 req 的 session.agentId。
-        return this.hostBridge(p.name, p.args, p.sid ?? req.hostSessionId, p.agentId ?? req.session?.agentId);
+        const sid = p.sid ?? req.hostSessionId ?? '';
+        const agentPath = p.agentId ?? req.session?.agentId ?? 'forge';
+        if (p.name === 'ask_user' || p.name === 'ask_user_question') {
+          return this.waitForHostedAsk(sid, agentPath, p.args);
+        }
+        return this.hostBridge(p.name, p.args, sid, agentPath);
       }
       throw Object.assign(new Error(`unknown method: ${method}`), { code: -32601 });
     });

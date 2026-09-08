@@ -1,0 +1,122 @@
+diff --git a/src/contracts/manifest.ts b/src/contracts/manifest.ts
+index 083b43785a5afeb7b006f5c25ee71de68d0bad8f..07641d5bb9118eeb98efe50b18f631c2e1a0e8cf 100644
+--- a/src/contracts/manifest.ts
++++ b/src/contracts/manifest.ts
+@@ -28,8 +28,8 @@ const LocalizedTextSchema = z.union([
+ export const ToolDescriptorSchema = z
+   .object({
+     id: z.string().min(1),
+-    args: z.string().min(1),
+-    returns: z.string().min(1).optional(),
++    args: z.union([z.string().min(1), z.record(z.unknown())]),
++    returns: z.union([z.string().min(1), z.record(z.unknown())]).optional(),
+     exposedToAI: z.boolean().optional(),
+     requireConfirm: z.enum(["always", "destructive", "never"]).optional(),
+     confirmMessage: LocalizedTextSchema.optional(),
+diff --git a/src/node/extension-host.ts b/src/node/extension-host.ts
+index b216bbd7ec7e9011ebb86df8d3292c0226a1dfd7..33d8e6b3e72cf2a2b53c0875a17649f97ddadb01 100644
+--- a/src/node/extension-host.ts
++++ b/src/node/extension-host.ts
+@@ -66,7 +66,10 @@ function copyTools(registry: RuntimeRegistry, gameId: string): RuntimeDescriptor
+   if (gameId.length === 0) throw hostError("identifier_invalid", "Game id must not be empty")
+   return registry.entries().flatMap((extension) => extension.manifest.tools.map((tool) => ({ ...tool })))
+ }
+-function toolLocation(registry: RuntimeRegistry, toolId: string): { extension: RuntimeDescriptor; schemaReference: string } {
++function toolLocation(registry: RuntimeRegistry, toolId: string): {
++  extension: RuntimeDescriptor;
++  schemaReference: RuntimeDescriptor["manifest"]["tools"][number]["inputSchema"];
++} {
+   for (const extension of registry.entries()) {
+     const tool = extension.manifest.tools.find((candidate) => candidate.id === toolId)
+     if (tool) return { extension, schemaReference: tool.inputSchema }
+@@ -259,6 +262,7 @@ export function createExtensionHost(options: ExtensionHostOptions): ExtensionHos
+       if (!(await options.isExtensionTrusted(location.extension))) {
+         throw hostError("extension_untrusted", "Extension backend is not trusted")
+       }
++      if (typeof location.schemaReference !== "string") return location.schemaReference
+       return (await readTrustedPackageJson(
+         location.extension.source.packageRoot,
+         location.schemaReference,
+diff --git a/src/node/merge-manifest.ts b/src/node/merge-manifest.ts
+index 42b5ab067649b39fb6e4ea77d0b062023d0f6f2a..cf748156a7cbda1a7af2bf86c6f8f73fa9c1ded1 100644
+--- a/src/node/merge-manifest.ts
++++ b/src/node/merge-manifest.ts
+@@ -19,8 +19,8 @@ function hasUniqueCapabilityProviders(
+ 
+ const ToolSchema = z.object({
+   id: z.string().min(1),
+-  args: z.string().min(1).optional(),
+-  returns: z.string().min(1).optional(),
++  args: z.union([z.string().min(1), z.record(z.unknown())]).optional(),
++  returns: z.union([z.string().min(1), z.record(z.unknown())]).optional(),
+   exposedToAI: z.boolean().optional(),
+   requireConfirm: z.enum(['always', 'destructive', 'never']).optional(),
+   confirmMessage: LocalizedTextSchema.optional(),
+@@ -72,8 +72,8 @@ export interface ExtensionManifest {
+     id: string;
+     title?: string;
+     description?: string;
+-    inputSchema: string;
+-    outputSchema?: string;
++    inputSchema: string | Record<string, unknown>;
++    outputSchema?: string | Record<string, unknown>;
+     exposedToAI?: boolean;
+     requireConfirm?: 'always' | 'destructive' | 'never';
+     confirmMessage?: string;
+diff --git a/src/node/tool-executor.ts b/src/node/tool-executor.ts
+index 4adc61fbb89938a85ab045da73db64c2063e7344..e89175a9ab8683398567368b17db69bc9ec1ebff 100644
+--- a/src/node/tool-executor.ts
++++ b/src/node/tool-executor.ts
+@@ -1,6 +1,6 @@
+ import Ajv, { type AnySchemaObject, type ValidateFunction } from "ajv"
+ import Ajv2020 from "ajv/dist/2020.js"
+-import { isAbsolute, relative, sep } from "node:path"
++import { isAbsolute, join, relative, sep } from "node:path"
+ import { fileURLToPath, pathToFileURL } from "node:url"
+ 
+ import type {
+@@ -55,6 +55,8 @@ interface ToolLocation {
+   readonly descriptor: RuntimeDescriptor["manifest"]["tools"][number]
+ }
+ 
++type SchemaReference = RuntimeDescriptor["manifest"]["tools"][number]["inputSchema"]
++
+ function errorResult(
+   code: string,
+   target: string,
+@@ -309,9 +311,9 @@ export class ToolExecutor {
+ 
+   #validatorFor(
+     extension: RuntimeDescriptor,
+-    schemaReference: string,
++    schemaReference: SchemaReference,
+   ): Promise<ValidateFunction> {
+-    const cacheKey = `${extension.runtimeId}\u0000${schemaReference}`
++    const cacheKey = `${extension.runtimeId}\u0000${typeof schemaReference === "string" ? schemaReference : JSON.stringify(schemaReference)}`
+     let validator = this.#validators.get(cacheKey)
+     if (!validator) {
+       validator = this.#createValidator(extension, schemaReference)
+@@ -322,7 +324,7 @@ export class ToolExecutor {
+ 
+   async #validate(
+     extension: RuntimeDescriptor,
+-    schemaReference: string,
++    schemaReference: SchemaReference,
+     value: unknown,
+   ): Promise<{ readonly valid: boolean; readonly errors?: unknown }> {
+     try {
+@@ -345,10 +347,12 @@ export class ToolExecutor {
+ 
+   async #createValidator(
+     extension: RuntimeDescriptor,
+-    schemaReference: string,
++    schemaReference: SchemaReference,
+   ): Promise<ValidateFunction> {
+     const root = extension.source.packageRoot
+-    const document = await readTrustedPackageJson(root, schemaReference)
++    const document = typeof schemaReference === "string"
++      ? await readTrustedPackageJson(root, schemaReference)
++      : { path: join(root, "forgeax-extension.json"), value: schemaReference }
+     if (!isJsonObject(document.value)) {
+       throw new TypeError("Tool schema must be a JSON object")
+     }

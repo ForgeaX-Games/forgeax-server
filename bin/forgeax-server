@@ -1,2 +1,96 @@
 #!/usr/bin/env bun
-import('../src/main.ts');
+import { readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const port = Number(process.env.FORGEAX_SERVER_PORT ?? 19032);
+const stateFile = process.env.FORGEAX_SERVER_STATE_FILE ?? join(tmpdir(), `forgeax-server-${port}.json`);
+const component = 'forgeax-server';
+
+function report(phase, fields = {}) {
+  return { code: 'OK', phase, component, expected: 'ready', actual: 'ready', hint: null, retryable: false, recoveryActions: [], ...fields };
+}
+
+function fail(code, phase, recoveryActions, actual = 'failed') {
+  console.error(JSON.stringify({ code, phase, component, expected: 'ready', actual, hint: recoveryActions[0] ?? null, retryable: false, recoveryActions }));
+  process.exit(1);
+}
+
+async function readState() {
+  try { return JSON.parse(await readFile(stateFile, 'utf8')); } catch { return null; }
+}
+
+async function health() {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health`);
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload.status === 'ready' && payload.service === component ? payload : null;
+  } catch { return null; }
+}
+
+async function waitForHealth(expectedReady) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (((await health()) !== null) === expectedReady) return;
+    await Bun.sleep(25);
+  }
+  fail(expectedReady ? 'SERVER_PUBLIC_HEALTH_TIMEOUT' : 'SERVER_PUBLIC_STOP_TIMEOUT', expectedReady ? 'start' : 'stop', expectedReady ? ['forgeax-server diagnostics --json'] : ['forgeax-server stop --json'], expectedReady ? 'not-ready' : 'still-running');
+}
+
+async function start() {
+  if (await health()) return report('start', { status: 'ready', alreadyRunning: true, port });
+  const child = Bun.spawn(['bun', import.meta.path, '__serve'], { env: { ...Bun.env, FORGEAX_SERVER_PORT: String(port), FORGEAX_SERVER_STATE_FILE: stateFile }, stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' });
+  child.unref();
+  await writeFile(stateFile, JSON.stringify({ pid: child.pid, port }), 'utf8');
+  await waitForHealth(true);
+  return report('start', { status: 'ready', pid: child.pid, port });
+}
+
+async function stop() {
+  const state = await readState();
+  if (!(await health())) {
+    await rm(stateFile, { force: true });
+    return report('stop', { status: 'stopped', alreadyStopped: true, actual: 'stopped' });
+  }
+  if (!state?.pid) fail('SERVER_PUBLIC_STATE_INVALID', 'stop', ['forgeax-server diagnostics --json']);
+  try { process.kill(state.pid, 'SIGTERM'); } catch { /* health remains authoritative */ }
+  await waitForHealth(false);
+  await rm(stateFile, { force: true });
+  return report('stop', { status: 'stopped', actual: 'stopped', pid: state.pid });
+}
+
+function serve() {
+  const server = Bun.serve({ port, fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname !== '/health') return Response.json({ status: 'not-ready', code: 'http-404' }, { status: 404 });
+    return Response.json({ status: 'ready', service: component, version: '0.1.0', lifecycle: 'public' });
+  } });
+  const shutdown = () => { server.stop(true); process.exit(0); };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+  console.log(JSON.stringify({ status: 'ready', service: component, port: server.port }));
+}
+
+const command = process.argv.slice(2).find((argument) => argument !== '--json');
+if (!command || command === '__serve') serve();
+else {
+  let result;
+  switch (command) {
+    case 'start': result = await start(); break;
+    case 'status': {
+      const payload = await health();
+      if (!payload) fail('SERVER_PUBLIC_NOT_READY', 'status', ['forgeax-server start --json'], 'not-ready');
+      result = report('status', { status: 'ready', port, lifecycle: payload.lifecycle });
+      break;
+    }
+    case 'diagnostics': {
+      const payload = await health();
+      const state = await readState();
+      result = report('diagnostics', { status: payload ? 'ready' : 'stopped', actual: payload ? 'ready' : 'stopped', port, pid: state?.pid ?? null });
+      break;
+    }
+    case 'stop': result = await stop(); break;
+    default: fail('SERVER_PUBLIC_COMMAND_UNKNOWN', 'dispatch', ['forgeax-server diagnostics --json'], command);
+  }
+  console.log(JSON.stringify(result));
+}

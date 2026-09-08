@@ -1,17 +1,18 @@
 /**
- * /__ce-api__/* —— studio-host shim for the wb-character iframe plugin.
+ * /__ce-api__/* —— studio-host shim for the character iframe plugin.
  *
- * Background: packages/marketplace/extensions/wb-character/src/* still hits the
+ * Background: packages/marketplace/extensions/character/src/* still hits the
  * vite-dev plugin's `/__ce-api__/<endpoint>` (88 call sites) through plain
  * fetch — Bridge.ts STUDIO_HOST_MODE was defined but the call sites bypass it.
- * The submodule is built as static assets and served at /extensions/wb-character/*
+ * The submodule is built as static assets and served at /extensions/character/*
  * by main.ts, so without this shim every "generate portrait / pixel / spine /
  * vfx" click would 404.
  *
- * Strategy: terminate the legacy endpoints here, forward to existing host libs
- * (image-gateway ImageDispatcher, lib/llm-gateway, raw FS for persistence).
- * Submodule code stays unchanged — this is the 接线层 until we push the iframe
- * to use Bridge.ts → /api/wb/character/*.
+ * Strategy: terminate the legacy endpoints here, forward media generation to
+ * the orchestrator MediaGateways capability face (tts/music/sfx/image/video/llm
+ * verbs; provider selection lives inside orchestrator, D-2) plus raw FS for
+ * persistence. Submodule code stays unchanged — this is the wiring layer until
+ * we push the iframe to use Bridge.ts → /api/wb/character/*.
  *
  * Envelope convention: every response is `{success: boolean, ...}` with HTTP
  * 200 even on failure (Hono `c.json`). The iframe checks `success` first and
@@ -32,34 +33,16 @@ import { request as httpRequest } from 'node:http';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { complete, type ChatMessage } from '@forgeax/orchestrator/lib/llm-gateway';
-import { ImageDispatcher } from '@forgeax/orchestrator/lib/image-gateway/clients/dispatcher';
-import { vendorForModel } from '@forgeax/orchestrator/lib/image-gateway';
-import { createLitellmSpeech, litellmTtsConfigured } from '@forgeax/orchestrator/lib/audio-gateway/litellm-tts';
-import { createDoubaoSpeech, doubaoTtsConfigured } from '@forgeax/orchestrator/lib/audio-gateway/doubao-tts';
-import { createMinimaxSpeech, minimaxTtsConfigured } from '@forgeax/orchestrator/lib/audio-gateway/minimax-tts';
-import {
-  createElevenLabsSoundEffect,
-  elevenLabsAudioConfigured,
-} from '@forgeax/orchestrator/lib/audio-gateway/elevenlabs-audio';
-import { createMinimaxMusic, minimaxMusicConfigured } from '@forgeax/orchestrator/lib/audio-gateway/minimax-music';
-import {
-  createLitellmVideoTask,
-  getLitellmVideoStatus,
-  downloadLitellmVideoContent,
-  litellmVideoConfigured,
-} from '@forgeax/orchestrator/lib/video-gateway/litellm-video';
-import {
-  arkVideoConfigured,
-  createArkVideoTask,
-  getArkVideoStatus,
-  downloadArkVideoContent,
-  isArkTaskId,
-} from '@forgeax/orchestrator/lib/video-gateway/ark-video';
+// Media generation now goes through the single MediaGateways capability face
+// (D-2, architecture-principles §2.5). The shim no longer imports per-vendor
+// factories/predicates nor re-encodes the provider enum on the consumer side:
+// provider selection lives inside orchestrator, so a new provider needs zero
+// edit here. `ChatMessage` is the gateway-owned llm message contract.
+import { createMediaGateways, type ChatMessage } from '@forgeax/orchestrator/gateways';
 import { defaultProjectRoot } from '@forgeax/platform-io';
 // UI asset-cleanup contract type now lives on the orchestration seam (cli);
 // ProductContext references it while this business consumes it (shell).
-import type { UiAssetCleanup } from '@forgeax/orchestrator/orchestration-seams';
+import type { UiAssetCleanup } from '@forgeax/orchestrator/seams';
 
 export interface CeApiShimCtx {
   projectRoot: string;
@@ -71,12 +54,12 @@ export interface CeApiShimCtx {
 /** 产品壳注入的清洗能力(router 创建时由 createCeApiShimRouter 设置)。 */
 let injectedUiAssetCleanup: UiAssetCleanup | undefined;
 
-// All shim-owned state lives under <projectRoot>/.forgeax/wb-character/. The
-// host already whitelists .forgeax/games for /api/files; wb-character/ is a
+// All shim-owned state lives under <projectRoot>/.forgeax/character/. The
+// host already whitelists .forgeax/games for /api/files; character/ is a
 // sibling tree (settings + spine sessions + character-export). Workspace
 // games live at .forgeax/games/<gameId>/ per project_packages_layout.md.
 function shimRoot(ctx: CeApiShimCtx): string {
-  return resolve(ctx.projectRoot, '.forgeax/wb-character');
+  return resolve(ctx.projectRoot, '.forgeax/character');
 }
 function workspaceGamesDir(ctx: CeApiShimCtx): string {
   return resolve(ctx.projectRoot, '.forgeax/games');
@@ -90,7 +73,7 @@ function spineHistoryDir(ctx: CeApiShimCtx): string {
 function characterExportDir(ctx: CeApiShimCtx): string {
   return resolve(shimRoot(ctx), 'character-export');
 }
-// wb-reel 视频任务下载后的同源 mp4 落盘目录(host 代下,iframe 永不见网关 key).
+// reel 视频任务下载后的同源 mp4 落盘目录(host 代下,iframe 永不见网关 key).
 function reelVideoDir(ctx: CeApiShimCtx): string {
   return resolve(shimRoot(ctx), 'reel-videos');
 }
@@ -675,8 +658,10 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
   // 记录产品壳注入的 UI 资产清洗能力,供模块级 generateUiDesignAsset 使用。
   injectedUiAssetCleanup = ctx.uiAssetCleanup;
   const app = new Hono();
+  // Single media capability face; provider selection is internalized here.
+  const gateways = createMediaGateways(ctx.env);
 
-  // wb-ui is served as static iframe assets in Studio, so its original Vite
+  // the ui extension is served as static iframe assets in Studio, so its original Vite
   // dev plugin is not present. This host shim must perform real image
   // generation + cleanup; returning deterministic SVGs here makes step 3 look
   // like it "generated" without ever touching the image backend.
@@ -690,8 +675,10 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
 
   // ── POST /generate-image ──────────────────────────────────────────────
   // The iframe expects: { success, imageBase64, mimeType }
-  // We route through ImageDispatcher (registers seedream / nano-banana /
-  // azure-gpt-image / litellm-images on construction, fallback chain wired).
+  // We route through gateways.image.generate; the vendor dispatch (seedream /
+  // nano-banana / azure-gpt-image / litellm-images + fallback chain) lives
+  // inside orchestrator (D-2). The multimodal Gemini/litellm-proxy image path
+  // below stays here (it is not part of the ImageDispatcher fallback chain).
   app.post('/generate-image', async (c) => {
     let body: GenerateImageBody;
     try { body = await c.req.json(); } catch {
@@ -714,17 +701,14 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
     }
 
     const refImageBase64 = body.inputImageBase64 ?? body.inputImages?.[0]?.base64;
-    const dispatcher = new ImageDispatcher(ctx.env);
-    const role = body.role ?? 'concept-art';
-    const requestedModel = body.model?.trim() || undefined;
-    const preferredVendor = vendorForModel(requestedModel);
     try {
-      const r = await dispatcher.generate(role, {
+      const r = await gateways.image.generate({
         prompt,
         size: '2k',
         refImageBase64,
-        modelOverride: requestedModel,
-      }, preferredVendor);
+        model: body.model?.trim() || undefined,
+        role: body.role ?? 'concept-art',
+      });
       return c.json({
         success: true,
         imageBase64: Buffer.from(r.pngBytes).toString('base64'),
@@ -735,8 +719,6 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
       });
     } catch (e) {
       return c.json({ success: false, error: (e as Error).message || '图像生成失败' });
-    } finally {
-      dispatcher.dispose();
     }
   });
 
@@ -757,7 +739,7 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
     if (body.system?.trim()) messages.push({ role: 'system', content: body.system });
     messages.push({ role: 'user', content: prompt });
     try {
-      const r = await complete({
+      const r = await gateways.llm.complete({
         model: body.model?.trim() || 'claude-opus-4-7',
         messages,
       });
@@ -785,7 +767,7 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
       messages.push({ role, content });
     }
     try {
-      const r = await complete({
+      const r = await gateways.llm.complete({
         model: body.model?.trim() || 'claude-opus-4-7',
         messages,
         maxTokens: body.maxTokens,
@@ -1140,17 +1122,17 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
     try { await c.req.text(); } catch { /* tolerate */ }
     return c.json({
       success: false,
-      error: 'Monster pipeline (Python Flask) is not wired in studio host. Start it via packages/marketplace/extensions/wb-character/server/monster-pipeline/ if needed.',
+      error: 'Monster pipeline (Python Flask) is not wired in studio host. Start it via packages/marketplace/extensions/character/server/monster-pipeline/ if needed.',
       deferred: true,
     });
   });
 
   // ── POST /reel-tts ──────────────────────────────────────────────────────
-  // wb-reel 角色音色 / 旁白合成。key 全程留在编排层,浏览器只发同源 /__ce-api__/reel-tts。
+  // reel 角色音色 / 旁白合成。key 全程留在编排层,浏览器只发同源 /__ce-api__/reel-tts。
   //   POST /reel-tts  { text, voice, speed?, model? } → { success, base64, mimeType }
   // 路由优先级:① litellm `doubao-tts`(代理开通时);② 直连 MiniMax;③ 直连豆包。
   app.post('/reel-tts', async (c) => {
-    if (!minimaxTtsConfigured() && !doubaoTtsConfigured() && !litellmTtsConfigured()) {
+    if (!gateways.capabilities().tts.configured) {
       return c.json({
         success: false,
         error: 'TTS 未配置:请在 .env 设 MINIMAX_API_KEY(直连 MiniMax),或 DOUBAO_TTS_KEY + DOUBAO_TTS_APP_ID(直连豆包),或让 LiteLLM 代理开通 TTS 模型',
@@ -1165,34 +1147,22 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
     if (!text) return c.json({ success: false, error: 'empty text' });
     if (!voice) return c.json({ success: false, error: 'empty voice' });
     const speed = typeof body.speed === 'number' ? body.speed : undefined;
-    const errors: string[] = [];
-    if (litellmTtsConfigured()) {
-      try {
-        const { bytes, mime } = await createLitellmSpeech({ input: text, voice, model: body.model, speed });
-        return c.json({ success: true, base64: bytes.toString('base64'), mimeType: mime });
-      } catch (e) { errors.push(`litellm: ${(e as Error).message}`); }
+    // Provider chain (litellm -> minimax -> doubao) + per-provider error
+    // accumulation now lives inside MediaGateways.tts.synthesize (D-2).
+    try {
+      const { bytes, mime } = await gateways.tts.synthesize({ input: text, voice, model: body.model, speed });
+      return c.json({ success: true, base64: bytes.toString('base64'), mimeType: mime });
+    } catch (e) {
+      return c.json({ success: false, error: (e as Error).message || 'TTS 合成失败' });
     }
-    if (minimaxTtsConfigured()) {
-      try {
-        const { bytes, mime } = await createMinimaxSpeech({ input: text, voice, speed, model: body.model });
-        return c.json({ success: true, base64: bytes.toString('base64'), mimeType: mime });
-      } catch (e) { errors.push(`minimax: ${(e as Error).message}`); }
-    }
-    if (doubaoTtsConfigured()) {
-      try {
-        const { bytes, mime } = await createDoubaoSpeech({ input: text, voice, speed });
-        return c.json({ success: true, base64: bytes.toString('base64'), mimeType: mime });
-      } catch (e) { errors.push(`doubao: ${(e as Error).message}`); }
-    }
-    return c.json({ success: false, error: errors.join(' · ') || 'TTS 合成失败' });
   });
 
   // ── POST /reel-music ────────────────────────────────────────────────────
-  // wb-reel 场景 BGM 生成(MiniMax music_generation 直连)。key 留编排层。
+  // reel 场景 BGM 生成(MiniMax music_generation 直连)。key 留编排层。
   //   POST /reel-music { prompt?, lyrics?, isInstrumental?, lyricsOptimizer?, model?, audioSetting? }
   //   注意:同步阻塞,整曲常需 60–150s,前端走宿主网关时不要设短超时。
   app.post('/reel-music', async (c) => {
-    if (!minimaxMusicConfigured()) {
+    if (!gateways.capabilities().music.configured) {
       return c.json({ success: false, error: 'BGM 未配置:请在 .env 设 MINIMAX_MUSIC_KEY(直连 MiniMax 音乐)' });
     }
     let body: {
@@ -1206,7 +1176,7 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
       return c.json({ success: false, error: 'prompt / lyrics 至少给一个' });
     }
     try {
-      const r = await createMinimaxMusic({
+      const r = await gateways.music.generate({
         prompt: body.prompt, lyrics: body.lyrics, isInstrumental: body.isInstrumental,
         lyricsOptimizer: body.lyricsOptimizer, model: body.model, audioSetting: body.audioSetting,
       });
@@ -1221,11 +1191,11 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
   });
 
   // ── POST /reel-sfx ──────────────────────────────────────────────────────
-  // 音频工作台的文生音效(ElevenLabs sound-generation 直连)。key 留编排层。
+  // 音频扩展页的文生音效(ElevenLabs sound-generation 直连)。key 留编排层。
   //   POST /reel-sfx { text, durationSeconds?, loop?, promptInfluence?, model? }
-  //   一次请求出一条 MP3;工作台要备选版本就并列发多次。
+  //   一次请求出一条 MP3;扩展页要备选版本就并列发多次。
   app.post('/reel-sfx', async (c) => {
-    if (!elevenLabsAudioConfigured()) {
+    if (!gateways.capabilities().sfx.configured) {
       return c.json({ success: false, error: '音效生成未配置:请在 .env 设 ELEVENLABS_API_KEY' });
     }
     let body: {
@@ -1237,7 +1207,7 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
     const text = body.text?.trim();
     if (!text) return c.json({ success: false, error: 'empty sound-effect prompt' });
     try {
-      const r = await createElevenLabsSoundEffect({
+      const r = await gateways.sfx.generate({
         text, durationSeconds: body.durationSeconds, loop: body.loop,
         promptInfluence: body.promptInfluence, model: body.model,
       });
@@ -1255,31 +1225,23 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
   });
 
   // ── GET /audio-generation-status ────────────────────────────────────────
-  // 工作台开面板时先问一次哪几类生成可用,好把没配 key 的入口直接置灰,而不是
+  // 扩展页开面板时先问一次哪几类生成可用,好把没配 key 的入口直接置灰,而不是
   // 等用户填完 prompt 点下去才报错。
-  app.get('/audio-generation-status', (c) => c.json({
-    success: true,
-    capabilities: {
-      tts: {
-        configured: litellmTtsConfigured() || minimaxTtsConfigured() || doubaoTtsConfigured(),
-        providers: [
-          litellmTtsConfigured() ? 'litellm' : '',
-          minimaxTtsConfigured() ? 'minimax' : '',
-          doubaoTtsConfigured() ? 'doubao' : '',
-        ].filter(Boolean),
+  app.get('/audio-generation-status', (c) => {
+    // Capability probe now reads the single MediaGateways status face; the shim
+    // no longer enumerates providers itself (D-2).
+    const caps = gateways.capabilities();
+    return c.json({
+      success: true,
+      capabilities: {
+        tts: caps.tts,
+        music: caps.music,
+        sfx: caps.sfx,
       },
-      music: {
-        configured: minimaxMusicConfigured(),
-        providers: minimaxMusicConfigured() ? ['minimax-music'] : [],
-      },
-      sfx: {
-        configured: elevenLabsAudioConfigured(),
-        providers: elevenLabsAudioConfigured() ? ['elevenlabs'] : [],
-      },
-    },
-  }));
+    });
+  });
 
-  // ── wb-reel video (litellm /v1/videos · async task) ─────────────────────
+  // ── reel video (litellm /v1/videos · async task) ─────────────────────
   // Three-step contract mirrors the OpenAI Sora shape, but the iframe never
   // sees the litellm key: the host creates the task, polls status, downloads
   // the completed mp4 and re-serves it same-origin.
@@ -1291,11 +1253,11 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
   //     → { success, status, videoUrl?, error? }   (videoUrl set when completed)
   //   GET  /video-file/:id   → streams the saved mp4
   app.post('/generate-video', async (c) => {
-    // 视频网关优先级：直连火山方舟（ARK_VIDEO_KEY，支持 doubao-seedance-2-0 的
-    // 多图参考 R2V：角色定妆照 + 场景同时作为 reference_image）> litellm 代理
-    // （只能单图当首帧、丢多图）。两者都没配才报错。
-    const useArk = arkVideoConfigured();
-    if (!useArk && !litellmVideoConfigured()) {
+    // Video gateway priority (direct ARK > litellm proxy) is now decided inside
+    // MediaGateways.video; the shim only does the not-configured user message +
+    // litellm extra_body assembly, no longer holding the arkVideoConfigured /
+    // litellmVideoConfigured provider predicates (D-2).
+    if (!gateways.capabilities().video.configured) {
       return c.json({
         success: false,
         error: '视频网关未配置（缺 ARK_VIDEO_KEY 或 LITELLM_PROXY_BASE_URL/KEY）',
@@ -1323,49 +1285,37 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
     const prompt = body.prompt?.trim();
     if (!prompt) return c.json({ success: false, error: '缺少 prompt' });
 
-    // ── 直连火山方舟（首选）：完整 content[] 多图带 role，真正支持
-    //    角色定妆照 + 场景 同时作为 reference_image（R2V）。 ──
-    if (useArk) {
-      try {
-        const { id } = await createArkVideoTask({
-          prompt,
-          model: body.model,
-          seconds: body.seconds,
-          resolution: body.resolution,
-          ratio: body.ratio,
-          generateAudio: body.generateAudio,
-          watermark: body.watermark,
-          imageWithRoles: body.imageWithRoles,
-          inputReferenceDataUrl: body.inputReferenceDataUrl,
-          referenceVideoDataUrl: body.referenceVideoDataUrl,
-          referenceAudioDataUrl: body.referenceAudioDataUrl,
-        });
-        return c.json({ success: true, taskId: id });
-      } catch (e) {
-        return c.json({ success: false, error: (e as Error).message || '视频任务创建失败' });
-      }
-    }
-
+    // Seedance native knobs -> extra_body verbatim passthrough (the litellm
+    // proxy adapter decides whether they take effect; the ARK branch reads the
+    // create input's named fields and ignores extra_body). Video routing (ARK
+    // multi-image R2V preferred / litellm single-image fallback) is internal to
+    // MediaGateways.video.create.
+    const extraBody: Record<string, unknown> = {};
+    if (typeof body.generateAudio === 'boolean') extraBody.generate_audio = body.generateAudio;
+    if (typeof body.watermark === 'boolean') extraBody.watermark = body.watermark;
+    if (body.mode) extraBody.mode = body.mode;
+    if (body.resolution) extraBody.resolution = body.resolution;
+    if (body.ratio) extraBody.ratio = body.ratio;
+    const roleImgs = Array.isArray(body.imageWithRoles)
+      ? body.imageWithRoles.filter((r) => r && typeof r.url === 'string' && r.url.length > 0)
+      : [];
+    if (roleImgs.length > 0) extraBody.image_with_roles = roleImgs;
+    if (body.referenceVideoDataUrl) extraBody.reference_video = body.referenceVideoDataUrl;
+    if (body.referenceAudioDataUrl) extraBody.reference_audio = body.referenceAudioDataUrl;
     try {
-      // Seedance 原生 knobs → extra_body 逐字透传（代理侧适配器决定是否生效）。
-      const extraBody: Record<string, unknown> = {};
-      if (typeof body.generateAudio === 'boolean') extraBody.generate_audio = body.generateAudio;
-      if (typeof body.watermark === 'boolean') extraBody.watermark = body.watermark;
-      if (body.mode) extraBody.mode = body.mode;
-      if (body.resolution) extraBody.resolution = body.resolution;
-      if (body.ratio) extraBody.ratio = body.ratio;
-      const roleImgs = Array.isArray(body.imageWithRoles)
-        ? body.imageWithRoles.filter((r) => r && typeof r.url === 'string' && r.url.length > 0)
-        : [];
-      if (roleImgs.length > 0) extraBody.image_with_roles = roleImgs;
-      if (body.referenceVideoDataUrl) extraBody.reference_video = body.referenceVideoDataUrl;
-      if (body.referenceAudioDataUrl) extraBody.reference_audio = body.referenceAudioDataUrl;
-      const { id } = await createLitellmVideoTask({
+      const { id } = await gateways.video.create({
         prompt,
         model: body.model,
         seconds: body.seconds,
         size: body.size,
+        resolution: body.resolution,
+        ratio: body.ratio,
+        generateAudio: body.generateAudio,
+        watermark: body.watermark,
+        imageWithRoles: body.imageWithRoles,
         inputReferenceDataUrl: body.inputReferenceDataUrl,
+        referenceVideoDataUrl: body.referenceVideoDataUrl,
+        referenceAudioDataUrl: body.referenceAudioDataUrl,
         extraBody,
       });
       return c.json({ success: true, taskId: id });
@@ -1384,26 +1334,12 @@ export function createCeApiShimRouter(ctx: CeApiShimCtx): Hono {
       if (existsSync(filePath)) {
         return c.json({ success: true, status: 'completed', videoUrl: `/__ce-api__/video-file/${hash}` });
       }
-      // 按 task id 前缀路由：ARK(cgt-...) 走直连方舟；其余走 litellm。
-      if (isArkTaskId(taskId)) {
-        const st = await getArkVideoStatus(taskId);
-        if (st.status === 'completed') {
-          if (!st.videoUrl) {
-            return c.json({ success: true, status: 'failed', error: 'ARK 任务完成但缺少 video_url' });
-          }
-          const { bytes } = await downloadArkVideoContent(st.videoUrl);
-          ensureDir(reelVideoDir(ctx));
-          writeFileSync(filePath, bytes);
-          return c.json({ success: true, status: 'completed', videoUrl: `/__ce-api__/video-file/${hash}` });
-        }
-        if (st.status === 'failed') {
-          return c.json({ success: true, status: 'failed', error: st.error || '视频任务失败' });
-        }
-        return c.json({ success: true, status: st.status });
-      }
-      const st = await getLitellmVideoStatus(taskId);
+      // Provider routing (by task-id shape) is internalized in MediaGateways.
+      // The shim keeps only the same-origin caching: download the completed mp4
+      // once, re-serve it via /video-file/<hash>.
+      const st = await gateways.video.status(taskId);
       if (st.status === 'completed') {
-        const { bytes } = await downloadLitellmVideoContent(taskId);
+        const { bytes } = await gateways.video.download(taskId, st.videoUrl);
         ensureDir(reelVideoDir(ctx));
         writeFileSync(filePath, bytes);
         return c.json({ success: true, status: 'completed', videoUrl: `/__ce-api__/video-file/${hash}` });

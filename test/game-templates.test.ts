@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { Hono } from 'hono';
 import { initPathManager, resetPathManager } from '@forgeax/orchestrator/fs/path-manager';
 import { createGameTemplatesRouter, listGameTemplates } from '../src/game/game-templates';
-import { createWorkbenchRouter } from '../src/game/workbench';
+import { createProductApiRouter } from '../src/game/product-api';
 
 let projectRoot: string;
 let previousProjectRoot: string | undefined;
@@ -25,12 +25,12 @@ afterEach(() => {
   rmSync(projectRoot, { recursive: true, force: true });
 });
 
-describe('GET /api/game-templates', () => {
+describe('GET /api/projects/templates', () => {
   test('lists valid projects from the editor engine template catalog', async () => {
     const app = new Hono();
     app.route('/api', createGameTemplatesRouter());
 
-    const response = await app.request('/api/game-templates');
+    const response = await app.request('/api/projects/templates');
     expect(response.status).toBe(200);
 
     const body = await response.json() as { templates: Array<{ slug: string; name: string }> };
@@ -47,9 +47,9 @@ describe('GET /api/game-templates', () => {
 
   test('creates a new game from a selected engine template', async () => {
     const app = new Hono();
-    app.route('/api/workbench', createWorkbenchRouter({ cloneTemplateAssets: async () => {} }));
+    app.route('/api', createProductApiRouter({ cloneTemplateAssets: async () => {} }));
 
-    const response = await app.request('/api/workbench/games', {
+    const response = await app.request('/api/projects', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ slug: 'empty-start', name: 'Empty Start', template: 'game-empty' }),
@@ -60,8 +60,10 @@ describe('GET /api/game-templates', () => {
     const manifest = JSON.parse(readFileSync(resolve(gameDir, 'forge.json'), 'utf8')) as {
       id?: string;
       name?: string;
+      entry?: string;
     };
     expect(manifest).toMatchObject({ id: 'empty-start', name: 'Empty Start' });
-    expect(existsSync(resolve(gameDir, 'main.ts'))).toBe(true);
+    expect(typeof manifest.entry).toBe('string');
+    expect(existsSync(resolve(gameDir, manifest.entry!))).toBe(true);
   });
 });

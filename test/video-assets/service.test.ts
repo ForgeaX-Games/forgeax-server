@@ -586,7 +586,7 @@ describe('VideoAssetService direct browser upload', () => {
       name: 'clip',
       type: 'UPLOAD' as const,
       url: `${sts.bucket_url}/${sts.object_key}`,
-      source: 'wb-game-video',
+      source: 'video-game',
       source_meta: { mime_type: 'video/mp4' as const },
       created_at: nowMs,
       updated_at: nowMs,
@@ -630,7 +630,7 @@ describe('VideoAssetService direct browser upload', () => {
     expect(fakeProvider.deleteCalls).toBe(1);
   });
 
-  test('keeps replacement uploads on the legacy Workbench session', async () => {
+  test('keeps replacement uploads on the legacy Extension session', async () => {
     await manifest.mutate(gameDir, (current) => {
       current.assets.push({
         id: 'resource-existing',

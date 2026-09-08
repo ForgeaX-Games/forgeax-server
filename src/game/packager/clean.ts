@@ -8,24 +8,15 @@
  *      the prebuilt wasm-pack); only ever populated by "Rebuild Engine Core".
  *   2. Launcher shell cache     — `~/.forgeax/cache/player-shell` (the
  *      bun --compile'd Windows launcher exe + meta).
- *   3. Temp export scratch dirs — `<engineRoot>/.forgeax-export` left behind
- *      by interrupted web builds (normally auto-removed in a finally).
- *
  * It deliberately does NOT touch packaging *products* (`.forgeax/exports/*`)
  * nor the history ledger (`~/.forgeax/exports-history.json`) — those are
  * deliverables / user data, not rebuildable environment.
  */
 
 import { existsSync, rmSync, statSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { assetRoot, friendlyPath } from '@forgeax/platform-io';
-import { detectEngineRoots } from './engine-roots';
-
-/** Monorepo root (`forgeax-studio/`), NOT the user's game instance dir. */
-function studioRoot(): string {
-  return resolve(assetRoot(), '..');
-}
+import { friendlyPath } from '@forgeax/platform-io';
 
 export interface CleanedTarget {
   /** User-friendly path of the target. */
@@ -66,32 +57,6 @@ function targetPaths(): string[] {
     join(base, 'toolchains'),
     join(base, 'cache', 'player-shell'),
   ]);
-
-  // `.forgeax-export*` scratch dirs live under each engine root candidate (and,
-  // defensively, the studio root itself). Names now carry a per-run unique
-  // suffix (`.forgeax-export-<uuid>`), so match by prefix instead of the exact
-  // legacy `.forgeax-export` name to reclaim leftovers from interrupted builds.
-  const root = studioRoot();
-  const scanDirs = new Set<string>([root]);
-  try {
-    for (const cand of detectEngineRoots(root)) {
-      scanDirs.add(cand.path);
-    }
-  } catch {
-    /* engine-root detection failed — toolchain/cache cleanup still proceeds */
-  }
-  for (const dir of scanDirs) {
-    try {
-      for (const entry of readdirSync(dir)) {
-        if (entry === '.forgeax-export' || entry.startsWith('.forgeax-export-')) {
-          paths.add(join(dir, entry));
-        }
-      }
-    } catch {
-      /* dir unreadable — skip */
-    }
-  }
-
   return [...paths];
 }
 

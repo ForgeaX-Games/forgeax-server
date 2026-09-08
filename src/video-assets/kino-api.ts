@@ -69,7 +69,7 @@ export interface KinoImportProjectPage {
 /**
  * Short-lived credentials returned by Kino's documented
  * `POST /api/v1/kino/image-assets/upload` endpoint. The browser uses these
- * only for a direct COS PUT; they are never persisted by Workbench.
+ * only for a direct COS PUT; they are never persisted by Extension.
  */
 export interface KinoImageUploadSts {
   tmp_secret_id: string;

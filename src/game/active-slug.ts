@@ -1,6 +1,6 @@
 // Most-recently-touched .forgeax/games/<slug>/ dir under the project root.
 // Used by:
-//   - api/workbench.ts to report `activeSlug` in /games + /agents responses
+//   - api/extension.ts to report `activeSlug` in /games + /agents responses
 //   - cli-providers/providers/claude-code.ts to scope ambiguous user edits
 //     ("把背景改成蓝色") onto a specific game directory
 //

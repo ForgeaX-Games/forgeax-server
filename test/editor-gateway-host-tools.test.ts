@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { editorGatewayHostTools } from '../src/game/editor-gateway-host-tools';
 import { studioHostTools } from '../src/game/host-tools';
-import { EXPECTED_STUDIO_TOOLS } from './editor-transport-host-tools.test';
+import { EXPECTED_STUDIO_TOOLS, HEALTHY_EDITOR_RELAY } from './editor-transport-host-tools.test';
 
 const relay = 'http://127.0.0.1:15295';
 const ctx = { agentId: 'forge', projectRoot: '/tmp' };
@@ -25,7 +25,8 @@ function toolsFor(response: unknown, calls: Array<{ url: string; init?: RequestI
 
 describe('editorGatewayHostTools', () => {
   test('is included in the Studio host-tool registration (dual-track transition)', () => {
-    expect(studioHostTools().map((tool) => tool.name)).toEqual(EXPECTED_STUDIO_TOOLS);
+    expect(studioHostTools(undefined, HEALTHY_EDITOR_RELAY).map((tool) => tool.name))
+      .toEqual(EXPECTED_STUDIO_TOOLS);
   });
 
   test('registers one direct code-evaluation tool', () => {
@@ -49,8 +50,10 @@ describe('editorGatewayHostTools', () => {
     process.env.FORGEAX_DISABLE_EDITOR_EVAL = '1';
 
     expect(editorGatewayHostTools()).toEqual([]);
-    expect(studioHostTools().map((tool) => tool.name)).not.toContain('editor_gateway_eval');
-    expect(studioHostTools().map((tool) => tool.name)).toContain('editor_ui_browse');
+    expect(studioHostTools(undefined, HEALTHY_EDITOR_RELAY).map((tool) => tool.name))
+      .not.toContain('editor_gateway_eval');
+    expect(studioHostTools(undefined, HEALTHY_EDITOR_RELAY).map((tool) => tool.name))
+      .toContain('editor_ui_browse');
   });
 
   test('passes direct code through the relay', async () => {

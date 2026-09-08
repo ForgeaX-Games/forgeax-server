@@ -7,7 +7,7 @@
  * tool: the gateway skill owns the code contract, while this host tool owns
  * the transport and session trust boundary.
  */
-import type { HostToolSpec } from '@forgeax/orchestrator/orchestration-seams';
+import type { HostToolSpec } from '@forgeax/orchestrator/seams';
 
 /** Only the callable fetch surface the relay adapter needs. Bun's global fetch
  * also carries `preconnect`, which test doubles intentionally do not implement. */

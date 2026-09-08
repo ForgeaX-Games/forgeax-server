@@ -13,7 +13,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
-import type { HostToolSpec, HostToolRunCtx } from '@forgeax/orchestrator/orchestration-seams';
+import type { HostToolSpec, HostToolRunCtx } from '@forgeax/orchestrator/seams';
 import {
   type Affordance,
   type NpcDecisionDeadline,
@@ -24,6 +24,10 @@ import { editorTransportHostTools, type EditorTransportHostToolsDeps } from './e
 // 的编辑器腿仍走 relay-eval —— 本轮并存,迁移到 transport 记为显性债(见 docs/ai-native)。
 import { editorGatewayHostTools } from './editor-gateway-host-tools';
 import { editorUiBrowseHostTools } from './editor-ui-browse-host-tools';
+import {
+  DEFAULT_STUDIO_HOST_CAPABILITIES,
+  type StudioHostCapabilities,
+} from './studio-host-capabilities';
 import {
   DeliverSummaryClaimSchema,
   DeliverSummarySchema,
@@ -464,7 +468,9 @@ function wireNpc(args: Record<string, unknown>, ctx: HostToolRunCtx): unknown {
   };
 }
 
-export function gameHostTools(): HostToolSpec[] {
+export function gameHostTools(
+  capabilities: StudioHostCapabilities = DEFAULT_STUDIO_HOST_CAPABILITIES,
+): HostToolSpec[] {
   return [
     {
       name: 'deliver_summary',
@@ -474,7 +480,9 @@ export function gameHostTools(): HostToolSpec[] {
     },
     {
       name: 'list_games',
-      description: 'List the game projects in this ForgeaX instance. Returns { count, games }. READ-ONLY: to OPEN/SWITCH to a game the way a human does, do NOT hunt for slugs or read files — call editor_ui_browse open(\'menu:file/打开最近\') to reveal the recent list visually, then append the game\'s display name to the chain and call open again.',
+      description: capabilities.editorRelay.available
+        ? 'List the game projects in this ForgeaX instance. Returns { count, games }. READ-ONLY: to OPEN/SWITCH to a game the way a human does, do NOT hunt for slugs or read files — call editor_ui_browse open(\'menu:file/打开最近\') to reveal the recent list visually, then append the game\'s display name to the chain and call open again.'
+        : 'List the game projects in this ForgeaX instance. Returns { count, games }. READ-ONLY: use editor_transport discover and typed game.select operations to inspect or switch the active game without a DEV relay.',
       inputSchema: { type: 'object', properties: {} },
       run: (_args, ctx: HostToolRunCtx) => listGames(ctx.projectRoot),
     },
@@ -520,11 +528,15 @@ export function gameHostTools(): HostToolSpec[] {
  * but accidentally omitted at `createForgeaxApp` boot. */
 export function studioHostTools(
   editorTransport?: EditorTransportHostToolsDeps,
+  capabilities: StudioHostCapabilities = DEFAULT_STUDIO_HOST_CAPABILITIES,
 ): HostToolSpec[] {
+  const relay = capabilities.editorRelay.available && capabilities.editorRelay.baseUrl
+    ? { bridgeUrl: capabilities.editorRelay.baseUrl }
+    : undefined;
   return [
-    ...gameHostTools(),
+    ...gameHostTools(capabilities),
     ...editorTransportHostTools(editorTransport),
-    ...editorGatewayHostTools(),
-    ...editorUiBrowseHostTools(),
+    ...(relay ? editorGatewayHostTools(relay) : []),
+    ...(relay ? editorUiBrowseHostTools(relay) : []),
   ];
 }
