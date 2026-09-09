@@ -212,7 +212,7 @@ async function connectServeWithDiagnostics(
 }
 
 /** TurnRequest → 可序列化线上子集(去函数:requestPermission/hooks)。 */
-function toWire(req: TurnRequest): Record<string, unknown> {
+export function toForgeaxCoreWireRequest(req: TurnRequest): Record<string, unknown> {
   return {
     session: req.session,
     callId: req.callId,
@@ -228,6 +228,7 @@ function toWire(req: TurnRequest): Record<string, unknown> {
     permissionMode: req.permissionMode,
     model: req.model,
     fallbackModels: req.fallbackModels,
+    modelContextWindows: 'modelContextWindows' in req ? req.modelContextWindows : undefined,
     trustTier: req.trustTier,
     hostSessionId: req.hostSessionId,
     // 全链路 trace:把上游 W3C traceparent 透过 unix-socket 带进 sidecar,
@@ -445,7 +446,7 @@ class ForgeaxCoreServeKernel implements AgentKernel {
 
     tt('adapter.request-sent', { key, callId, sid: req.hostSessionId, agent: req.session?.agentId });
     const done = s.conn
-      .request('runTurn', toWire({ ...req, callId }))
+      .request('runTurn', toForgeaxCoreWireRequest({ ...req, callId }))
       .then(() => { sink.finished = true; tt('adapter.done-resolved', { key, callId }); poke(); })
       .catch((e: Error) => { sink.err = e.message; sink.finished = true; tt('adapter.done-rejected', { key, callId, err: e.message }); poke(); });
 
@@ -704,7 +705,7 @@ class ForgeaxCoreServeKernel implements AgentKernel {
     });
     const onAbort = (): void => { conn.request('cancel', { callId }).catch(() => {}); };
     if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true });
-    const done = conn.request('runTurn', toWire({ ...req, callId }))
+    const done = conn.request('runTurn', toForgeaxCoreWireRequest({ ...req, callId }))
       .then(() => { finished = true; poke(); })
       .catch((e: Error) => { errMsg = e.message; finished = true; poke(); });
     try {

@@ -7,9 +7,10 @@
  * 依赖方向与 `game-charter.ts` 一致:逻辑在 src,builtin 薄壳 import src(单向,无环)。
  * Boundary: 仅 import src-local + @forgeax/types,绝不反向依赖 builtin。
  */
-import { readFileSync } from "node:fs";
-import { join, relative } from "node:path";
-import { defaultProjectRoot } from '@forgeax/platform-io';
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
+import { defaultProjectRoot, assetRoot } from '@forgeax/platform-io';
+import { resolveEngineTemplatesRoot } from './game-templates';
 import { getExtensionSnapshot } from "@forgeax/orchestrator/extensions";
 import { pickI18n } from "@forgeax/types";
 import { installedExtensionPages } from './installed-extension-pages';
@@ -65,6 +66,20 @@ export function renderEnvironmentText(opts: RenderEnvironmentOpts): string {
   if (slug) {
     lines.push(`- Game slug: ${slug}`);
     lines.push(`- Game dir: .forgeax/games/${slug}/`);
+    lines.push(`- Project skills: ${join(gameRoot!, 'skills')}`);
+    const engineRoot = dirname(resolveEngineTemplatesRoot());
+    lines.push(`- Matching Engine reference root: ${engineRoot}`);
+    const packagedTypes = join(assetRoot(), 'engine', 'node_modules', '@forgeax');
+    lines.push(`- Engine API packages: ${existsSync(packagedTypes) ? packagedTypes : join(engineRoot, 'packages')}`);
+    lines.push('');
+    lines.push('## Studio embedded project authoring');
+    lines.push('This game has already been created by Studio. Work in its existing entry and assets; SDK init/new and SDK ZIP production are not part of this workflow.');
+    lines.push('The Engine CLI is not registered on PATH by this App. Do not use a global forgeax executable or install another SDK to guess the matching version.');
+    lines.push(`Project skill documents are files at ${join(gameRoot!, 'skills', '<skill-id>', 'SKILL.md')}; a skill directory is not a readable document.`);
+    lines.push('Start with the installed skill relevant to the next implementation decision: forgeax-engine-app for integration, forgeax-engine-ecs for behavior, or forgeax-engine-assets for asset authoring. Reuse instructions already read; load other skills only when the task needs them.');
+    lines.push('Use those examples and the existing entry first. Query the matching Engine API packages only to resolve a specific unanswered API question or observed error; avoid surveying the SDK or unrelated games before implementing.');
+    lines.push('Studio owns the host, World and frame loop: extend the provided bootstrap/world instead of creating a second host or World from standalone skill examples.');
+    lines.push('Use the Studio tools actually exposed in this session for editing and Play, then observe the result. SDK onboarding.read and root AGENTS.md are not supplied by this project-creation path; do not search for them as prerequisites.');
   }
   lines.push("");
 

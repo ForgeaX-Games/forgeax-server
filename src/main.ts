@@ -42,6 +42,7 @@ import { getExtensionSnapshot } from '@forgeax/orchestrator';
 import { getActiveGame, setActiveGame } from './game/active-game';
 import { resolveInstanceGame } from './game/instance-game';
 import { GameSessionLayout } from './studio-session-layout';
+import { gameSessionSkillRootProvider } from './game/session-skill-root';
 import {
   resolveExtensionRuntimeStaticRoot,
   resolveNativeExtensionPackageRoot,
@@ -381,6 +382,7 @@ const { app, npcRuntime } = await createForgeaxApp({
   // list_games / query_world / capture_frame 不再硬编码在 cli——声明 + 宿主侧执行体
   // 都在 src/game/host-tools.ts,cli 只提供通用感知往返(ctx.perception)与信任闸。
   hostTools: studioTools,
+  sessionSkillRootProvider: gameSessionSkillRootProvider,
   // All builtin tools are opt-in in the reusable orchestration layer. The
   // Studio product explicitly enables the capabilities its charter and UI
   // rely on; adding a new orchestrator builtin must therefore be an

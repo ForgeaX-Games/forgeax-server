@@ -15,42 +15,8 @@ const publicMethods: readonly string[] = Object.freeze([
   'reopen',
 ]);
 
-interface PublicSchema {
-  readonly type: 'object';
-  readonly properties: Record<string, unknown>;
-  readonly required?: readonly string[];
-  readonly additionalProperties: false;
-}
-
-interface PublicOperation {
-  readonly id: string;
-  readonly availability: 'page-owned';
-  readonly unsupportedCode: 'not-supported';
-  readonly inputSchema: PublicSchema;
-  readonly outputSchema: PublicSchema;
-}
-
-function objectSchema(properties: Record<string, unknown> = {}, required: readonly string[] = []): PublicSchema {
-  return {
-    type: 'object',
-    properties,
-    ...(required.length === 0 ? {} : { required }),
-    additionalProperties: false,
-  };
-}
-
-function publicOperation(id: string, inputSchema: PublicSchema, outputSchema: PublicSchema): PublicOperation {
-  return { id, availability: 'page-owned', unsupportedCode: 'not-supported', inputSchema, outputSchema };
-}
-
-const identitySchema = objectSchema({
-  runtimeId: { type: 'string', minLength: 1 },
-  pageIdentity: { type: 'string', minLength: 1 },
-  canvasIdentity: { type: 'string', minLength: 1 },
-  rendererGeneration: { type: 'integer', minimum: 0 },
-});
-
-/** Closed, public Studio discovery metadata. The page remains the capability SSOT. */
+/** Host method boundary only. Operation discovery and admission belong to the
+ * connected page's capability registry; do not duplicate its operation IDs. */
 export const EDITOR_TRANSPORT_PUBLIC_DISCOVERY = Object.freeze({
   version: EDITOR_TRANSPORT_VERSION,
   boundary: 'studio',
@@ -58,50 +24,11 @@ export const EDITOR_TRANSPORT_PUBLIC_DISCOVERY = Object.freeze({
   directEngine: false,
   methods: publicMethods,
   recoveryFields: Object.freeze(['code', 'category', 'phase', 'expected', 'observed', 'hint', 'safeRerun', 'firstFailure', 'teardown', 'recoveryActions']),
-  operations: Object.freeze([
-    publicOperation('game.select', objectSchema({ slug: { type: 'string', minLength: 1 } }, ['slug']), objectSchema({ slug: { type: 'string', minLength: 1 }, available: { type: 'boolean' }})),
-    publicOperation('persistence.save', objectSchema({ requestId: { type: 'string', minLength: 1 } }, ['requestId']), objectSchema({ status: { type: 'string' }, path: { type: 'string' }})),
-    publicOperation('persistence.fresh-read', objectSchema({ sessionId: { type: 'string', minLength: 1 } }, ['sessionId']), objectSchema({ value: { type: 'object' }, identity: identitySchema })),
-    publicOperation('play', objectSchema({ dirtyPolicy: { enum: ['last-saved', 'save-then-play', 'cancel'] } }), objectSchema({ status: { type: 'string' }, identity: identitySchema })),
-    publicOperation('stop', objectSchema(), objectSchema({ status: { type: 'string' }, identity: identitySchema })),
-    // Compatibility aliases retained for agents that learned the pre-runtime
-    // host inventory. They are normalized to the page-owned operation ids
-    // before crossing the carrier.
-    publicOperation('lifecycle.play', objectSchema(), objectSchema({ status: { type: 'string' }, identity: identitySchema })),
-    publicOperation('lifecycle.stop', objectSchema(), objectSchema({ status: { type: 'string' }, identity: identitySchema })),
-    publicOperation('gameplay.input', objectSchema({ version: { type: 'integer', const: 1 }, operation: { const: 'input' }, action: { type: 'object' } }, ['version', 'operation', 'action']), objectSchema({ ok: { type: 'boolean' }, identity: identitySchema })),
-    publicOperation('gameplay.describe', objectSchema({ version: { type: 'integer', const: 1 }, operation: { const: 'describe' } }, ['version', 'operation']), objectSchema({
-      ok: { type: 'boolean' },
-      data: {
-        type: 'object',
-        properties: {
-          version: { type: 'integer', const: 1 },
-          operations: { type: 'array', items: { type: 'object' } },
-          projections: {
-            type: 'object',
-            properties: {
-              actions: { type: 'array', items: { type: 'object' } },
-              reads: { type: 'array', items: { type: 'object' } },
-            },
-            required: ['actions', 'reads'],
-            additionalProperties: false,
-          },
-        },
-        required: ['version', 'operations', 'projections'],
-        additionalProperties: false,
-      },
-    }, ['ok', 'data'])),
-    publicOperation('gameplay.projection', objectSchema({ version: { type: 'integer', const: 1 }, operation: { const: 'query' }, query: { type: 'string', minLength: 1 } }, ['version', 'operation', 'query']), objectSchema({ ok: { type: 'boolean' }, data: { type: 'object' }, identity: identitySchema })),
-    publicOperation('carrier.identity', objectSchema(), objectSchema({ identity: identitySchema, carrierId: { type: 'string', minLength: 1 } }, ['identity'])),
-    publicOperation('evidence.logs', objectSchema({ windowId: { type: 'string', minLength: 1 } }, ['windowId']), objectSchema({ windowId: { type: 'string' }, entries: { type: 'array' }, identity: identitySchema })),
-    publicOperation('evidence.capture', objectSchema({ windowId: { type: 'string', minLength: 1 } }, ['windowId']), objectSchema({ windowId: { type: 'string' }, artifact: { type: 'object' }, identity: identitySchema })),
-    publicOperation('evidence.trace', objectSchema({ windowId: { type: 'string', minLength: 1 } }, ['windowId']), objectSchema({ windowId: { type: 'string' }, events: { type: 'array' }, identity: identitySchema })),
-    publicOperation('evidence.performance', objectSchema({ windowId: { type: 'string', minLength: 1 } }, ['windowId']), objectSchema({ windowId: { type: 'string' }, metrics: { type: 'object' }, identity: identitySchema })),
-    publicOperation('evidence.diagnostics', objectSchema({ windowId: { type: 'string', minLength: 1 } }, ['windowId']), objectSchema({ windowId: { type: 'string' }, diagnostics: { type: 'array' }, identity: identitySchema })),
-  ]),
 });
 
-const publicOperationIds = new Set(EDITOR_TRANSPORT_PUBLIC_DISCOVERY.operations.map((operation) => operation.id));
+// Preserve the existing typed gameplay aliases without routing unknown
+// gameplay-prefixed operations around the page's capability registry.
+const gameplayOperationIds = new Set(['editor.gameplay.input', 'editor.gameplay.describe', 'editor.gameplay.projection']);
 
 type TransportRequest = Record<string, unknown>;
 type DispatchTransport = (request: TransportRequest) => Promise<unknown>;
@@ -134,7 +61,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
         params: {
           type: 'object',
           properties: {
-            operationId: { type: 'string', pattern: '^editor\\.[a-z0-9]+(?:[.-][a-z0-9]+)*$' },
+            operationId: { type: 'string', pattern: '^editor\\..+$' },
             input: { type: 'object' },
           },
           additionalProperties: true,
@@ -220,33 +147,20 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
       const params = record(args.params) ?? {};
       if (method === 'run.dispatch') {
         const operationId = typeof params.operationId === 'string' ? params.operationId : '';
-        const operation = operationId.startsWith('editor.') ? operationId.slice('editor.'.length) : '';
-        if (!publicOperationIds.has(operation)) {
-          // 权威列表就在宿主手里(publicOperationIds 由 EDITOR_TRANSPORT_PUBLIC_DISCOVERY
-          // 派生),上面那个 method 校验也照实回了 publicMethods —— 只有这里回占位符
-          // `editor.<operation from discover>`,把 agent 打发去 discover。代价实测过:
-          // 2026-08-24,forge 与 audio-designer 都猜了 `editor.play`(真名
-          // `editor.lifecycle.play`,只差一个命名段),两个都没去 discover;同一个猜测
-          // 重复两次就撞上断路器,一趟已经做完九成音频活的 run 被整轮终止。
-          // 知道答案就直接说出来,近似命中还要点名 —— 一次回执换一次纠正,不用往返。
-          const suffix = operation.split('.').pop() ?? '';
-          const ids = [...publicOperationIds].map((id) => `editor.${id}`);
-          const near = suffix ? ids.filter((id) => id.split('.').pop() === suffix) : [];
-          return {
-            ok: false,
-            error: {
-              code: operationId ? 'not-supported' : 'invalid-args',
-              expected: { operationId: ids, input: 'object' },
-              observed: { operationId: operationId || null, input: params.input ?? null },
-              ...(near.length ? { didYouMean: near } : {}),
-              hint: (near.length ? `Unknown operation — did you mean ${near.join(' / ')}? ` : 'Unknown operation. ')
-                + 'Dispatch one of the exact ids listed in expected.operationId. Do not repeat this identifier:'
-                + ' guessing it again is what trips the repeated-failure breaker and ends the turn.',
-              retryable: false,
-              recoveryActions: ['editor.discover'],
-            },
-          };
-        }
+        if (!operationId.startsWith('editor.') || operationId.length === 'editor.'.length) return {
+          ok: false,
+          error: {
+            code: operationId ? 'not-supported' : 'invalid-args',
+            expected: { operationId: 'editor.<exact page-discovered operation id>', input: 'object' },
+            observed: { operationId: operationId || null },
+            hint: 'Use an exact editor-prefixed capability from the connected page discovery manifest.',
+            retryable: false,
+            recoveryActions: ['editor.discover'],
+          },
+        };
+        // The page publishes and executes the same capability registry. Forward
+        // its IDs unchanged (including camelCase) and preserve its structured
+        // unavailable/unknown-operation and permission errors.
         if (params.input !== undefined && record(params.input) === null) return {
           ok: false,
           error: {
@@ -265,10 +179,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
         : requestedOperationId === 'editor.lifecycle.stop'
           ? 'editor.stop'
           : requestedOperationId;
-      const dispatchedOperation = normalizedOperationId.startsWith('editor.')
-        ? normalizedOperationId.slice('editor.'.length)
-        : '';
-      if (method === 'run.dispatch' && dispatchedOperation.startsWith('gameplay.')) {
+      if (method === 'run.dispatch' && gameplayOperationIds.has(normalizedOperationId)) {
         return deps.dispatch({
           jsonrpc: '2.0',
           version: EDITOR_TRANSPORT_VERSION,

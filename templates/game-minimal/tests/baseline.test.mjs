@@ -14,3 +14,14 @@ test('minimal game baseline is capability-light', () => {
   assert.equal(existsSync(resolve(templateDir, 'assets')), false);
   assert.equal(existsSync(resolve(templateDir, 'main.ts')), true);
 });
+
+test('bootstrap uses the public Studio contract and declares its imports', () => {
+  const entry = readFileSync(resolve(templateDir, 'main.ts'), 'utf8');
+  const { dependencies } = JSON.parse(readFileSync(resolve(templateDir, 'package.json'), 'utf8'));
+  const imports = [...entry.matchAll(/import type \{ (\w+) \} from '([^']+)'/g)];
+  assert.deepEqual(imports.map(([, name, source]) => [name, source]), [
+    ['BootstrapContext', '@forgeax/editor-game-plugins'],
+    ['World', '@forgeax/engine-ecs'],
+  ]);
+  for (const [, , source] of imports) assert.equal(dependencies[source], 'workspace:*');
+});

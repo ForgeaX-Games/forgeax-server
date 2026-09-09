@@ -9,7 +9,7 @@
     "test": "node --test tests/baseline.test.mjs"
   },
   "dependencies": {
-    "@forgeax/engine-app": "workspace:*",
+    "@forgeax/editor-game-plugins": "workspace:*",
     "@forgeax/engine-ecs": "workspace:*"
   }
 }

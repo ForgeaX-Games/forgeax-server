@@ -1,3 +1,4 @@
+import { ensureGameProjectSkills } from './project-skills';
 import { Hono } from 'hono';
 import { readFile, writeFile, cp, stat, rm, unlink } from 'node:fs/promises';
 import { existsSync, lstatSync, mkdirSync, readdirSync, statSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
@@ -431,6 +432,7 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
     try {
       // Prepare dependent state before publishing the selection event. Pages
       // can then react as projections instead of racing to create sessions.
+      await ensureGameProjectSkills(game.gameDir);
       const session = await options.ensureSessionForGame?.(body!.slug as string);
       const runtime = options.runtimeScope === undefined
         ? undefined
@@ -799,6 +801,7 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
           targetGameId: slug,
         });
       }
+      await ensureGameProjectSkills(gameDir);
       const session = await options.ensureSessionForGame?.(slug);
       return c.json({
         ok: true,
@@ -906,6 +909,8 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
       // real conflict.
       try {
         if (realpathSync(linkPath) === realpathSync(abs)) {
+          try { await ensureGameProjectSkills(abs); }
+          catch (error) { return c.json({ error: (error as Error).message }, 409); }
           addKnownGame(abs, slug);
           return c.json({
             ok: true,
@@ -920,6 +925,7 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
       return c.json({ error: `.forgeax/games/${slug} already exists`, slug }, 409);
     }
     try {
+      await ensureGameProjectSkills(abs);
       mkdirSync(gamesRoot, { recursive: true });
       // 'junction' on Windows: links a dir without admin rights (unlike 'dir').
       symlinkSync(abs, linkPath, process.platform === 'win32' ? 'junction' : 'dir');

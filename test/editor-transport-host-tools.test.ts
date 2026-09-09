@@ -34,7 +34,7 @@ describe('editorTransportHostTools', () => {
       .toEqual(EXPECTED_STUDIO_TOOLS);
   });
 
-  test('declares a closed public discovery inventory with typed schemas and recovery', () => {
+  test('declares the closed host method boundary without duplicating page operation discovery', () => {
     expect(EDITOR_TRANSPORT_PUBLIC_DISCOVERY.boundary).toBe('studio');
     expect(EDITOR_TRANSPORT_PUBLIC_DISCOVERY.baseUrl).toBe('http://localhost:18920');
     expect(EDITOR_TRANSPORT_PUBLIC_DISCOVERY.directEngine).toBe(false);
@@ -49,31 +49,7 @@ describe('editorTransportHostTools', () => {
       'save',
       'reopen',
     ]);
-    for (const operation of EDITOR_TRANSPORT_PUBLIC_DISCOVERY.operations) {
-      expect(Object.keys(operation).sort()).toEqual(['availability', 'id', 'inputSchema', 'outputSchema', 'unsupportedCode']);
-      expect(operation.availability).toBe('page-owned');
-      expect(operation.unsupportedCode).toBe('not-supported');
-      expect(operation.inputSchema.type).toBe('object');
-      expect(operation.outputSchema.type).toBe('object');
-    }
-    expect(EDITOR_TRANSPORT_PUBLIC_DISCOVERY.operations.map((operation) => operation.id)).toEqual([
-      'game.select',
-      'persistence.save',
-      'persistence.fresh-read',
-      'play',
-      'stop',
-      'lifecycle.play',
-      'lifecycle.stop',
-      'gameplay.input',
-      'gameplay.describe',
-      'gameplay.projection',
-      'carrier.identity',
-      'evidence.logs',
-      'evidence.capture',
-      'evidence.trace',
-      'evidence.performance',
-      'evidence.diagnostics',
-    ]);
+    expect(EDITOR_TRANSPORT_PUBLIC_DISCOVERY).not.toHaveProperty('operations');
   });
 
   test('builds a typed discover request from the host context', async () => {
@@ -191,26 +167,50 @@ describe('editorTransportHostTools', () => {
     expect(requests[1]).toMatchObject({ method: 'run.dispatch', params: { operationId: 'editor.stop' } });
   });
 
-  test('an unknown operationId answers with the real id list and names the near miss', async () => {
+  test.each(['editor.captureFrame', 'editor.saveDocToDisk'])('forwards discovered %s with its unchanged authorization context', async (operationId) => {
+    const requests: Record<string, unknown>[] = [];
+    const tools = editorTransportHostTools({ dispatch: async (request) => { requests.push(request); return { ok: true }; } });
+    const schema = tools[0]!.inputSchema as { properties: { params: { properties: { operationId: { pattern: string } } } } };
+    expect(new RegExp(schema.properties.params.properties.operationId.pattern).test(operationId)).toBe(true);
+    await tools[0]!.run!({ method: 'run.dispatch', permission: 'execute', params: {
+      operationId, input: { requestId: 'capture-1' }, idempotencyKey: 'intent-1',
+    } }, ctx);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ method: 'run.dispatch', scope: 'game:spin-cube', params: {
+      operationId, input: { requestId: 'capture-1' }, idempotencyKey: 'intent-1',
+      actor: { id: 'forge', kind: 'ai' }, sessionId: 'host:forge', permission: 'execute',
+    } });
+  });
+
+  test.each(['editor.missingOperation', 'editor.gameplay.missingOperation'])('preserves the page rejection of %s without a fallback dispatch', async (operationId) => {
+    const requests: Record<string, unknown>[] = [];
+    const rejection = { error: { code: 'not-supported', retryable: false, recoveryActions: ['editor.discover'] } };
+    const tools = editorTransportHostTools({ dispatch: async (request) => { requests.push(request); return rejection; } });
+    expect(await tools[0]!.run!({ method: 'run.dispatch', params: { operationId, input: {} } }, ctx)).toBe(rejection);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ method: 'run.dispatch', params: { operationId } });
+  });
+
+  test('retains the method boundary and rejects malformed dispatch before contacting the page', async () => {
     let calls = 0;
     const tools = editorTransportHostTools({ dispatch: async () => { calls += 1; return {}; } });
-
-    const result = await tools[0]!.run!({
-      method: 'run.dispatch',
-      params: { operationId: 'editor.start', input: { dirtyPolicy: 'last-saved' } },
-    }, ctx);
-
+    for (const args of [
+      { method: 'script.execute', params: { code: 'anything' } },
+      { method: 'run.dispatch', params: { operationId: 'captureFrame' } },
+      { method: 'run.dispatch', params: { operationId: 'editor.' } },
+    ]) expect(await tools[0]!.run!(args, ctx)).toMatchObject({ error: { code: 'not-supported' } });
+    for (const params of [{}, { operationId: 'editor.captureFrame', input: [] }]) {
+      expect(await tools[0]!.run!({ method: 'run.dispatch', params }, ctx)).toMatchObject({ error: { code: 'invalid-args' } });
+    }
     expect(calls).toBe(0);
-    expect(result).toMatchObject({
-      error: {
-        code: 'not-supported',
-        retryable: false,
-      },
-    });
-    const { error } = result as { error: { expected: { operationId: string[] }; hint: string } };
-    expect(error.expected.operationId).toContain('editor.play');
-    expect(error.expected.operationId).not.toContain('editor.<operation from discover>');
-    expect(error.hint).toContain('Do not repeat this identifier');
+  });
+
+  test('preserves permission denial from the page', async () => {
+    const rejection = { error: { code: 'permission-denied', retryable: false } };
+    const tools = editorTransportHostTools({ dispatch: async () => rejection });
+    expect(await tools[0]!.run!({ method: 'run.dispatch', permission: 'read', params: {
+      operationId: 'editor.saveDocToDisk', input: {},
+    } }, ctx)).toBe(rejection);
   });
 
   test('unwraps query input so the page receives the projection contract directly', async () => {
