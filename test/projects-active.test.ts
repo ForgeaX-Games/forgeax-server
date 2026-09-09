@@ -7,12 +7,14 @@ import { getEventBus, _resetEventBusForTests } from '@forgeax/orchestrator/event
 import { initPathManager, resetPathManager } from '@forgeax/orchestrator/fs/path-manager';
 import { ACTIVE_GAME_CHANGED_TOPIC, setActiveGame } from '../src/game/active-game';
 import { createProductApiRouter } from '../src/game/product-api';
+import { ProjectDependencyError } from '../src/game/project-dependencies';
 import type { RuntimeScopeClient, RuntimeScopeState } from '../src/game/runtime-scope-client';
 
 let root: string;
 let previousProjectRoot: string | undefined;
 let app: Hono;
 let ensured: string[];
+let prepared: string[];
 
 beforeEach(() => {
   root = mkdtempSync(resolve(tmpdir(), 'forgeax-active-game-'));
@@ -23,8 +25,12 @@ beforeEach(() => {
   initPathManager({ projectRoot: root });
   _resetEventBusForTests();
   ensured = [];
+  prepared = [];
   app = new Hono();
   app.route('/api', createProductApiRouter({
+    ensureGameProjectDependencies: async (gameDir) => {
+      prepared.push(gameDir);
+    },
     ensureSessionForGame: async (slug) => {
       ensured.push(slug);
       return { sid: `session-${slug}`, created: true };
@@ -61,6 +67,7 @@ describe('active game resource', () => {
     });
     expect(ensured).toEqual(['game-b']);
     expect(events).toEqual([{ activeSlug: 'game-b' }]);
+    expect(prepared).toEqual([resolve(root, '.forgeax/games/game-b')]);
     expect(await (await app.request('/api/projects/active')).json()).toEqual({ activeSlug: 'game-b' });
     expect((await app.request('/api/projects/game-a/activate', { method: 'POST' })).status).toBe(404);
   });
@@ -75,6 +82,38 @@ describe('active game resource', () => {
     _resetEventBusForTests();
     expect((await request()).status).toBe(200);
     expect(getEventBus().recent(ACTIVE_GAME_CHANGED_TOPIC, 10)).toEqual([]);
+  });
+
+  test('returns an actionable dependency error before publishing a selection', async () => {
+    setActiveGame(root, 'game-a');
+    const guardedApp = new Hono();
+    guardedApp.route('/api', createProductApiRouter({
+      ensureGameProjectDependencies: async () => {
+        throw new ProjectDependencyError(
+          'project-dependency-conflict',
+          'Engine scope is occupied by a user directory',
+          409,
+          { path: resolve(root, '.forgeax/games/game-b/node_modules/@forgeax') },
+        );
+      },
+      ensureSessionForGame: async () => {
+        throw new Error('session must not be created after dependency preparation fails');
+      },
+    }));
+
+    const response = await guardedApp.request('/api/projects/active', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug: 'game-b' }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'failed to prepare game dependencies: Engine scope is occupied by a user directory',
+      code: 'project-dependency-conflict',
+      path: resolve(root, '.forgeax/games/game-b/node_modules/@forgeax'),
+    });
+    expect((await app.request('/api/projects/active')).json()).resolves.toEqual({ activeSlug: 'game-a' });
   });
 
   test('publishes the sidecar-confirmed binding atomically with the active game', async () => {

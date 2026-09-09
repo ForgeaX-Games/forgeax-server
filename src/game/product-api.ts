@@ -1,4 +1,8 @@
 import { ensureGameProjectSkills } from './project-skills';
+import {
+  ensureGameProjectDependencies,
+  ProjectDependencyError,
+} from './project-dependencies';
 import { Hono } from 'hono';
 import { readFile, writeFile, cp, stat, rm, unlink } from 'node:fs/promises';
 import { existsSync, lstatSync, mkdirSync, readdirSync, statSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
@@ -397,11 +401,14 @@ export interface ProductApiRouterOptions {
     targetGameId: string;
   }) => Promise<void>;
   ensureSessionForGame?: (slug: string) => Promise<{ sid: string; created: boolean }>;
+  /** Product-owned dependency preparation; injectable for route tests. */
+  ensureGameProjectDependencies?: (gameDir: string) => Promise<unknown>;
   runtimeScope?: RuntimeScopeClient;
 }
 
 export function createProductApiRouter(options: ProductApiRouterOptions = {}): Hono {
   const router = new Hono();
+  const prepareGameDependencies = options.ensureGameProjectDependencies ?? ensureGameProjectDependencies;
 
   // ── Active game — one authoritative read/write contract ──
   router.get('/projects/active', (c) => {
@@ -433,6 +440,7 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
       // Prepare dependent state before publishing the selection event. Pages
       // can then react as projections instead of racing to create sessions.
       await ensureGameProjectSkills(game.gameDir);
+      await prepareGameDependencies(game.gameDir);
       const session = await options.ensureSessionForGame?.(body!.slug as string);
       const runtime = options.runtimeScope === undefined
         ? undefined
@@ -450,6 +458,9 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
       }
       return c.json({ ok: true, ...selection, ...(session ? { session } : {}) });
     } catch (e) {
+      if (e instanceof ProjectDependencyError) {
+        return c.json({ error: `failed to prepare game dependencies: ${e.message}`, code: e.code, ...e.details }, e.status);
+      }
       return c.json({ error: `failed to prepare game session: ${(e as Error).message}` }, 500);
     }
   });
@@ -802,6 +813,7 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
         });
       }
       await ensureGameProjectSkills(gameDir);
+      await prepareGameDependencies(gameDir);
       const session = await options.ensureSessionForGame?.(slug);
       return c.json({
         ok: true,
@@ -811,6 +823,9 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
       });
     } catch (e) {
       await rm(gameDir, { recursive: true, force: true });
+      if (e instanceof ProjectDependencyError) {
+        return c.json({ error: e.message, code: e.code, ...e.details }, e.status);
+      }
       return c.json({ error: (e as Error).message }, 500);
     }
   });
@@ -909,8 +924,15 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
       // real conflict.
       try {
         if (realpathSync(linkPath) === realpathSync(abs)) {
-          try { await ensureGameProjectSkills(abs); }
-          catch (error) { return c.json({ error: (error as Error).message }, 409); }
+          try {
+            await ensureGameProjectSkills(abs);
+            await prepareGameDependencies(abs);
+          } catch (error) {
+            if (error instanceof ProjectDependencyError) {
+              return c.json({ error: error.message, code: error.code, ...error.details }, error.status);
+            }
+            return c.json({ error: (error as Error).message }, 409);
+          }
           addKnownGame(abs, slug);
           return c.json({
             ok: true,
@@ -926,6 +948,7 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
     }
     try {
       await ensureGameProjectSkills(abs);
+      await prepareGameDependencies(abs);
       mkdirSync(gamesRoot, { recursive: true });
       // 'junction' on Windows: links a dir without admin rights (unlike 'dir').
       symlinkSync(abs, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
@@ -938,6 +961,9 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
         ...(scaffolded ? { scaffolded: true } : {}),
       });
     } catch (e) {
+      if (e instanceof ProjectDependencyError) {
+        return c.json({ error: e.message, code: e.code, ...e.details }, e.status);
+      }
       return c.json({ error: (e as Error).message }, 500);
     }
   });

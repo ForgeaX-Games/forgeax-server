@@ -41,8 +41,10 @@ import { WsHub, createWsHandler, type WsClientData } from '@forgeax/orchestrator
 import { getExtensionSnapshot } from '@forgeax/orchestrator';
 import { getActiveGame, setActiveGame } from './game/active-game';
 import { resolveInstanceGame } from './game/instance-game';
+import { ensureGameProjectDependencies } from './game/project-dependencies';
 import { GameSessionLayout } from './studio-session-layout';
 import { gameSessionSkillRootProvider } from './game/session-skill-root';
+import { studioResidentResourcePolicy } from './desktop/resident-resource-policy';
 import {
   resolveExtensionRuntimeStaticRoot,
   resolveNativeExtensionPackageRoot,
@@ -383,6 +385,7 @@ const { app, npcRuntime } = await createForgeaxApp({
   // 都在 src/game/host-tools.ts,cli 只提供通用感知往返(ctx.perception)与信任闸。
   hostTools: studioTools,
   sessionSkillRootProvider: gameSessionSkillRootProvider,
+  residentResourcePolicy: studioResidentResourcePolicy,
   // All builtin tools are opt-in in the reusable orchestration layer. The
   // Studio product explicitly enables the capabilities its charter and UI
   // rely on; adding a new orchestrator builtin must therefore be an
@@ -1326,9 +1329,20 @@ if (!/^(0|false|no|off)$/i.test(process.env.FORGEAX_PROJECT_MCP_PREWARM?.trim() 
   const activeSlug = getActiveGame(instanceRoot);
   const game = activeSlug === undefined ? undefined : resolveInstanceGame(instanceRoot, activeSlug);
   if (game !== undefined) {
-    void runtimeScopeClient.bindWhenAvailable(game.gameId, game.gameDir, {
-      shouldContinue: () => getActiveGame(instanceRoot) === game.gameId,
-    }).then((runtime) => {
+    void (async () => {
+      // Startup restores the persisted selection without going through the
+      // interactive PUT route. Repair the product-owned Engine scope before
+      // Play can bind the game, so an App move/upgrade cannot leave a stale
+      // absolute link behind while the UI is still showing the old project.
+      try {
+        await ensureGameProjectDependencies(game.gameDir);
+      } catch (error) {
+        console.warn(`[forgeax-server] active game dependency preparation unavailable — ${(error as Error).message}`);
+        return;
+      }
+      const runtime = await runtimeScopeClient.bindWhenAvailable(game.gameId, game.gameDir, {
+        shouldContinue: () => getActiveGame(instanceRoot) === game.gameId,
+      });
       // A user may switch games while the startup recovery is waiting. The
       // newer selection owns publication; never replay the stale startup game.
       if (getActiveGame(instanceRoot) !== game.gameId) return;
@@ -1336,7 +1350,7 @@ if (!/^(0|false|no|off)$/i.test(process.env.FORGEAX_PROJECT_MCP_PREWARM?.trim() 
       if (runtime.status === 'unavailable') {
         console.warn(`[forgeax-server] active game runtime unavailable: ${runtime.error ?? 'unknown error'}`);
       }
-    });
+    })();
   }
 }
 

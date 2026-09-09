@@ -18,6 +18,7 @@ let instanceRoot: string;
 let previousProjectRoot: string | undefined;
 let previousKnownGames: string | undefined;
 let app: Hono;
+let prepared: string[];
 
 beforeEach(() => {
   instanceRoot = mkdtempSync(resolve(tmpdir(), 'forgeax-link-idempotent-'));
@@ -27,8 +28,13 @@ beforeEach(() => {
   previousKnownGames = existsSync(registry) ? readFileSync(registry, 'utf-8') : undefined;
   resetPathManager();
   initPathManager({ projectRoot: instanceRoot });
+  prepared = [];
   app = new Hono();
-  app.route('/api', createProductApiRouter());
+  app.route('/api', createProductApiRouter({
+    ensureGameProjectDependencies: async (gameDir) => {
+      prepared.push(gameDir);
+    },
+  }));
 });
 
 afterEach(() => {
@@ -55,6 +61,7 @@ describe('POST /api/projects/link', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, slug: 'pong', alreadyMounted: true });
+    expect(prepared).toEqual([gameDir]);
   });
 
   test('activates a linked editor-owned sample outside the games consumer checkout', async () => {
@@ -82,6 +89,10 @@ describe('POST /api/projects/link', () => {
       });
       expect(activateResponse.status).toBe(200);
       expect(await activateResponse.json()).toMatchObject({ activeSlug: 'sample' });
+      expect(prepared).toEqual([
+        gameDir,
+        resolve(instanceRoot, '.forgeax/games/sample'),
+      ]);
     } finally {
       rmSync(externalRoot, { recursive: true, force: true });
     }
