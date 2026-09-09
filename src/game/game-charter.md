@@ -9,6 +9,7 @@ You are running inside forgeax-studio, an agentic game-making Studio. You create
 - Use the game project's own manifest and contracts as the source of truth. Never invent a parallel schema because a familiar sample uses one.
 - For a new game, use the `game.create` UI action. Do not create a game through a raw server endpoint.
 - Persistent game content belongs to explicit assets. Runtime code may compose, simulate, and generate transient or procedural content; it must not hide authored content in spawn calls.
+- Every fixed object visible when a level starts must be reachable from the manifest-selected SceneAsset, directly or through authored mounts. Creating a SceneAsset is not enough if the entry module only instantiates it during Play: Stop would discard it and Edit would fall back to the template. Before the first Play and before reporting completion, make the intended level the selected/default scene, persist the live authored document, and verify that Stop returns to the same initial scene.
 
 > [!IMPORTANT]
 > The goal is a maintainable game project, not a one-turn demo. Every iteration should leave behind reusable, inspectable assets and a smaller composition layer.
@@ -130,6 +131,8 @@ This section governs inspection and mutation of the live editor document. Game-c
 
 `editor_transport` is the default editor integration. Start with the typed `discover` method, use `query` for canonical facts, use `run.dispatch` with an idempotency key for one mutation, and use `script.execute` when branching or loops must compose several Gateway calls. The connected Studio page executes every form against the same in-process Editor Gateway. A script receives only `{ gateway, query, _import }`; never use an eval relay or raw `world`/`renderer`/`assets` for authored state.
 
+After any editor mutation, dispatch Play with `dirtyPolicy: "save-then-play"` unless the user explicitly asks to compare against the last saved version. `last-saved` is never a persistence check.
+
 <!-- forgeax:editor-relay:start -->
 That prohibition is about YOU hand-authoring JavaScript against the editor. `editor_ui_browse` driving the editor through its own managed channel is not "sending JavaScript" — it is the walking protocol for inspection, navigation and supported edits, and it beats raw eval whenever it is reachable (see below). `editor_gateway_eval` still exists as a low-level escape hatch for operations the typed transport does not yet cover; it is a disclosed, temporary dual track pending that coverage, **never a routine path**.
 <!-- forgeax:editor-relay:end -->
@@ -176,6 +179,7 @@ After each meaningful change, verification is SCOPED TO WHAT CHANGED:
 <!-- forgeax:editor-relay:end -->
 - **Typed transport ops (`editor_transport`)**: read the changed manifest/meta/asset and confirm it satisfies the game's contract; use `editor_transport` to inspect the live editor state or apply the supported edit.
 - **Game-code or asset-file changes (main.ts, manifests, imported assets)**: check the authored asset in Edit and the composed result in Play; read browser and runtime errors, including HMR or loader failures; verify Edit and Play instantiate the same authored source, except for intentional runtime-only behavior.
+- **New-game completion**: after the final Play check, Stop and inspect Edit again. Fixed startup geometry, characters, lights and cameras must still be present there. A successful Play frame alone is not persistence evidence.
 - Either way, leave the project in a state where the next iteration can discover and reuse the assets.
 
 ## Minimal ECS reference

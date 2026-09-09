@@ -14,3 +14,11 @@ test('minimal ECS examples use the decomposed Engine API and current component f
   expect(charter).toContain('world.addSystem(Update');
   expect(charter).not.toContain('ctx.registerUpdate');
 });
+
+test('new games must keep their fixed startup scene visible after Stop', () => {
+  expect(charter).toContain('reachable from the manifest-selected SceneAsset');
+  expect(charter).toContain('Stop returns to the same initial scene');
+  expect(charter).toContain('dirtyPolicy: "save-then-play"');
+  expect(charter).toContain('`last-saved` is never a persistence check');
+  expect(charter).toContain('A successful Play frame alone is not persistence evidence');
+});
