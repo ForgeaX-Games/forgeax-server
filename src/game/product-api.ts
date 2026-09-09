@@ -23,7 +23,7 @@ import { addKnownGame } from '@forgeax/platform-io';
 import { getActiveGame, setActiveGame, clearActiveGameIf } from './active-game';
 import { GAME_SLUG_RE } from './game-slug';
 import { resolveInstanceGame } from './instance-game';
-import type { RuntimeScopeClient } from './runtime-scope-client';
+import type { RuntimeScopeClient, RuntimeScopeState } from './runtime-scope-client';
 import { getExtensionSnapshot, listAgents, resolvePersonaForAgent, reloadExtensions } from '@forgeax/orchestrator/extensions';
 import { pickI18n } from '@forgeax/types';
 import { getPathManager } from '@forgeax/orchestrator/session-fs';
@@ -406,9 +406,38 @@ export interface ProductApiRouterOptions {
   runtimeScope?: RuntimeScopeClient;
 }
 
+function runtimeFailure(error: string | undefined): {
+  readonly code: string;
+  readonly retryable: boolean;
+} {
+  const message = error ?? '';
+  if (/runtime scope bind failed:\s*HTTP 5\d\d/i.test(message)) {
+    return { code: 'runtime-sidecar-unavailable', retryable: true };
+  }
+  const structured = message.match(/runtime scope bind failed:\s*([a-z0-9-]+)/i)?.[1];
+  if (structured) return { code: structured, retryable: false };
+  if (/timed out|aborterror/i.test(message)) {
+    return { code: 'runtime-bind-timeout', retryable: true };
+  }
+  if (/unable to connect|connectionrefused|fetch failed/i.test(message)) {
+    return { code: 'runtime-transport-unavailable', retryable: true };
+  }
+  return { code: 'runtime-bind-failed', retryable: false };
+}
+
+function runtimeCommittedForGame(runtime: RuntimeScopeState | undefined, gameId: string): boolean {
+  return runtime === undefined || (
+    (runtime.status === 'ready' || runtime.status === 'degraded')
+    && runtime.error === undefined
+    && runtime.binding?.gameId === gameId
+    && (runtime.binding.status === 'ready' || runtime.binding.status === 'degraded')
+  );
+}
+
 export function createProductApiRouter(options: ProductApiRouterOptions = {}): Hono {
   const router = new Hono();
   const prepareGameDependencies = options.ensureGameProjectDependencies ?? ensureGameProjectDependencies;
+  let activeGameMutationRevision = 0;
 
   // ── Active game — one authoritative read/write contract ──
   router.get('/projects/active', (c) => {
@@ -436,26 +465,50 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
     if (game === undefined) {
       return c.json({ error: `.forgeax/games/${body!.slug as string} not found`, slug: body!.slug }, 404);
     }
+    const mutationRevision = ++activeGameMutationRevision;
+    const superseded = () => c.json({
+      ok: false,
+      error: 'active game switch was superseded by a newer selection',
+      code: 'active-game-switch-superseded',
+      retryable: false,
+      requestedSlug: game.gameId,
+      activeSlug: getActiveGame(projectRoot) ?? null,
+    }, 409);
     try {
       // Prepare dependent state before publishing the selection event. Pages
       // can then react as projections instead of racing to create sessions.
       await ensureGameProjectSkills(game.gameDir);
       await prepareGameDependencies(game.gameDir);
       const session = await options.ensureSessionForGame?.(body!.slug as string);
+      if (mutationRevision !== activeGameMutationRevision) return superseded();
       const runtime = options.runtimeScope === undefined
         ? undefined
         : await options.runtimeScope.bind(game.gameId, game.gameDir);
-      const selection = setActiveGame(projectRoot, game.gameId, runtime, {
-        forceEvent: runtime?.status === 'unavailable',
-      });
-      if (runtime?.status === 'unavailable') {
+      const runtimeCommitted = runtimeCommittedForGame(runtime, game.gameId);
+      if (mutationRevision !== activeGameMutationRevision) {
+        // Once the sidecar commits a candidate, keep the persisted authority
+        // aligned with it even if a newer request arrived during the bind.
+        // The newer serialized bind will then either advance from this exact
+        // fallback or fail and roll back to it.
+        if (runtime !== undefined && runtimeCommitted) {
+          setActiveGame(projectRoot, game.gameId, runtime);
+        }
+        return superseded();
+      }
+      if (!runtimeCommitted) {
+        const failure = runtimeFailure(runtime?.error);
         return c.json({
           ok: false,
           error: runtime.error ?? 'active game runtime unavailable',
-          ...selection,
+          code: failure.code,
+          retryable: failure.retryable,
+          requestedSlug: game.gameId,
+          activeSlug: getActiveGame(projectRoot) ?? null,
+          ...(runtime === undefined ? {} : { runtime }),
           ...(session ? { session } : {}),
         }, 503);
       }
+      const selection = setActiveGame(projectRoot, game.gameId, runtime);
       return c.json({ ok: true, ...selection, ...(session ? { session } : {}) });
     } catch (e) {
       if (e instanceof ProjectDependencyError) {

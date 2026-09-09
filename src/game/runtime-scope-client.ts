@@ -3,8 +3,8 @@
  *
  * The server resolves the exact game directory and assigns the generation;
  * browser input never becomes a filesystem selector and the UI never guesses
- * an asset URL. A failed bind deliberately clears the previous binding from
- * the published state so callers cannot keep rendering the old game.
+ * an asset URL. A failed candidate bind preserves the last committed binding:
+ * the active-game authority is not advanced until the candidate is ready.
  */
 
 import { createHash } from 'node:crypto';
@@ -68,6 +68,12 @@ function isTransportTimeout(error: unknown): boolean {
   return typeof error === 'object'
     && error !== null
     && (error as { name?: unknown }).name === 'AbortError';
+}
+
+function isRetryableBindError(error: unknown): boolean {
+  return !(typeof error === 'object'
+    && error !== null
+    && (error as { retryable?: unknown }).retryable === false);
 }
 
 function envTimeoutMs(): number | undefined {
@@ -188,12 +194,15 @@ export class RuntimeScopeClient {
           && sidecar.generation === current.generation
           && isReadyStatus(sidecar.status)
         ) {
-          return this.state;
+          const confirmed: RuntimeScopeState = { status: sidecar.status, binding: sidecar };
+          this.publish(confirmed);
+          return confirmed;
         }
       }
 
       const generation = requestedGeneration ?? ++this.generation;
       this.generation = Math.max(this.generation, generation);
+      const previousState = this.state;
       this.publish({ status: 'transitioning' });
       try {
         const binding = await this.requestBind({
@@ -209,7 +218,18 @@ export class RuntimeScopeClient {
         this.publish(state);
         return state;
       } catch (error) {
-        const state: RuntimeScopeState = { status: 'unavailable', error: errorMessage(error) };
+        const previousBinding = previousState.binding;
+        const state: RuntimeScopeState = previousBinding !== undefined && isReadyStatus(previousBinding.status)
+          ? {
+              status: 'degraded',
+              binding: {
+                ...previousBinding,
+                status: 'degraded',
+                authority: 'degraded',
+              },
+              error: errorMessage(error),
+            }
+          : { status: 'unavailable', error: errorMessage(error) };
         this.publish(state);
         return state;
       }
@@ -300,10 +320,23 @@ export class RuntimeScopeClient {
           const detail = body && typeof body === 'object' && typeof (body as { detail?: unknown }).detail === 'string'
             ? (body as { detail: string }).detail
             : `HTTP ${response.status}`;
-          throw new Error(`runtime scope bind failed: ${detail}`);
+          throw Object.assign(
+            new Error(`runtime scope bind failed: ${detail}`),
+            { retryable: response.status >= 500 },
+          );
         }
-        if (!isBinding(body)) throw new Error('sidecar returned an invalid runtime binding');
-        if (!isReadyStatus(body.status)) throw new Error(`sidecar binding is ${body.status}`);
+        if (!isBinding(body)) {
+          throw Object.assign(
+            new Error('sidecar returned an invalid runtime binding'),
+            { retryable: false },
+          );
+        }
+        if (!isReadyStatus(body.status)) {
+          throw Object.assign(
+            new Error(`sidecar binding is ${body.status}`),
+            { retryable: false },
+          );
+        }
         return body;
       } catch (error) {
         lastError = error;
@@ -313,6 +346,7 @@ export class RuntimeScopeClient {
         // fast retries for connection-refused/startup races, but hand a
         // bounded timeout back to the caller so the UI can retry the command.
         if (isTransportTimeout(error)) break;
+        if (!isRetryableBindError(error)) break;
         if (attempt >= this.retries) break;
         await new Promise((resolve) => setTimeout(resolve, this.retryDelayMs));
       }

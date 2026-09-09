@@ -158,6 +158,169 @@ describe('active game resource', () => {
     expect(binds).toEqual([{ gameId: 'game-b', gameDir: resolve(root, '.forgeax/games/game-b') }]);
   });
 
+  test('keeps the previous authority when the candidate runtime cannot commit', async () => {
+    setActiveGame(root, 'game-a');
+    _resetEventBusForTests();
+    const events: unknown[] = [];
+    const unsubscribe = getEventBus().subscribe(ACTIVE_GAME_CHANGED_TOPIC, (event) => events.push(event.payload));
+    const runtimeScope = {
+      snapshot: () => ({ status: 'unavailable' as const }),
+      bind: async () => ({
+        status: 'unavailable' as const,
+        error: 'runtime scope bind failed: runtime-binding-mismatch',
+      }),
+    } as unknown as RuntimeScopeClient;
+    const runtimeApp = new Hono();
+    runtimeApp.route('/api', createProductApiRouter({
+      runtimeScope,
+      ensureSessionForGame: async () => ({ sid: 'runtime-session', created: true }),
+    }));
+
+    const response = await runtimeApp.request('/api/projects/active', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug: 'game-b' }),
+    });
+    unsubscribe();
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      code: 'runtime-binding-mismatch',
+      retryable: false,
+      requestedSlug: 'game-b',
+      activeSlug: 'game-a',
+    });
+    expect(events).toEqual([]);
+    expect(await (await runtimeApp.request('/api/projects/active')).json()).toMatchObject({
+      activeSlug: 'game-a',
+    });
+  });
+
+  test('prevents an older slow request from binding after a newer selection', async () => {
+    let releaseOlder!: () => void;
+    const olderBlocked = new Promise<void>((resolve) => { releaseOlder = resolve; });
+    let markOlderStarted!: () => void;
+    const olderStarted = new Promise<void>((resolve) => { markOlderStarted = resolve; });
+    const binds: string[] = [];
+    const runtimeScope = {
+      snapshot: () => ({ status: 'unbound' as const }),
+      bind: async (gameId: string) => {
+        binds.push(gameId);
+        return {
+          status: 'ready' as const,
+          binding: {
+            schemaVersion: 'runtime-asset-binding-v1' as const,
+            gameId,
+            scopeId: `studio-${gameId}`,
+            generation: binds.length,
+            status: 'ready' as const,
+            catalogUrl: `/preview/${gameId}/catalog.json`,
+            importUrlBase: `/preview/${gameId}/import`,
+            packageUrlBase: `/preview/${gameId}/asset`,
+          },
+        };
+      },
+    } as unknown as RuntimeScopeClient;
+    const runtimeApp = new Hono();
+    runtimeApp.route('/api', createProductApiRouter({
+      runtimeScope,
+      ensureSessionForGame: async (slug) => {
+        if (slug === 'game-a') {
+          markOlderStarted();
+          await olderBlocked;
+        }
+        return { sid: `session-${slug}`, created: true };
+      },
+    }));
+    const put = (slug: string) => runtimeApp.request('/api/projects/active', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug }),
+    });
+
+    const older = put('game-a');
+    await olderStarted;
+    const newer = await put('game-b');
+    releaseOlder();
+    const olderResponse = await older;
+
+    expect(newer.status).toBe(200);
+    expect(olderResponse.status).toBe(409);
+    expect(await olderResponse.json()).toMatchObject({
+      code: 'active-game-switch-superseded',
+      activeSlug: 'game-b',
+    });
+    expect(binds).toEqual(['game-b']);
+    expect(await (await runtimeApp.request('/api/projects/active')).json()).toMatchObject({
+      activeSlug: 'game-b',
+    });
+  });
+
+  test('keeps authority aligned when an in-flight older bind succeeds and the newer bind fails', async () => {
+    mkdirSync(resolve(root, '.forgeax/games/game-c'), { recursive: true });
+    setActiveGame(root, 'game-c');
+    let releaseOlder!: () => void;
+    const olderBlocked = new Promise<void>((resolve) => { releaseOlder = resolve; });
+    let markOlderBinding!: () => void;
+    const olderBinding = new Promise<void>((resolve) => { markOlderBinding = resolve; });
+    let markOlderCommitted!: () => void;
+    const olderCommitted = new Promise<void>((resolve) => { markOlderCommitted = resolve; });
+    let markNewerBinding!: () => void;
+    const newerBinding = new Promise<void>((resolve) => { markNewerBinding = resolve; });
+    const bindingFor = (gameId: string) => ({
+      schemaVersion: 'runtime-asset-binding-v1' as const,
+      gameId,
+      scopeId: `studio-${gameId}`,
+      generation: gameId === 'game-a' ? 1 : 2,
+      status: 'ready' as const,
+      catalogUrl: `/preview/${gameId}/catalog.json`,
+      importUrlBase: `/preview/${gameId}/import`,
+      packageUrlBase: `/preview/${gameId}/asset`,
+    });
+    const runtimeScope = {
+      snapshot: () => ({ status: 'unbound' as const }),
+      bind: async (gameId: string) => {
+        if (gameId === 'game-a') {
+          markOlderBinding();
+          await olderBlocked;
+          markOlderCommitted();
+          return { status: 'ready' as const, binding: bindingFor('game-a') };
+        }
+        markNewerBinding();
+        await olderCommitted;
+        return {
+          status: 'degraded' as const,
+          binding: { ...bindingFor('game-a'), status: 'degraded' as const },
+          error: 'runtime scope bind failed: catalog-scan-failed',
+        };
+      },
+    } as unknown as RuntimeScopeClient;
+    const runtimeApp = new Hono();
+    runtimeApp.route('/api', createProductApiRouter({
+      runtimeScope,
+      ensureSessionForGame: async (slug) => ({ sid: `session-${slug}`, created: true }),
+    }));
+    const put = (slug: string) => runtimeApp.request('/api/projects/active', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug }),
+    });
+
+    const older = put('game-a');
+    await olderBinding;
+    const newer = put('game-b');
+    await newerBinding;
+    releaseOlder();
+    const [olderResponse, newerResponse] = await Promise.all([older, newer]);
+
+    expect(olderResponse.status).toBe(409);
+    expect(newerResponse.status).toBe(503);
+    expect(await (await runtimeApp.request('/api/projects/active')).json()).toMatchObject({
+      activeSlug: 'game-a',
+    });
+  });
+
   test('GET returns the cached runtime projection without waiting for the sidecar', async () => {
     setActiveGame(root, 'game-a');
     const state: RuntimeScopeState = {

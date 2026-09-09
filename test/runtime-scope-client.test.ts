@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { DEFAULT_RUNTIME_SCOPE_TIMEOUT_MS, RuntimeScopeClient } from '../src/game/runtime-scope-client';
+import type { RuntimeAssetBinding } from '../src/game/runtime-scope-client';
 
 function timeoutOf(client: RuntimeScopeClient): number {
   return (client as unknown as { timeoutMs: number }).timeoutMs;
 }
 
-function binding(gameId: string, scopeId: string, generation: number): Record<string, unknown> {
+function binding(gameId: string, scopeId: string, generation: number): RuntimeAssetBinding {
   return {
     schemaVersion: 'runtime-asset-binding-v1',
     gameId,
@@ -163,6 +164,49 @@ describe('RuntimeScopeClient', () => {
     expect(state).toMatchObject({ status: 'unavailable' });
     expect(state.binding).toBeUndefined();
     expect(client.snapshot()).toEqual(state);
+  });
+
+  test('preserves the last committed binding when a different game fails to bind', async () => {
+    let committed: RuntimeAssetBinding | undefined;
+    let failedRequests = 0;
+    const client = new RuntimeScopeClient({
+      secret: 'secret',
+      retries: 8,
+      fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+        if (init?.method === 'GET') return Response.json(committed);
+        const command = JSON.parse(String(init?.body)) as {
+          gameId: string;
+          scopeId: string;
+          generation: number;
+        };
+        if (command.gameId === 'game-b') {
+          failedRequests += 1;
+          return Response.json({ detail: 'runtime-binding-mismatch' }, { status: 409 });
+        }
+        committed = binding(command.gameId, command.scopeId, command.generation);
+        return Response.json(committed);
+      }) as unknown as typeof fetch,
+    });
+
+    const first = await client.bind('game-a', '/project/.forgeax/games/game-a');
+    const failed = await client.bind('game-b', '/project/.forgeax/games/game-b');
+    const recovered = await client.bind('game-a', '/project/.forgeax/games/game-a');
+
+    expect(first).toMatchObject({ status: 'ready', binding: { gameId: 'game-a' } });
+    expect(failed).toMatchObject({
+      status: 'degraded',
+      binding: {
+        gameId: 'game-a',
+        status: 'degraded',
+        authority: 'degraded',
+      },
+      error: 'runtime scope bind failed: runtime-binding-mismatch',
+    });
+    expect(failed.binding?.generation).toBe(committed?.generation);
+    expect(failedRequests).toBe(1);
+    expect(recovered).toMatchObject({ status: 'ready', binding: { gameId: 'game-a' } });
+    expect(recovered.error).toBeUndefined();
+    expect(client.snapshot()).toEqual(recovered);
   });
 
   test('does not replay a long bind after the transport timeout', async () => {
