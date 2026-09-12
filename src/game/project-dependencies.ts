@@ -13,7 +13,6 @@ import {
 } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
-import { resolveEngineTemplatesRoot } from './game-templates';
 
 /**
  * Product-managed Engine dependencies are deliberately a small, explicit
@@ -21,6 +20,14 @@ import { resolveEngineTemplatesRoot } from './game-templates';
  * own package.json; the Studio then exposes the packaged/source Engine scope
  * at game/node_modules/@forgeax. The product does not run a package manager or
  * rewrite package.json, and it never claims arbitrary @forgeax packages.
+ *
+ * Packaged desktop assemble copies Editor-owned managed packages (for example
+ * `@forgeax/editor-game-plugins`) into `engine/node_modules/@forgeax`. Source
+ * Studio `bun install` hoists that same closure at the Editor workspace
+ * (`packages/editor/node_modules/@forgeax`, two levels above nested
+ * `packages/engine`) while the nested Engine install stays a partial subset.
+ * Resolve the scope that actually contains every package the game declared;
+ * do not invent a second dependency authority.
  */
 const MANAGED_PACKAGE_SCOPE = '@forgeax/';
 const MANAGED_PACKAGE_NAMES = Object.freeze(new Set([
@@ -134,9 +141,9 @@ async function pathKind(path: string): Promise<'missing' | 'directory' | 'file' 
 }
 
 function isManagedPackage(name: string): boolean {
-  return name === MANAGED_PACKAGE_PREFIX
+  return /^@forgeax\/[a-z0-9][a-z0-9._-]*$/u.test(name) && (name === MANAGED_PACKAGE_PREFIX
     || name.startsWith(`${MANAGED_PACKAGE_PREFIX}-`)
-    || MANAGED_PACKAGE_NAMES.has(name);
+    || MANAGED_PACKAGE_NAMES.has(name));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -173,17 +180,30 @@ async function readProjectDependencyContract(root: string): Promise<ProjectDepen
     );
   }
 
-  const all = [...declaredDependencies(parsed).entries()]
+  const declarations = [...declaredDependencies(parsed).entries()];
+  const all = declarations
     .filter(([name]) => isManagedPackage(name));
   if (all.length === 0) return undefined;
 
   // A registry/file/git declaration belongs to the project's package manager.
   // Do not create a scope junction that could shadow a custom installation.
   const workspace = all.filter(([, spec]) => WORKSPACE_PROTOCOL.test(spec));
-  if (workspace.length !== all.length) {
+  if (workspace.length === 0) {
     return {
       packages: [],
     };
+  }
+  // A scope-wide link cannot coexist with project-owned packages in that scope.
+  // Do not silently skip unresolved workspace dependencies or shadow custom ones.
+  const custom = declarations.filter(([name, spec]) => name.startsWith(MANAGED_PACKAGE_SCOPE)
+    && (!isManagedPackage(name) || !WORKSPACE_PROTOCOL.test(spec)));
+  if (custom.length > 0) {
+    throw dependencyConflict(
+      `Cannot prepare a Studio Engine scope alongside project-owned packages: ${custom.map(([name]) => name).join(', ')}. Dependencies were left unchanged.`,
+      packageJsonPath,
+      undefined,
+      workspace.map(([name]) => name),
+    );
   }
   return {
     packages: workspace.map(([name]) => name).sort(),
@@ -213,8 +233,10 @@ function equivalentPath(left: string, right: string, platform: NodeJS.Platform):
 }
 
 /**
- * Return the Engine scope exposed to a game. Exported so release tests can
- * prove the path contract for both POSIX and Windows-style drive/UNC roots.
+ * Return the nested Engine scope path. Exported so release tests can prove the
+ * packaged-layout contract for both POSIX and Windows-style drive/UNC roots.
+ * Callers that prepare a game must use `resolveEngineDependencyScope` so a
+ * source Editor hoist can stand in when this nested directory is incomplete.
  */
 export function engineDependencyScopePath(
   engineRoot: string,
@@ -223,11 +245,64 @@ export function engineDependencyScopePath(
   return pathApi(platform).resolve(engineRoot, 'node_modules', '@forgeax');
 }
 
+async function scopeContainsManagedPackages(
+  scopePath: string,
+  packages: readonly string[],
+): Promise<boolean> {
+  let scopeIsDirectory = false;
+  try {
+    scopeIsDirectory = (await stat(scopePath)).isDirectory();
+  } catch {
+    return false;
+  }
+  if (!scopeIsDirectory) return false;
+  for (const name of packages) {
+    const manifestPath = join(scopePath, name.slice(MANAGED_PACKAGE_SCOPE.length), 'package.json');
+    try {
+      const packageManifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { name?: unknown };
+      if (packageManifest.name !== name) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Pick the @forgeax scope a game should consume. Prefer the nested Engine
+ * install (packaged assemble + tests). If that directory is missing any
+ * declared managed package, walk one and two parents for an Editor workspace
+ * hoist — covering both `editor/engine` fixtures and source
+ * `editor/packages/engine`. This is the source-tree equivalent of assemble's
+ * EDITOR_ROOT/node_modules fallback.
+ */
+export async function resolveEngineDependencyScope(
+  engineRoot: string,
+  packages: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): Promise<string> {
+  const api = pathApi(platform);
+  const nested = engineDependencyScopePath(engineRoot, platform);
+  const candidates = [
+    nested,
+    api.resolve(engineRoot, '..', 'node_modules', '@forgeax'),
+    api.resolve(engineRoot, '..', '..', 'node_modules', '@forgeax'),
+  ];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const key = normalizePath(candidate, platform);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (await scopeContainsManagedPackages(candidate, packages)) return candidate;
+  }
+  return nested;
+}
+
 /**
  * Legacy links have no manifest because older Studio/App builds created the
- * scope symlink directly. Adopt only the exact Engine scope shape, together
- * with workspace-protocol package declarations; arbitrary custom links do not
- * match this predicate and are left untouched.
+ * scope symlink directly. Require the named product's packaged resource layout,
+ * not just an arbitrary directory named engine. Unknown source layouts require
+ * explicit ownership metadata and are left untouched.
  */
 export function isLegacyEngineScopeTarget(
   target: string,
@@ -236,10 +311,11 @@ export function isLegacyEngineScopeTarget(
   const api = pathApi(platform);
   const normalized = api.normalize(target);
   const parts = normalized.split(api.sep).filter(Boolean);
-  const tail = parts.slice(-3).map((part) => part.toLowerCase());
-  return tail[0] === 'engine'
-    && tail[1] === 'node_modules'
-    && tail[2] === '@forgeax';
+  const value = (platform === 'win32' ? parts.map((part) => part.toLowerCase()) : parts).join('/');
+  if (platform === 'win32') {
+    return /(?:^|\/)forgeax studio\/resources\/(?:editor\/packages\/)?engine\/node_modules\/@forgeax$/u.test(value);
+  }
+  return /(?:^|\/)ForgeaX Studio\.app\/Contents\/Resources\/(?:editor\/packages\/)?engine\/node_modules\/@forgeax$/u.test(value);
 }
 
 async function readOptionalFile(path: string): Promise<string | undefined> {
@@ -496,9 +572,9 @@ async function ensureLocked(
   const manifestPath = join(root, DEPENDENCY_MANIFEST_RELATIVE_PATH);
   const linkPath = join(root, LINK_RELATIVE_PATH);
   const engineRoot = options.engineRoot === undefined
-    ? dirname(resolveEngineTemplatesRoot())
+    ? dirname((await import('./game-templates')).resolveEngineTemplatesRoot())
     : pathApi(platform).resolve(options.engineRoot);
-  const targetPath = engineDependencyScopePath(engineRoot, platform);
+  const targetPath = await resolveEngineDependencyScope(engineRoot, contract.packages, platform);
 
   await ensureMetadataDirectory(root);
   const priorManifest = await readDependencyManifest(root);
@@ -535,7 +611,8 @@ async function ensureLocked(
     const sameTarget = await resolvesTo(linkPath, targetPath, platform);
     const record = priorManifest?.links.find((link) => link.path === LINK_RELATIVE_PATH);
     const ownedByManifest = recordMatchesTarget(linkPath, rawTarget, record, platform);
-    const ownedLegacy = isLegacyEngineScopeTarget(currentTarget, platform);
+    // Once recorded, a changed target is a user edit, not a legacy migration.
+    const ownedLegacy = priorManifest === undefined && isLegacyEngineScopeTarget(currentTarget, platform);
     if (!sameTarget && !ownedByManifest && !ownedLegacy) {
       throw dependencyConflict(
         `Cannot repair ${linkPath}: it is a custom link to ${currentTarget}, not a Studio-managed Engine link; it was left unchanged. Keep the project's package-manager dependency or remove the custom link explicitly before reopening.`,

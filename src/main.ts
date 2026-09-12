@@ -1,3 +1,4 @@
+import { studioActionCatalog, studioHeadlessCompatibilityIds } from './studio-action-catalog';
 // Load $FORGEAX_PROJECT_ROOT/.env into process.env BEFORE any module reads it.
 // Bun auto-loads .env from CWD (packages/server) but the canonical .env lives
 // at the studio root — without this prefix, LITELLM_PROXY_*, OPENAI_*, ARK_*
@@ -362,6 +363,8 @@ const { app, npcRuntime } = await createForgeaxApp({
     : {}),
   version: VERSION,
   ...productComposition,
+  actionCatalog: studioActionCatalog,
+  headlessActionCompatibilityIds: studioHeadlessCompatibilityIds,
   // Permission capability discovery must use the same product-owned registry
   // that registered forgeax-core; the orchestrator fallback only knows its
   // built-in rented kernels.

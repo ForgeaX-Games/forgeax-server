@@ -2,7 +2,7 @@ import type {
   ExtensionCapabilityControl,
   ExtensionCapabilityInvocationContext,
   ExtensionCapabilityProvider,
-} from '@forgeax/types';
+} from '@forgeax/orchestrator';
 import type { EditorTransportCarrier } from './editor-transport-carrier';
 
 /** Versioned host capability used by asset-producing extensions. */
@@ -51,7 +51,8 @@ function parseInput(value: unknown): EditorAssetImportInput | null {
 
 function actorFor(context: ExtensionCapabilityInvocationContext): { id: string; kind: 'human' | 'ai' } {
   const caller = context.caller;
-  const id = caller.agentId ?? caller.sessionId ?? caller.threadId ?? `extension:${context.toolId}`;
+  const id = (caller.kind === 'extension' ? caller.extensionId : caller.agentId)
+    ?? caller.sessionId ?? caller.threadId ?? `extension:${context.toolId}`;
   return { id, kind: caller.kind === 'ai' ? 'ai' : 'human' };
 }
 

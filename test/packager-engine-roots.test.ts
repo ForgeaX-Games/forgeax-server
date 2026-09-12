@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { detectEngineRoots, engineDevkitCliPath } from '../src/game/packager/engine-roots';
+import {
+  detectEngineRoots,
+  engineDevkitCliPath,
+  PACKAGED_ENGINE_DEVKIT_CLI_RELATIVE,
+} from '../src/game/packager/engine-roots';
 
 const tempRoots: string[] = [];
 
@@ -52,6 +56,26 @@ describe('detectEngineRoots', () => {
         label: 'engine (editor)',
         valid: false,
         recommended: false,
+      },
+    ]);
+  });
+
+  test('accepts the Engine dependency closure staged in a desktop bundle', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forgeax-engine-roots-'));
+    tempRoots.push(root);
+    const engineRoot = join(root, 'resources', 'engine');
+    const cli = join(engineRoot, PACKAGED_ENGINE_DEVKIT_CLI_RELATIVE);
+    mkdirSync(join(cli, '..'), { recursive: true });
+    writeFileSync(join(engineRoot, 'package.json'), '{"name":"@forgeax/editor-play-runtime"}\n');
+    writeFileSync(cli, '#!/usr/bin/env bun\n');
+
+    expect(engineDevkitCliPath(engineRoot)).toBe(cli);
+    expect(detectEngineRoots(root)).toEqual([
+      {
+        path: engineRoot,
+        label: 'engine (desktop bundle)',
+        valid: true,
+        recommended: true,
       },
     ]);
   });

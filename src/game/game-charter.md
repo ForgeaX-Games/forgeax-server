@@ -59,13 +59,13 @@ If a player can see, edit, name, reuse, tune or validate it, prefer an asset or 
 
 Each request to “make it better” is an asset-graph delta: identify missing or weak assets, improve them or add variants, update composition and behavior, then validate the complete loop.
 
-A playable slice is not finished while the game is still silent. The audio layer — the game's
-`audio/project.json`, the applied `src/forgeax-audio/` runtime, and emits attached to real gameplay
-events — belongs to the first complete loop, not to a later polish pass. A silent build of a genre
-that players expect to have music and hit feedback is an incomplete slice, not a neutral choice.
-The proof is that sound actually plays at runtime; generated files and a written `emit` are not
-evidence on their own. The authoring chain for that layer lives in the BGM/SFX extension skill
-(`forgeax:game-audio`) and is not restated here.
+The first Play checkpoint proves input, one core rule, visible feedback and restart. It may
+precede complete audio and presentation; report those gaps without blocking this checkpoint.
+Prepare independent specialist assets in parallel while the main agent implements the loop.
+This checkpoint is not final delivery. A complete game still requires its applied audio runtime,
+real gameplay event hooks and observed playback, as well as the requested presentation.
+Use the BGM/SFX extension's verification tool for the current phase; asset preparation and static
+integration checks are not proof that sound played in the game.
 
 ## Iteration loop
 
@@ -118,7 +118,7 @@ Simple tasks may omit both the todo list and the semantic summary. Do not preten
 
 The host owns final-settle bookkeeping. When a turn changes files, it compares the checkpoint with the workspace, attributes only reliable turn activity, and emits an independent artifact card. Do not invent a file list, line counts, duration, cost, or artifact id in prose or in `deliver_summary`. A todo snapshot is process context only; it does not decide whether an artifact exists.
 
-`deliver_summary` is optional semantic metadata for a meaningful task. If you call it, report `outcome` and optionally `tests`, `next`, or `build`; never use it to claim changed files. It is not a required completion ritual.
+`deliver_summary` is optional semantic metadata for a meaningful task. If you call it, report `outcome` and optionally `tests`, `next`, `build`, or `verification`; never use it to claim changed files. It is not a required completion ritual.
 
 Never say that you called or completed `deliver_summary`, `todo_write`, or any other tool unless that exact tool call returned successfully in the current turn. A prose claim cannot substitute for the call, and the artifact card is emitted independently by the host only when the active game checkpoint has an attributable file delta.
 
@@ -179,6 +179,8 @@ After each meaningful change, verification is SCOPED TO WHAT CHANGED:
 <!-- forgeax:editor-relay:end -->
 - **Typed transport ops (`editor_transport`)**: read the changed manifest/meta/asset and confirm it satisfies the game's contract; use `editor_transport` to inspect the live editor state or apply the supported edit.
 - **Game-code or asset-file changes (main.ts, manifests, imported assets)**: check the authored asset in Edit and the composed result in Play; read browser and runtime errors, including HMR or loader failures; verify Edit and Play instantiate the same authored source, except for intentional runtime-only behavior.
+- **Playable claims**: exercise ordinary player input, observe the resulting state change, and observe a core result (for example collecting an item, resolving combat, or reaching a win/loss state) on the current candidate. A Play timer and zero console errors only prove a smoke check. Report the input, before/after observation and current tool-call/artifact references through `deliver_summary.verification`; its gameplay `passed` report requires all three evidence kinds. For a narrow presentation/content change, use `changed-behavior` and check the affected result instead of repeating the whole game. Include visual or audible observation when that aspect changed. The card identifies these observations as agent-reported; schema validation does not certify their truth.
+- **Missing evidence**: report `unverified` with the specific limitation; the summary defaults to UNVERIFIED when no verification report exists. A failed or unavailable capture/query is not evidence. Start from `editor_transport` discovery and use supported normal input/observation capabilities; retry only after conditions change. `captureFrame` records RHI debug data and is distinct from a normal screenshot. Do not attribute a player's failure to an old editor without current evidence of that cause.
 - **New-game completion**: after the final Play check, Stop and inspect Edit again. Fixed startup geometry, characters, lights and cameras must still be present there. A successful Play frame alone is not persistence evidence.
 - Either way, leave the project in a state where the next iteration can discover and reuse the assets.
 

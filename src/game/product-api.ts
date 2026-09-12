@@ -440,9 +440,26 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
   let activeGameMutationRevision = 0;
 
   // ── Active game — one authoritative read/write contract ──
-  router.get('/projects/active', (c) => {
+  router.get('/projects/active', async (c) => {
     const projectRoot = defaultProjectRoot();
     const activeSlug = getActiveGame(projectRoot) ?? null;
+    // UI startup restores through GET, without sending PUT. Await the local
+    // filesystem preparation here too: the background sidecar rebind is not
+    // a readiness barrier and its log-only failure cannot protect this path.
+    const game = activeSlug === null ? undefined : resolveInstanceGame(projectRoot, activeSlug);
+    try {
+      if (game !== undefined) await prepareGameDependencies(game.gameDir);
+    } catch (error) {
+      if (error instanceof ProjectDependencyError) {
+        return c.json({ error: `failed to prepare game dependencies: ${error.message}`, code: error.code, ...error.details }, error.status);
+      }
+      return c.json({ error: `failed to prepare game dependencies: ${(error as Error).message}` }, 500);
+    }
+    // Do not publish a selection captured before an asynchronous preparation
+    // if another request has since selected a different project.
+    if ((getActiveGame(projectRoot) ?? null) !== activeSlug) {
+      return c.json({ error: 'active project changed during preparation; retry', code: 'active-project-changed' }, 409);
+    }
     // This is a read projection, not a sidecar command. A cold/restarting Play
     // sidecar can take seconds to answer bind; awaiting it here blocks the
     // Studio boot path (and queues the user's subsequent PUT behind it). The
@@ -499,7 +516,7 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
         const failure = runtimeFailure(runtime?.error);
         return c.json({
           ok: false,
-          error: runtime.error ?? 'active game runtime unavailable',
+          error: runtime?.error ?? 'active game runtime unavailable',
           code: failure.code,
           retryable: failure.retryable,
           requestedSlug: game.gameId,

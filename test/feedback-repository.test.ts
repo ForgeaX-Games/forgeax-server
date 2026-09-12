@@ -17,10 +17,26 @@ function project(): string {
 }
 
 describe('feedback repository and API', () => {
-  test('queues a new report and preserves its Issue mapping when a duplicate is merged', async () => {
+  test('creates distinct reports for unrelated manual submissions of the same type', async () => {
     const root = project();
     const repository = new FeedbackRepository(() => root);
-    const first = await repository.submit({ type: 'ui', source: 'manual', description: 'first' });
+    const first = await repository.submit({ type: 'ui', source: 'manual', description: 'first problem' });
+    const second = await repository.submit({ type: 'ui', source: 'manual', description: 'different problem' });
+
+    expect(first.merged).toBe(false);
+    expect(second.merged).toBe(false);
+    expect(second.report.id).not.toBe(first.report.id);
+    expect(second.report.count).toBe(1);
+    expect((await repository.list()).map((report) => report.description).sort()).toEqual([
+      'different problem',
+      'first problem',
+    ]);
+  });
+
+  test('merges automatic recurrences only when they share a concrete exception key', async () => {
+    const root = project();
+    const repository = new FeedbackRepository(() => root);
+    const first = await repository.submit({ type: 'stuck', source: 'auto', exceptionKey: 'renderer-crash' });
     await repository.updateDelivery(first.report.id, (delivery) => ({
       ...delivery,
       status: 'published',
@@ -31,16 +47,27 @@ describe('feedback repository and API', () => {
       updatedAt: new Date().toISOString(),
     }));
 
-    const second = await repository.submit({ type: 'ui', source: 'manual', description: 'again' });
+    const second = await repository.submit({ type: 'stuck', source: 'auto', exceptionKey: 'renderer-crash' });
     expect(second.merged).toBe(true);
+    expect(second.report.id).toBe(first.report.id);
     expect(second.report.count).toBe(2);
-    expect(second.report.description).toBe('again');
     expect(second.report.delivery).toMatchObject({
       status: 'queued',
       occurrence: 2,
       issueNumber: 42,
       attempts: 1,
     });
+  });
+
+  test('does not merge automatic reports that have no concrete exception key', async () => {
+    const root = project();
+    const repository = new FeedbackRepository(() => root);
+    const first = await repository.submit({ type: 'stuck', source: 'auto' });
+    const second = await repository.submit({ type: 'stuck', source: 'auto' });
+
+    expect(first.merged).toBe(false);
+    expect(second.merged).toBe(false);
+    expect(second.report.id).not.toBe(first.report.id);
   });
 
   test('updatedAt tracks user-visible status only, not background delivery ticks', async () => {

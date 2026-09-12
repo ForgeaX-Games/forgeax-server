@@ -20,18 +20,30 @@ export interface EngineRootCandidate {
   recommended: boolean;
 }
 
-/** Locations (relative to the studio monorepo root) that may host the engine. */
+/** Locations (relative to the Studio install root) that may host the engine. */
 const CANDIDATE_RELS: Array<{ rel: string; label: string }> = [
   { rel: 'packages/editor/packages/engine', label: 'engine (editor)' },
   { rel: 'packages/engine', label: 'engine (standalone)' },
+  { rel: 'resources/engine', label: 'engine (desktop bundle)' },
 ];
 
-/** Relative path of the Engine-owned external-project build CLI. */
+/** Source-workspace and packaged-runtime locations of the Engine build CLI. */
 export const ENGINE_DEVKIT_CLI_RELATIVE = join('packages', 'devkit', 'dist', 'cli.mjs');
+export const PACKAGED_ENGINE_DEVKIT_CLI_RELATIVE = join(
+  'node_modules',
+  '@forgeax',
+  'engine-devkit',
+  'dist',
+  'cli.mjs',
+);
 
 /** Resolve the public DevKit CLI for a selected Engine workspace. */
 export function engineDevkitCliPath(engineRoot: string): string {
-  return join(engineRoot, ENGINE_DEVKIT_CLI_RELATIVE);
+  const sourceCli = join(engineRoot, ENGINE_DEVKIT_CLI_RELATIVE);
+  if (existsSync(sourceCli)) return sourceCli;
+  const packagedCli = join(engineRoot, PACKAGED_ENGINE_DEVKIT_CLI_RELATIVE);
+  if (existsSync(packagedCli)) return packagedCli;
+  return sourceCli;
 }
 
 /**

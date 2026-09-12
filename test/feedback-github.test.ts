@@ -223,9 +223,6 @@ describe('feedback GitHub delivery', () => {
           { number: 31, html_url: 'https://github.com/ForgeaX-Games/forgeax-issues/issues/31', state: 'open', body: '<!-- forgeax-feedback-id:FB-260828-2 -->' },
         ] });
       }
-      if (url.includes('/issues/31') && method === 'PATCH') {
-        return Response.json({ number: 31, html_url: 'https://github.com/ForgeaX-Games/forgeax-issues/issues/31', state: 'open' });
-      }
       throw new Error(`unexpected request: ${method} ${url}`);
     };
     const client = new FeedbackGitHubClient({
@@ -247,7 +244,49 @@ describe('feedback GitHub delivery', () => {
     // Reuses its own issue rather than opening a duplicate — and never touches #25.
     expect(issue.number).toBe(31);
     expect(calls.some((call) => call.method === 'POST')).toBe(false);
+    expect(calls.some((call) => call.method === 'PATCH')).toBe(false);
     expect(calls.some((call) => call.url.includes('/issues/25'))).toBe(false);
+  });
+
+  test('keeps a closed issue closed and appends recurrence evidence without rewriting history', async () => {
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const mockFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      calls.push({ url, method, ...(typeof init?.body === 'string' ? { body: init.body } : {}) });
+      if (url.includes('/search/issues')) {
+        return Response.json({ items: [{
+          number: 31,
+          html_url: 'https://github.com/ForgeaX-Games/forgeax-issues/issues/31',
+          state: 'closed',
+          body: '<!-- forgeax-feedback-id:FB-260828-2 -->\n## Original problem',
+        }] });
+      }
+      if (url.endsWith('/issues/31/comments?per_page=100')) return Response.json([]);
+      if (url.endsWith('/issues/31/comments') && method === 'POST') return Response.json({ id: 1 });
+      throw new Error(`unexpected request: ${method} ${url}`);
+    };
+    const client = new FeedbackGitHubClient({
+      issuesToken: 'test-token',
+      dataToken: 'test-token',
+      dataRepo: 'ForgeaX-Games/Forgeax-Data',
+      issuesRepo: 'ForgeaX-Games/forgeax-issues',
+    }, mockFetch as typeof fetch, async () => { throw new Error('no push expected'); });
+
+    const issue = await client.publishIssue(
+      {
+        id: 'FB-260828-2', type: 'stuck', status: 'processing', source: 'auto', title: 'stuck',
+        exceptionKey: 'renderer-crash', count: 2,
+        createdAt: '2026-08-28T00:00:00.000Z', updatedAt: '2026-08-29T00:00:00.000Z',
+      },
+      minimalTriage(),
+      { archiveAssets: [], manifestUrl: 'https://example.com/manifest.json', screenshotUrls: [] },
+    );
+
+    expect(issue.number).toBe(31);
+    expect(calls.some((call) => call.method === 'PATCH')).toBe(false);
+    const comment = calls.find((call) => call.method === 'POST' && call.url.endsWith('/issues/31/comments'));
+    expect(comment?.body).toContain('forgeax-feedback-occurrence:2');
   });
 
   test('falls back to the built-in credentials and honours override precedence', () => {

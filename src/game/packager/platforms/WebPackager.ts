@@ -17,6 +17,7 @@ import { buildWasmCore } from '../shell/toolchain';
 import {
   detectEngineRoots,
   engineDevkitCliPath,
+  PACKAGED_ENGINE_DEVKIT_CLI_RELATIVE,
   recommendedEngineRoot,
 } from '../engine-roots';
 
@@ -218,6 +219,9 @@ export class WebPackager implements IGamePackager {
 
     onProgress?.('web-build', `bundling static site (engine root: ${friendlyPath(engineRoot)}) …`);
     const bunBin = process.execPath || 'bun';
+    const packagedEnginePackageRoot = devkitCli === join(engineRoot, PACKAGED_ENGINE_DEVKIT_CLI_RELATIVE)
+      ? join(engineRoot, 'node_modules', '@forgeax')
+      : undefined;
     // Serialize per Engine workspace so concurrent exports queue instead of
     // racing shared Vite/DDC resources. DevKit itself owns output cleanup.
     return runExclusive(engineRoot, async (): Promise<PackageResult> => {
@@ -235,7 +239,12 @@ export class WebPackager implements IGamePackager {
             '--json',
           ],
           cwd: engineRoot,
-          env: { ...process.env },
+          env: {
+            ...process.env,
+            ...(packagedEnginePackageRoot === undefined
+              ? {}
+              : { FORGEAX_ENGINE_PACKAGE_ROOT: packagedEnginePackageRoot }),
+          },
           stdout: 'pipe',
           stderr: 'pipe',
         });

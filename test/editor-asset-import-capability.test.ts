@@ -4,10 +4,10 @@ import {
   EDITOR_ASSET_IMPORT_CAPABILITY,
   EDITOR_ASSET_IMPORT_CAPABILITY_VERSION,
 } from '../src/game/editor-asset-import-capability';
-import type { ExtensionCapabilityInvocationContext } from '@forgeax/types';
+import type { ExtensionCapabilityInvocationContext } from '@forgeax/orchestrator';
 
 const context: ExtensionCapabilityInvocationContext = {
-  caller: { kind: 'extension', agentId: 'lowpoly-ui', sessionId: 'studio-session' },
+  caller: { kind: 'extension', extensionId: 'lowpoly-ui', instanceId: 'lowpoly-instance', sessionId: 'studio-session' },
   toolId: 'lowpoly:import-glb',
   env: {},
   cwd: '/extensions/3d-lowpoly',

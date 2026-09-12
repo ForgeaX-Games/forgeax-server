@@ -27,7 +27,8 @@ export function createForgeaxExtensionCapabilityResolver(
   return {
     forGame(gameId) {
       const capabilities = createScoped({
-        caller: { kind: 'extension' },
+        // This adapter is the game-scoped Host instance, not an individual plugin.
+        caller: { kind: 'extension', extensionId: '@forgeax/extension-host', instanceId: `game:${gameId}` },
         toolId: 'extension-host',
         env: {},
         cwd: options.projectRoot,

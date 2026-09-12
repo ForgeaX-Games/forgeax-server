@@ -75,3 +75,20 @@ test('installed skill links resolve to the matching Engine reference files', asy
   const installed = await readFile(join(project, 'skills/engine-app/SKILL.md'), 'utf8');
   expect(installed).toContain(schema.replaceAll('\\', '/').replace('/source/..', ''));
 });
+
+
+test('product guidance shares native mounts but keeps independent ownership and user edits', async () => {
+  const { source, project, skill } = await fixture();
+  await syncEngineProjectSkills(project, source, { engineCommit: 'v1' });
+  const id = 'forgeax-studio-game-authoring';
+  const manifest = JSON.parse(await readFile(join(project, '.forgeax/skill-install-manifest.json'), 'utf8'));
+  expect(manifest.productSkills[id]).toBeString();
+  expect(manifest.engineSkills[id]).toBeUndefined();
+  expect(await readFile(join(project, '.agents/skills', id, 'SKILL.md'), 'utf8'))
+    .toBe(await readFile(join(project, 'skills', id, 'SKILL.md'), 'utf8'));
+  await writeFile(join(project, 'skills', id, 'SKILL.md'), '# My edited authoring instructions');
+  await writeFile(skill, '# v2');
+  await expect(syncEngineProjectSkills(project, source, { engineCommit: 'v2' })).rejects.toThrow('project-skill-source-conflict');
+  expect(await readFile(join(project, 'skills/engine-app/SKILL.md'), 'utf8')).toBe('# v1');
+  expect(await readFile(join(project, 'skills', id, 'SKILL.md'), 'utf8')).toBe('# My edited authoring instructions');
+});

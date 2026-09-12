@@ -113,7 +113,51 @@ describe('active game resource', () => {
       code: 'project-dependency-conflict',
       path: resolve(root, '.forgeax/games/game-b/node_modules/@forgeax'),
     });
-    expect((await app.request('/api/projects/active')).json()).resolves.toEqual({ activeSlug: 'game-a' });
+    await expect((await app.request('/api/projects/active')).json()).resolves.toEqual({ activeSlug: 'game-a' });
+  });
+
+  test('GET restore reports dependency preparation failure instead of a usable selection', async () => {
+    setActiveGame(root, 'game-a');
+    const guardedApp = new Hono();
+    guardedApp.route('/api', createProductApiRouter({
+      ensureGameProjectDependencies: async (gameDir) => {
+        expect(gameDir).toBe(resolve(root, '.forgeax/games/game-a'));
+        throw new ProjectDependencyError('project-dependency-source-unavailable', 'Engine source missing', 503);
+      },
+    }));
+    const response = await guardedApp.request('/api/projects/active');
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'failed to prepare game dependencies: Engine source missing', code: 'project-dependency-source-unavailable' });
+  });
+
+  test('GET restore awaits preparation without creating a session or binding the sidecar', async () => {
+    setActiveGame(root, 'game-a');
+    let release!: () => void;
+    const preparation = new Promise<void>((done) => { release = done; });
+    let started!: () => void;
+    const entered = new Promise<void>((done) => { started = done; });
+    const guardedApp = new Hono();
+    guardedApp.route('/api', createProductApiRouter({
+      ensureGameProjectDependencies: async () => { started(); await preparation; },
+      ensureSessionForGame: async () => { throw new Error('GET must not create sessions'); },
+    }));
+    let settled = false;
+    const response = Promise.resolve(guardedApp.request('/api/projects/active')).then((value) => { settled = true; return value; });
+    await entered;
+    expect(settled).toBe(false);
+    release();
+    expect((await response).status).toBe(200);
+  });
+
+  test('GET does not publish an old selection after a concurrent switch', async () => {
+    setActiveGame(root, 'game-a');
+    const guardedApp = new Hono();
+    guardedApp.route('/api', createProductApiRouter({
+      ensureGameProjectDependencies: async () => { setActiveGame(root, 'game-b'); },
+    }));
+    const response = await guardedApp.request('/api/projects/active');
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'active project changed during preparation; retry', code: 'active-project-changed' });
   });
 
   test('publishes the sidecar-confirmed binding atomically with the active game', async () => {

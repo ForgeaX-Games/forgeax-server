@@ -19,6 +19,14 @@ function studioRoot(): string {
   return resolve(assetRoot(), '..');
 }
 
+function launcherSourcePath(root: string): string {
+  const candidates = [
+    resolve(root, 'packages/build/player-launcher/player-launcher.ts'),
+    resolve(assetRoot(), 'server-runtime/player-launcher.ts'),
+  ];
+  return candidates.find(existsSync) ?? candidates[0]!;
+}
+
 const SHELL_VERSION = '5';
 const META_PREFIX = 'shell-meta';
 
@@ -97,7 +105,7 @@ export async function getOrBuildShell(
       mkdirSync(shellDir, { recursive: true });
 
       const root = studioRoot();
-      const launcherSrc = resolve(root, 'packages/build/player-launcher/player-launcher.ts');
+      const launcherSrc = launcherSourcePath(root);
       if (!existsSync(launcherSrc)) {
         return { ok: false, cached: false, error: `launcher source not found: ${launcherSrc}` };
       }

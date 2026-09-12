@@ -12,8 +12,6 @@ export const EXPECTED_STUDIO_TOOLS = [
       'deliver_summary',
       'list_games',
       'npc_wire',
-      'query_world',
-      'capture_frame',
       'editor_transport',
       'editor_gateway_eval',
       'editor_ui_browse',

@@ -28,7 +28,7 @@ describe('createForgeaxExtensionCapabilityResolver', () => {
     )).resolves.toEqual({ ok: true });
 
     expect(observedContext).toEqual({
-      caller: { kind: 'extension' },
+      caller: { kind: 'extension', extensionId: '@forgeax/extension-host', instanceId: 'game:game-1' },
       toolId: 'extension-host',
       env: {},
       cwd: '/project',

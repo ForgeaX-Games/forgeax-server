@@ -16,6 +16,7 @@ import {
 } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
+import { STUDIO_GAME_AUTHORING_SKILL } from './studio-game-authoring-skill';
 
 export const PROJECT_SKILL_MOUNT_ROOTS = Object.freeze([
   '.codebuddy/skills',
@@ -45,6 +46,7 @@ interface SkillInstallManifest {
   readonly engineCommit?: string;
   readonly skills: readonly InstalledSkill[];
   readonly engineSkills?: Readonly<Record<string, string>>;
+  readonly productSkills?: Readonly<Record<string, string>>;
   readonly mounts: readonly {
     readonly root: string;
     readonly skills: readonly string[];
@@ -191,7 +193,7 @@ async function readInstallManifest(root: string): Promise<SkillInstallManifest |
 
 export async function installProjectSkills(
   root: string,
-  provenance?: { sdkVersion?: string; engineCommit?: string } & { engineSkills?: Readonly<Record<string, string>> },
+  provenance?: { sdkVersion?: string; engineCommit?: string } & { engineSkills?: Readonly<Record<string, string>>; productSkills?: Readonly<Record<string, string>> },
 ): Promise<SkillInstallReport> {
   const projectRoot = resolve(root);
   const skills = await discoverProjectSkills(projectRoot);
@@ -284,6 +286,7 @@ export async function installProjectSkills(
       ...(engineCommit === undefined ? {} : { engineCommit }),
       skills,
       ...(engineSkills ? { engineSkills } : {}),
+      ...((provenance?.productSkills ?? priorManifest?.productSkills) ? { productSkills: provenance?.productSkills ?? priorManifest?.productSkills } : {}),
       mounts: PROJECT_SKILL_MOUNT_ROOTS.map((mountRoot) => ({ root: mountRoot, skills: ids })),
     };
     await mkdir(dirname(manifestPath), { recursive: true });
@@ -385,7 +388,7 @@ async function syncEngineProjectSkillsUnlocked(
   if (destinationKind !== 'missing' && destinationKind !== 'directory') throw new Error('project-skills-source-invalid');
   const prior = await readInstallManifest(projectRoot);
   const hashes: Record<string, string> = {};
-  const changes: { id: string; source: string; destination: string }[] = [];
+  const changes: { id: string; source?: string; content?: string; destination: string }[] = [];
   const digest = async (root: string, source = false) => {
     const hash = createHash('sha256');
     for (const file of await filesUnder(root)) {
@@ -412,6 +415,23 @@ async function syncEngineProjectSkillsUnlocked(
     changes.push({ id: entry.name, source, destination });
   }
   if (!Object.keys(hashes).length) throw new Error('engine-skills-empty');
+  const productId = 'forgeax-studio-game-authoring';
+  if (productId in hashes) throw new Error(`project-skill-owner-conflict: ${productId}`);
+  const productDestination = resolve(destinationRoot, productId);
+  const productHash = createHash('sha256').update('SKILL.md').update('\0')
+    .update(STUDIO_GAME_AUTHORING_SKILL).update('\0').digest('hex');
+  const productKind = await pathKind(productDestination);
+  if (productKind !== 'missing' && productKind !== 'directory') {
+    throw new Error(`project-skill-source-conflict: ${productId}`);
+  }
+  const currentProductHash = productKind === 'directory' ? await digest(productDestination) : undefined;
+  if (currentProductHash !== productHash) {
+    if (currentProductHash !== undefined && prior?.productSkills?.[productId] !== currentProductHash) {
+      throw new Error(`project-skill-source-conflict: ${productId}; preserve or rename the customized skill before syncing`);
+    }
+    changes.push({ id: productId, content: STUDIO_GAME_AUTHORING_SKILL, destination: productDestination });
+  }
+  const productSkills = { [productId]: productHash };
   // Validate every collision before any replacement. Removed upstream skills
   // remain local and lose Engine ownership; this avoids deleting user references.
   await mkdir(destinationRoot, { recursive: true });
@@ -426,12 +446,17 @@ async function syncEngineProjectSkillsUnlocked(
         moved.push(change.id);
       }
       created.push(change.id);
-      await cp(change.source, change.destination, { recursive: true, force: false, errorOnExist: true });
-      for (const file of await filesUnder(change.source)) {
-        if (file.endsWith('.md')) await writeFile(resolve(change.destination, relative(change.source, file)), await installedSkillBytes(file, sourceRoot));
+      if (change.source) {
+        await cp(change.source, change.destination, { recursive: true, force: false, errorOnExist: true });
+        for (const file of await filesUnder(change.source)) {
+          if (file.endsWith('.md')) await writeFile(resolve(change.destination, relative(change.source, file)), await installedSkillBytes(file, sourceRoot));
+        }
+      } else {
+        await mkdir(change.destination);
+        await writeFile(resolve(change.destination, 'SKILL.md'), change.content!);
       }
     }
-    const report = await installProjectSkills(projectRoot, { ...provenance, engineSkills: hashes });
+    const report = await installProjectSkills(projectRoot, { ...provenance, engineSkills: hashes, productSkills });
     canRemoveBackup = true;
     return report;
   } catch (cause) {

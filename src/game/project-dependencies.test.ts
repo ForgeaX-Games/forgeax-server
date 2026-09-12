@@ -9,6 +9,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -59,6 +60,82 @@ afterEach(() => {
 });
 
 describe('product-managed Engine dependency links', () => {
+  test('uses the source Editor workspace hoist when nested Engine node_modules is incomplete', async () => {
+    const { game, engine, root } = fixture({
+      dependencies: {
+        '@forgeax/engine-ecs': 'workspace:*',
+        '@forgeax/editor-game-plugins': 'workspace:*',
+      },
+    });
+    materializeEngine(engine, ['@forgeax/engine-ecs']);
+    const hoist = join(root, 'node_modules', '@forgeax');
+    for (const name of ['@forgeax/engine-ecs', '@forgeax/editor-game-plugins']) {
+      const packageDir = join(hoist, name.slice('@forgeax/'.length));
+      mkdirSync(packageDir, { recursive: true });
+      writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name }));
+    }
+
+    const report = await ensureGameProjectDependencies(game, { engineRoot: engine });
+
+    expect(report.status).toBe('linked');
+    expect(report.targetPath).toBe(hoist);
+    expect(readlinkSync(managedLinkTarget(game))).toBe(hoist);
+    expect(JSON.parse(readFileSync(projectDependencyManifestPath(game), 'utf8'))).toEqual({
+      schemaVersion: '1.0.0',
+      links: [{
+        path: 'node_modules/@forgeax',
+        target: hoist,
+        packages: ['@forgeax/editor-game-plugins', '@forgeax/engine-ecs'],
+      }],
+    });
+  });
+
+  test('uses the Editor workspace hoist two levels above nested packages/engine', async () => {
+    const { game, root } = fixture({
+      dependencies: {
+        '@forgeax/engine-ecs': 'workspace:*',
+        '@forgeax/editor-game-plugins': 'workspace:*',
+      },
+    });
+    const engine = join(root, 'packages', 'engine');
+    mkdirSync(engine, { recursive: true });
+    materializeEngine(engine, ['@forgeax/engine-ecs']);
+    const hoist = join(root, 'node_modules', '@forgeax');
+    for (const name of ['@forgeax/engine-ecs', '@forgeax/editor-game-plugins']) {
+      const packageDir = join(hoist, name.slice('@forgeax/'.length));
+      mkdirSync(packageDir, { recursive: true });
+      writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name }));
+    }
+
+    const report = await ensureGameProjectDependencies(game, { engineRoot: engine });
+
+    expect(report.status).toBe('linked');
+    expect(report.targetPath).toBe(hoist);
+    expect(readlinkSync(managedLinkTarget(game))).toBe(hoist);
+  });
+
+  test('prefers a complete nested Engine scope over a parent Editor hoist', async () => {
+    const { game, engine, root } = fixture({
+      dependencies: {
+        '@forgeax/engine-ecs': 'workspace:*',
+        '@forgeax/editor-game-plugins': 'workspace:*',
+      },
+    });
+    const nested = materializeEngine(engine, ['@forgeax/engine-ecs', '@forgeax/editor-game-plugins']);
+    const hoist = join(root, 'node_modules', '@forgeax');
+    for (const name of ['@forgeax/engine-ecs', '@forgeax/editor-game-plugins']) {
+      const packageDir = join(hoist, name.slice('@forgeax/'.length));
+      mkdirSync(packageDir, { recursive: true });
+      writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name }));
+    }
+
+    const report = await ensureGameProjectDependencies(game, { engineRoot: engine });
+
+    expect(report.status).toBe('linked');
+    expect(report.targetPath).toBe(nested);
+    expect(readlinkSync(managedLinkTarget(game))).toBe(nested);
+  });
+
   test('links the current Engine scope and records ownership/provenance', async () => {
     const { game, engine } = fixture({
       dependencies: {
@@ -87,11 +164,14 @@ describe('product-managed Engine dependency links', () => {
 
   test('repoints a legacy absolute link after the Studio App moves', async () => {
     const { game, root, engine } = fixture();
-    const oldEngine = join(root, 'old-app', 'resources', 'engine');
+    const oldEngine = process.platform === 'win32'
+      ? join(root, 'ForgeaX Studio', 'resources', 'engine')
+      : join(root, 'ForgeaX Studio.app', 'Contents', 'Resources', 'engine');
     const oldTarget = materializeEngine(oldEngine);
     const newTarget = materializeEngine(engine);
     mkdirSync(join(game, 'node_modules'), { recursive: true });
     symlinkSync(oldTarget, managedLinkTarget(game), 'dir');
+    rmSync(oldEngine, { recursive: true });
 
     const report = await ensureGameProjectDependencies(game, { engineRoot: engine });
 
@@ -177,12 +257,47 @@ describe('product-managed Engine dependency links', () => {
     expect(existsSync(projectDependencyManifestPath(game))).toBe(false);
   });
 
-  test('recognizes only Engine-shaped legacy paths, including Windows drive/UNC forms', () => {
-    expect(isLegacyEngineScopeTarget('/Applications/ForgeaX/engine/node_modules/@forgeax', 'darwin')).toBe(true);
-    expect(isLegacyEngineScopeTarget('C:\\Program Files\\ForgeaX\\engine\\node_modules\\@forgeax', 'win32')).toBe(true);
-    expect(isLegacyEngineScopeTarget('\\\\server\\share\\ForgeaX\\engine\\node_modules\\@forgeax', 'win32')).toBe(true);
+  test('requires packaged product provenance, including Windows drive/UNC forms', () => {
+    expect(isLegacyEngineScopeTarget('/Volumes/ForgeaX Studio 1/ForgeaX Studio.app/Contents/Resources/engine/node_modules/@forgeax', 'darwin')).toBe(true);
+    expect(isLegacyEngineScopeTarget('C:\\Program Files\\ForgeaX Studio\\resources\\engine\\node_modules\\@forgeax', 'win32')).toBe(true);
+    expect(isLegacyEngineScopeTarget('\\\\server\\share\\ForgeaX Studio\\resources\\engine\\node_modules\\@forgeax', 'win32')).toBe(true);
+    expect(isLegacyEngineScopeTarget('/custom/engine/node_modules/@forgeax', 'darwin')).toBe(false);
     expect(isLegacyEngineScopeTarget('C:\\projects\\custom\\node_modules\\@forgeax', 'win32')).toBe(false);
   });
+
+  test('does not adopt an arbitrary custom Engine-shaped link', async () => {
+    const { game, root, engine } = fixture();
+    materializeEngine(engine);
+    const custom = materializeEngine(join(root, 'custom', 'engine'));
+    mkdirSync(join(game, 'node_modules'));
+    symlinkSync(custom, managedLinkTarget(game), 'dir');
+    await expect(ensureGameProjectDependencies(game, { engineRoot: engine })).rejects.toMatchObject({ code: 'project-dependency-conflict' });
+    expect(readlinkSync(managedLinkTarget(game))).toBe(custom);
+    expect(existsSync(projectDependencyManifestPath(game))).toBe(false);
+  });
+
+  test('does not overwrite a user-retargeted recorded link even to a legacy App', async () => {
+    const { game, root, engine } = fixture();
+    materializeEngine(engine);
+    await ensureGameProjectDependencies(game, { engineRoot: engine });
+    const prior = readFileSync(projectDependencyManifestPath(game), 'utf8');
+    const custom = materializeEngine(join(root, 'ForgeaX Studio.app', 'Contents', 'Resources', 'engine'));
+    unlinkSync(managedLinkTarget(game));
+    symlinkSync(custom, managedLinkTarget(game), 'dir');
+    await expect(ensureGameProjectDependencies(game, { engineRoot: engine })).rejects.toMatchObject({ code: 'project-dependency-conflict' });
+    expect(readlinkSync(managedLinkTarget(game))).toBe(custom);
+    expect(readFileSync(projectDependencyManifestPath(game), 'utf8')).toBe(prior);
+  });
+
+  for (const name of ['@forgeax/custom', '@forgeax/engine-math']) {
+    test(`does not shadow or silently skip a mixed dependency contract: ${name}`, async () => {
+      const { game, engine } = fixture({ dependencies: { '@forgeax/engine': 'workspace:*', [name]: '^1.0.0' } });
+      materializeEngine(engine);
+      await expect(ensureGameProjectDependencies(game, { engineRoot: engine })).rejects.toMatchObject({ code: 'project-dependency-conflict' });
+      expect(existsSync(join(game, 'node_modules'))).toBe(false);
+      expect(existsSync(projectDependencyManifestPath(game))).toBe(false);
+    });
+  }
 
   test('reports a stale lock instead of deleting or taking another process lock', async () => {
     const { game, engine } = fixture();

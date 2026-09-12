@@ -1,12 +1,13 @@
+import { GAME_VERIFICATION_INPUT_SCHEMA, StudioDeliveryClaimSchema, projectGameVerification } from './delivery-verification';
 /** gameHostTools — the studio shell's game-domain host tools, injected into the
  *  orchestration layer via the `HostToolSpec` seam (Stage A §3 / P1-7).
- *  `list_games` / `query_world` / `capture_frame` are declared here so the cli
+ *  `list_games` and NPC authoring are declared here so the cli
  *  layer remains generic.
  *
  *  Execution uses two host-tool entry points (host-tool-bridge / `:sid/kernel-tool`)
- *  after the trust gate calls `run(args, ctx)`. Perception tools use
- *  `ctx.perception` to read the live preview and return `{ unavailable }` when
- *  the UI is not connected.
+ *  after the trust gate calls `run(args, ctx)`. Live editor observations use the typed editor_transport capability. The
+ *  retired PlaySurface perception relay has no receiver in the current Editor
+ *  and must not be advertised as an executable tool.
  *
  *  The leased-kernel path still has a local cli mirror; this seam covers the
  *  forgeax-core native path.
@@ -71,12 +72,13 @@ export const DELIVER_SUMMARY_INPUT_SCHEMA = {
       items: { type: 'string', minLength: 1 },
     },
     build: { type: 'string', maxLength: 16 },
+    verification: GAME_VERIFICATION_INPUT_SCHEMA,
   },
   additionalProperties: false,
 } as const;
 
 const DELIVER_SUMMARY_DESCRIPTION =
-  'Optionally record semantic completion metadata for a meaningful task. Provide outcome as 1-5 concise, user-meaningful completion or confirmation points in the user\'s language (not a file-count statement). Include tests actually run with pass/fail and a short detail, and include up to 5 useful next recommendations or user decisions when applicable. Do not include changed files, line counts, duration, agents, cost, or artifact ids; the host derives file changes independently.';
+  'Optionally record semantic completion metadata for a meaningful task. Provide outcome as 1-5 concise, user-meaningful completion or confirmation points in the user\'s language (not a file-count statement). Include tests actually run with pass/fail and a short detail, and include up to 5 useful next recommendations or user decisions when applicable. Do not include changed files, line counts, duration, agents, cost, or artifact ids; the host derives file changes independently. For game work, report scoped verification with status passed, failed, or unverified and current evidence references. A passed gameplay report requires observed input, state-change, and core-result checks. Missing verification is displayed as UNVERIFIED. These are agent-reported observations, not host-certified acceptance.';
 
 function formatDeliverSummaryIssues(error: { issues: Array<{ path: PropertyKey[]; message: string }> }): string {
   return error.issues
@@ -88,7 +90,7 @@ function formatDeliverSummaryIssues(error: { issues: Array<{ path: PropertyKey[]
 }
 
 async function runDeliverSummary(args: unknown, ctx: HostToolRunCtx): Promise<unknown> {
-  const parsed = DeliverSummaryClaimSchema.safeParse(args);
+  const parsed = StudioDeliveryClaimSchema.safeParse(args);
   if (!parsed.success) {
     return {
       ok: false,
@@ -101,7 +103,12 @@ async function runDeliverSummary(args: unknown, ctx: HostToolRunCtx): Promise<un
       error: 'deliver_summary enrichment unavailable: orchestrator delivery seam is not configured',
     };
   }
-  const summary = await ctx.delivery.enrich(parsed.data);
+  const projected = DeliverSummaryClaimSchema.safeParse(projectGameVerification(parsed.data, ctx.game));
+  if (!projected.success) return {
+    ok: false,
+    error: `deliver_summary projected claim invalid: ${formatDeliverSummaryIssues(projected.error)}`,
+  };
+  const summary = await ctx.delivery.enrich(projected.data);
   const checked = DeliverSummarySchema.safeParse(summary);
   if (!checked.success) {
     return {
@@ -492,34 +499,7 @@ export function gameHostTools(
       inputSchema: NPC_TOOL_CONTRACTS.npc_wire.inputSchema,
       run: (args, ctx: HostToolRunCtx) => wireNpc(args, ctx),
     },
-    {
-      // Read live game facts; the model remains the judge of structure and invariants.
-      name: 'query_world',
-      description:
-        "Query the RUNNING game's live world for ground truth: a structural ECS snapshot { entityCount, archetypes:[{componentNames, entityCount}], activeComponents, systems, resourceKeys }. Use it to VERIFY what the game actually contains/does (after writing code) instead of guessing. Data only — you are the judge.",
-      inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
-      run: async (args, ctx: HostToolRunCtx) =>
-        ctx.perception ? ctx.perception('world', args?.query) : { unavailable: true, reason: 'no perception channel' },
-    },
-    {
-      name: 'capture_frame',
-      description:
-        "Capture the running editor-viewport Play surface's current rendered frame as a PNG data URL (best-effort; may be blank on some GPUs — judge by structure/invariants, not pixels). Returns { dataUrl, bytes }.",
-      inputSchema: { type: 'object', properties: {} },
-      run: async (_args, ctx: HostToolRunCtx) => {
-        if (!ctx.perception) return { unavailable: true, reason: 'no perception channel' };
-        const snap = await ctx.perception('frame');
-        const dataUrl =
-          snap && typeof snap === 'object' && typeof (snap as { dataUrl?: unknown }).dataUrl === 'string'
-            ? (snap as { dataUrl: string }).dataUrl
-            : '';
-        if (!dataUrl) {
-          const reason = snap && typeof snap === 'object' ? (snap as { reason?: unknown }).reason : undefined;
-          return { unavailable: true, reason: reason ?? 'no frame' };
-        }
-        return { bytes: dataUrl.length, dataUrl: `${dataUrl.slice(0, 64)}…` };
-      },
-    },
+
   ];
 }
 

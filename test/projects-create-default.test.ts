@@ -59,7 +59,8 @@ describe('POST /api/projects capability-light default', () => {
       id: 'selected-engine-template',
       name: 'Selected',
     });
-    expect(existsSync(resolve(gameDir, '.forgeax'))).toBe(false);
+    expect(existsSync(resolve(gameDir, 'sessions'))).toBe(false);
+    expect(existsSync(resolve(gameDir, '.forgeax/project-dependency-links.json'))).toBe(true);
   });
 
   test('creates a minimal project without showcase assets or generated scripts', async () => {
@@ -81,9 +82,12 @@ describe('POST /api/projects capability-light default', () => {
       physics: false,
     });
     expect(manifest).not.toHaveProperty('defaultScene');
-    expect(readdirSync(gameDir).sort()).toEqual([
+    const created = readdirSync(gameDir);
+    expect(created).toEqual(expect.arrayContaining([
       'AGENTS.md', 'FORGE.md', 'forge.json', 'items.json', 'main.ts', 'package.json', 'tests',
-    ]);
+    ]));
+    expect(created).not.toContain('assets');
+    expect(existsSync(resolve(gameDir, '.forgeax/project-dependency-links.json'))).toBe(true);
     expect(existsSync(resolve(gameDir, 'assets'))).toBe(false);
     expect(existsSync(resolve(gameDir, 'tests/baseline.test.mjs'))).toBe(true);
     expect(JSON.parse(readFileSync(resolve(gameDir, 'package.json'), 'utf8'))).toMatchObject({
