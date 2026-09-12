@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { Hono } from 'hono';
 import { getEventBus, _resetEventBusForTests } from '@forgeax/orchestrator/events/bus';
 import { initPathManager, resetPathManager } from '@forgeax/orchestrator/fs/path-manager';
-import { ACTIVE_GAME_CHANGED_TOPIC, setActiveGame } from '../src/game/active-game';
+import { ACTIVE_GAME_CHANGED_TOPIC, getActiveGame, setActiveGame } from '../src/game/active-game';
 import { createProductApiRouter } from '../src/game/product-api';
 import { ProjectDependencyError } from '../src/game/project-dependencies';
 import type { RuntimeScopeClient, RuntimeScopeState } from '../src/game/runtime-scope-client';
@@ -395,6 +395,74 @@ describe('active game resource', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ activeSlug: 'game-a', runtime: state });
-    expect(binds).toBe(0);
+    expect(binds).toBe(1);
   });
+  for (const changeSelection of [false, true]) {
+    test(`GET coalesces background recovery and ${changeSelection ? 'preserves a newer selection' : 'publishes the recovered binding'}`, async () => {
+      setActiveGame(root, 'game-a');
+      const events: unknown[] = [];
+      const unsubscribe = getEventBus().subscribe(ACTIVE_GAME_CHANGED_TOPIC, (event) => events.push(event.payload));
+      let release!: (state: RuntimeScopeState) => void;
+      const pending = new Promise<RuntimeScopeState>((resolve) => { release = resolve; });
+      let binds = 0;
+      const runtimeScope = {
+        snapshot: () => ({ status: 'unavailable' }),
+        bind: () => { binds += 1; return pending; },
+      } as unknown as RuntimeScopeClient;
+      const runtimeApp = new Hono();
+      runtimeApp.route('/api', createProductApiRouter({
+        runtimeScope,
+        ensureGameProjectDependencies: async () => {},
+      }));
+      const first = await runtimeApp.request('/api/projects/active');
+      const second = await runtimeApp.request('/api/projects/active');
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(binds).toBe(1);
+      if (changeSelection) setActiveGame(root, 'game-b');
+      events.length = 0;
+      const recovered: RuntimeScopeState = {
+        status: 'ready',
+        binding: {
+          schemaVersion: 'runtime-asset-binding-v1', gameId: 'game-a', scopeId: 'restored',
+          generation: 8, status: 'ready', catalogUrl: '/catalog', importUrlBase: '/import', packageUrlBase: '/asset',
+        },
+      };
+      release(recovered);
+      await pending;
+      await Promise.resolve();
+      expect(getActiveGame(root)).toBe(changeSelection ? 'game-b' : 'game-a');
+      expect(events).toEqual(changeSelection ? [] : [{ activeSlug: 'game-a', runtime: recovered }]);
+      unsubscribe();
+    });
+  }
+
+  test('GET does not enqueue an old-game recovery behind an in-flight user switch', async () => {
+    setActiveGame(root, 'game-a');
+    let started!: () => void;
+    const binding = new Promise<void>((resolve) => { started = resolve; });
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const binds: string[] = [];
+    const runtimeScope = {
+      snapshot: () => ({ status: 'transitioning' }),
+      bind: async (gameId: string) => {
+        binds.push(gameId);
+        started();
+        await pending;
+        return { status: 'unavailable', error: 'fixture bind rejected' };
+      },
+    } as unknown as RuntimeScopeClient;
+    const runtimeApp = new Hono();
+    runtimeApp.route('/api', createProductApiRouter({ runtimeScope, ensureGameProjectDependencies: async () => {} }));
+    const put = runtimeApp.request('/api/projects/active', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ slug: 'game-b' }),
+    });
+    await binding;
+    expect((await runtimeApp.request('/api/projects/active')).status).toBe(200);
+    expect(binds).toEqual(['game-b']);
+    release();
+    await put;
+  });
+
 });

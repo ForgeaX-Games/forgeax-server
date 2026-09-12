@@ -182,7 +182,7 @@ export class RuntimeScopeClient {
       if (
         current?.gameId === gameId
         && current.scopeId === scopeId
-        && isReadyStatus(current.status)
+        && (isReadyStatus(current.status) || current.status === 'degraded')
       ) {
         const sidecar = await this.readSidecarBinding();
         if (sidecar !== undefined) {
@@ -192,8 +192,11 @@ export class RuntimeScopeClient {
           sidecar?.gameId === current.gameId
           && sidecar.scopeId === current.scopeId
           && sidecar.generation === current.generation
-          && isReadyStatus(sidecar.status)
+          && (isReadyStatus(sidecar.status) || sidecar.status === 'degraded')
         ) {
+          // A degraded producer still owns this exact scope/generation. Reads
+          // must not mint a new generation on every poll; source rebuilds can
+          // recover its catalog without invalidating the viewport's binding.
           const confirmed: RuntimeScopeState = { status: sidecar.status, binding: sidecar };
           this.publish(confirmed);
           return confirmed;

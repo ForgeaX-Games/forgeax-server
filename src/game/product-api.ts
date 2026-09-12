@@ -1,3 +1,4 @@
+import { createAgentAvatarMediaRouter, projectAvatarRules } from './agent-avatar-media';
 import { ensureGameProjectSkills } from './project-skills';
 import {
   ensureGameProjectDependencies,
@@ -438,6 +439,8 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
   const router = new Hono();
   const prepareGameDependencies = options.ensureGameProjectDependencies ?? ensureGameProjectDependencies;
   let activeGameMutationRevision = 0;
+  let activeGameMutationsInFlight = 0;
+  let runtimeRefresh: Promise<void> | undefined;
 
   // ── Active game — one authoritative read/write contract ──
   router.get('/projects/active', async (c) => {
@@ -460,12 +463,24 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
     if ((getActiveGame(projectRoot) ?? null) !== activeSlug) {
       return c.json({ error: 'active project changed during preparation; retry', code: 'active-project-changed' }, 409);
     }
-    // This is a read projection, not a sidecar command. A cold/restarting Play
-    // sidecar can take seconds to answer bind; awaiting it here blocks the
-    // Studio boot path (and queues the user's subsequent PUT behind it). The
-    // explicit PUT below remains the binding authority, while startup binding
-    // publishes refreshed state through the active-game event.
+    // Serve the current projection without waiting for a cold sidecar, then
+    // reconcile the same selected game. A sidecar restart loses its binding
+    // without restarting Server; the cached ready snapshot is not proof of life.
     const runtime = options.runtimeScope?.snapshot();
+    if (game !== undefined && options.runtimeScope !== undefined && runtimeRefresh === undefined && activeGameMutationsInFlight === 0) {
+      const revision = activeGameMutationRevision;
+      const previousRuntime = JSON.stringify(runtime);
+      runtimeRefresh = options.runtimeScope.bind(game.gameId, game.gameDir).then((next) => {
+        if (revision !== activeGameMutationRevision || getActiveGame(projectRoot) !== game.gameId) return;
+        // Do not create a refresh/event loop when the sidecar confirms the
+        // existing identity. Selection remains user-owned through PUT.
+        if (JSON.stringify(next) !== previousRuntime) {
+          setActiveGame(projectRoot, game.gameId, next, { forceEvent: true });
+        }
+      }).catch((error) => {
+        console.warn(`[projects/active] runtime reconciliation failed: ${String(error)}`);
+      }).finally(() => { runtimeRefresh = undefined; });
+    }
     return c.json({
       activeSlug,
       ...(runtime === undefined ? {} : { runtime }),
@@ -491,6 +506,7 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
       requestedSlug: game.gameId,
       activeSlug: getActiveGame(projectRoot) ?? null,
     }, 409);
+    activeGameMutationsInFlight += 1;
     try {
       // Prepare dependent state before publishing the selection event. Pages
       // can then react as projections instead of racing to create sessions.
@@ -532,6 +548,8 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
         return c.json({ error: `failed to prepare game dependencies: ${e.message}`, code: e.code, ...e.details }, e.status);
       }
       return c.json({ error: `failed to prepare game session: ${(e as Error).message}` }, 500);
+    } finally {
+      activeGameMutationsInFlight -= 1;
     }
   });
 
@@ -632,6 +650,7 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
     const localized = join(dirname(persona.personaPath), `${lang}.md`);
     return forWrite || existsSync(localized) ? localized : persona.personaPath;
   };
+  router.route('/agents', createAgentAvatarMediaRouter(listAgents, assetRoot));
   router.get('/agents/:id/persona', async (c) => {
     const id = c.req.param('id');
     const lang = c.req.query('lang') === 'en' ? 'en' : 'zh';
@@ -787,7 +806,7 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
           color: def.card.color,
           avatar: def.card.avatar ?? def.id[0].toUpperCase(),
           // ADR-0019: WEBM 状态机. 仅当 loader 成功解析 AVATAR.md 时存在.
-          ...(def.avatarRules ? { avatarRules: def.avatarRules } : {}),
+          ...(def.avatarRules ? { avatarRules: projectAvatarRules(def.id, def.avatarRules) } : {}),
           status: 'active',
           isMain: false,
           files: !includeFiles

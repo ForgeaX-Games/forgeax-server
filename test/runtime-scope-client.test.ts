@@ -154,6 +154,33 @@ describe('RuntimeScopeClient', () => {
     expect(methods).toEqual(['POST', 'GET']);
   });
 
+  test('preserves a degraded binding across reads and observes same-generation recovery', async () => {
+    let sidecar: RuntimeAssetBinding | undefined;
+    const methods: string[] = [];
+    const client = new RuntimeScopeClient({
+      secret: 'secret',
+      retries: 0,
+      fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
+        methods.push(init?.method ?? 'GET');
+        if (init?.method === 'GET') return Response.json(sidecar);
+        const command = JSON.parse(String(init?.body));
+        sidecar = { ...binding(command.gameId, command.scopeId, command.generation), status: 'degraded', authority: 'degraded' };
+        return Response.json(sidecar);
+      }) as typeof fetch,
+    });
+    const first = await client.bind('game-a', '/project/game-a');
+    const second = await client.bind('game-a', '/project/game-a');
+    const third = await client.bind('game-a', '/project/game-a');
+    expect(first.status).toBe('degraded');
+    expect(second.binding?.generation).toBe(first.binding?.generation);
+    expect(third.binding?.generation).toBe(first.binding?.generation);
+    sidecar = { ...sidecar!, status: 'ready', authority: 'authoritative' };
+    const recovered = await client.bind('game-a', '/project/game-a');
+    expect(recovered.status).toBe('ready');
+    expect(recovered.binding?.generation).toBe(first.binding?.generation);
+    expect(methods).toEqual(['POST', 'GET', 'GET', 'GET']);
+  });
+
   test('clears the previous binding when the sidecar cannot bind', async () => {
     const client = new RuntimeScopeClient({
       secret: 'secret',

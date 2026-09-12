@@ -53,18 +53,12 @@ describe('GameSystemPromptComposer — byte-equivalence + cache-stability (Stage
     expect(charter).not.toContain('{{interfacePort}}');
   });
 
-  // A silent build used to pass as finished: nothing in the charter said audio
-  // belonged to the first loop, and forge only dispatched `audio-designer` when
-  // the user said an audio word out loud. This clause is what makes "make me an
-  // X game" reach the audio pass on its own, so it must not silently drop out.
-  test('counts the audio layer as part of a finished playable slice', () => {
+  test('distinguishes the first Play checkpoint from complete audio delivery', () => {
     const charter = buildGameCharter(PORTS);
-
-    expect(charter).toContain('A playable slice is not finished while the game is still silent');
-    expect(charter).toContain('belongs to the first complete loop');
-    // The nine-step authoring chain stays in the BGM/SFX extension skill — the charter
-    // points at it instead of growing a second copy.
-    expect(charter).toContain('forgeax:game-audio');
+    expect(charter).toContain('precede complete audio and presentation');
+    expect(charter).toContain('A complete game still requires its applied audio runtime');
+    expect(charter).toContain('real gameplay event hooks and observed playback');
+    expect(charter).toContain("BGM/SFX extension's verification tool");
   });
 
   // The charter used to call BOTH `editor_transport` and `editor_ui_browse` "the

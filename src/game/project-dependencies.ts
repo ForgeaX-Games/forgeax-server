@@ -13,12 +13,15 @@ import {
 } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /**
  * Product-managed Engine dependencies are deliberately a small, explicit
  * contract. A game declares these packages with the workspace protocol in its
  * own package.json; the Studio then exposes the packaged/source Engine scope
- * at game/node_modules/@forgeax. The product does not run a package manager or
+ * at game/node_modules/@forgeax. Declared standard development tools are also
+ * exposed from the matching Engine installation with version and ownership
+ * checks. The product does not run a package manager or
  * rewrite package.json, and it never claims arbitrary @forgeax packages.
  *
  * Packaged desktop assemble copies Editor-owned managed packages (for example
@@ -288,6 +291,18 @@ export async function resolveEngineDependencyScope(
     api.resolve(engineRoot, '..', 'node_modules', '@forgeax'),
     api.resolve(engineRoot, '..', '..', 'node_modules', '@forgeax'),
   ];
+  // Studio prepare owns integration links at its root; independent Editor
+  // installs can leave both nested scopes partial. Only admit this known
+  // product root, never an arbitrary ancestor's node_modules.
+  const studioRoot = api.resolve(engineRoot, '../../../..');
+  if (api.resolve(studioRoot, 'packages/editor/packages/engine') === api.resolve(engineRoot)) {
+    try {
+      const manifest = JSON.parse(await readFile(api.join(studioRoot, 'package.json'), 'utf8'));
+      if (manifest.name === 'forgeax-studio') {
+        candidates.push(api.join(studioRoot, 'node_modules', '@forgeax'));
+      }
+    } catch { /* A standalone Editor has no Studio integration root. */ }
+  }
   const seen = new Set<string>();
   for (const candidate of candidates) {
     const key = normalizePath(candidate, platform);
@@ -480,7 +495,7 @@ function dependencyConflict(
   );
 }
 
-async function writeManifestAtomically(path: string, manifest: DependencyLinkManifest): Promise<void> {
+async function writeManifestAtomically(path: string, manifest: unknown): Promise<void> {
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' });
@@ -654,6 +669,8 @@ async function ensureLocked(
     throw cause;
   }
 
+  await ensureProjectToolchain(root, engineRoot, platform);
+
   return {
     root,
     status,
@@ -662,6 +679,120 @@ async function ensureLocked(
     packages: contract.packages,
     manifest: manifestPath,
   };
+}
+
+// Only standard authoring tools are managed. Versions remain project-owned;
+// sources must satisfy them, and existing user installations are preserved.
+const PROJECT_TOOLCHAIN = { typescript: ['tsc', 'tsserver'], vitest: ['vitest'], '@types/node': [] } as const;
+type ToolchainLink = { path: string; target: string; kind: 'package' | 'bin' };
+
+function toolchainRecordValid(value: unknown): value is ToolchainLink {
+  if (!isRecord(value) || typeof value.target !== 'string') return false;
+  return Object.entries(PROJECT_TOOLCHAIN).some(([name, bins]) =>
+    (value.kind === 'package' && value.path === `node_modules/${name}`)
+    || (value.kind === 'bin' && bins.some((bin) => value.path === `node_modules/.bin/${bin}`)));
+}
+
+function toolchainBinText(target: string): string {
+  return `#!/usr/bin/env node\nimport(${JSON.stringify(pathToFileURL(target).href)});\n`;
+}
+
+function toolchainCmdText(path: string): string {
+  return `@echo off\r\nnode "%~dp0${basename(path)}" %*\r\n`;
+}
+
+async function ensureToolchainDirectory(path: string): Promise<void> {
+  const kind = await pathKind(path);
+  if (kind === 'missing') await mkdir(path, { recursive: true });
+  else if (kind !== 'directory') throw dependencyConflict(`Cannot prepare project tools in ${path}; it is not a real directory.`, path);
+}
+
+async function ownsToolchainLink(root: string, record: ToolchainLink, platform: NodeJS.Platform): Promise<boolean> {
+  const path = join(root, record.path);
+  if (record.kind === 'package') return linkStillResolvesTo(path, record.target, platform);
+  return await readOptionalFile(path) === toolchainBinText(record.target)
+    && await readOptionalFile(`${path}.cmd`) === toolchainCmdText(path);
+}
+
+async function ensureProjectToolchain(root: string, engineRoot: string, platform: NodeJS.Platform): Promise<void> {
+  const manifestPath = join(root, '.forgeax/project-toolchain-links.json');
+  const text = await readOptionalFile(manifestPath);
+  const prior: ToolchainLink[] = [];
+  if (text !== undefined) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { /* Reject malformed metadata below. */ }
+    if (!isRecord(parsed) || parsed.schemaVersion !== '1.0.0' || !Array.isArray(parsed.links)
+      || !parsed.links.every(toolchainRecordValid)
+      || new Set(parsed.links.map((link) => link.path)).size !== parsed.links.length) {
+      throw new ProjectDependencyError('project-dependency-manifest-invalid', `Invalid toolchain ownership metadata: ${manifestPath}`, 409, { path: manifestPath });
+    }
+    prior.push(...parsed.links);
+  }
+  const declarations = declaredDependencies(JSON.parse(await readFile(join(root, 'package.json'), 'utf8')));
+  const desired: ToolchainLink[] = [];
+  for (const [name, bins] of Object.entries(PROJECT_TOOLCHAIN)) {
+    const spec = declarations.get(name);
+    if (spec === undefined) continue;
+    const path = `node_modules/${name}`;
+    const destination = join(root, path);
+    const record = prior.find((row) => row.path === path);
+    const kind = await pathKind(destination);
+    const managed = record !== undefined && await ownsToolchainLink(root, record, platform);
+    if (record !== undefined && kind !== 'missing' && !managed) {
+      throw dependencyConflict(`Project tool ${destination} was changed by the user; it was left unchanged.`, destination);
+    }
+    const target = kind !== 'missing' && !managed ? destination : join(engineRoot, 'node_modules', name);
+    let installed: Record<string, unknown>;
+    try { installed = JSON.parse(await readFile(join(target, 'package.json'), 'utf8')); }
+    catch { throw new ProjectDependencyError('project-dependency-source-unavailable', `Project tool ${name} (${spec}) is unavailable at ${target}. Repair the matching Studio toolchain or install the project's dependencies.`, 503, { path: target }); }
+    if (installed.name !== name || typeof installed.version !== 'string' || !Bun.semver.satisfies(installed.version, spec)) {
+      throw new ProjectDependencyError('project-dependency-conflict', `Project tool ${name} requires ${spec}, but ${target} provides ${String(installed.version)}. No substitute version was installed.`, 409, { path: target });
+    }
+    if (target !== destination) desired.push({ path, target, kind: 'package' });
+    const declaredBins = typeof installed.bin === 'string' ? { [name]: installed.bin } : installed.bin;
+    for (const bin of bins) {
+      if (!isRecord(declaredBins) || typeof declaredBins[bin] !== 'string') continue;
+      const entry = resolve(target, declaredBins[bin]);
+      if (!await stat(entry).then((info) => info.isFile()).catch(() => false)) {
+        throw new ProjectDependencyError('project-dependency-source-unavailable', `Project tool entry is unavailable: ${entry}`, 503, { path: entry });
+      }
+      desired.push({ path: `node_modules/.bin/${bin}`, target: entry, kind: 'bin' });
+    }
+  }
+  // Validate all destinations before changing any toolchain entry.
+  const changes: ToolchainLink[] = [];
+  for (const next of desired) {
+    const path = join(root, next.path);
+    const record = prior.find((row) => row.path === next.path);
+    const kind = await pathKind(path);
+    const matches = record !== undefined && await ownsToolchainLink(root, record, platform);
+    if (kind !== 'missing' && !matches) {
+      if (record === undefined && next.kind === 'bin') continue;
+      throw dependencyConflict(`Cannot replace custom project tool ${path}.`, path);
+    }
+    if (next.kind === 'bin' && kind === 'missing' && await pathKind(`${path}.cmd`) !== 'missing') {
+      throw dependencyConflict(`Cannot replace custom project tool ${path}.cmd.`, `${path}.cmd`);
+    }
+    await ensureToolchainDirectory(dirname(path));
+    changes.push(next);
+  }
+  const records = [...prior];
+  for (const next of changes) {
+    const path = join(root, next.path);
+    const record = records.find((row) => row.path === next.path);
+    if (record?.target === next.target && await ownsToolchainLink(root, record, platform)) continue;
+    if (next.kind === 'package') {
+      const kind = await pathKind(path);
+      const previousTarget = kind === 'symlink' ? await readlink(path) : undefined;
+      await mutateLink(path, next.target, kind === 'symlink' ? 'symlink' : 'missing', previousTarget, platform);
+    } else {
+      await writeFile(path, toolchainBinText(next.target), { mode: 0o755 });
+      await writeFile(`${path}.cmd`, toolchainCmdText(path));
+    }
+    const index = records.findIndex((row) => row.path === next.path);
+    if (index === -1) records.push(next); else records[index] = next;
+    await writeManifestAtomically(manifestPath, { schemaVersion: '1.0.0', links: records });
+  }
 }
 
 async function acquireLock(lockPath: string, waitMs: number): Promise<void> {

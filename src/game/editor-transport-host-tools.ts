@@ -53,7 +53,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
   return [{
     name: 'editor_transport',
     description:
-      'Call the versioned Editor transport in the connected Studio page. Start with "discover" to read the page-owned capability manifest, then use only the closed public methods and typed gameplay route. Omit scope to use the session game, or pass the canonical scope "game:<slug>"; the legacy "active-game" alias is resolved from the game-bound host context. To execute a discovered page operation, call run.dispatch with params {"operationId":"editor.game.select","input":{"slug":"gta-route-dev"}}. If the carrier is unavailable, call discover and retry only after a carrier is reported. Unsupported operations return a structured not-supported error. Do not use a relay eval endpoint.',
+      'Call the versioned Editor transport in the connected Studio page. For live game input, state projections, or canvas capture, first call method "gameplay" with params {"version":1,"operation":"describe"}, then follow the returned live contract. For editing scene/assets, start with "discover" to read the page-owned capability manifest. Use only the closed public methods and typed gameplay route. Omit scope to use the session game, or pass the canonical scope "game:<slug>"; the legacy "active-game" alias is resolved from the game-bound host context. To execute a discovered page operation, call run.dispatch with params {"operationId":"editor.game.select","input":{"slug":"gta-route-dev"}}. If the carrier is unavailable, call discover and retry only after a carrier is reported. Unsupported operations return a structured not-supported error. Do not use a relay eval endpoint.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -179,7 +179,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
         : requestedOperationId === 'editor.lifecycle.stop'
           ? 'editor.stop'
           : requestedOperationId;
-      if (method === 'run.dispatch' && gameplayOperationIds.has(normalizedOperationId)) {
+      if (method === 'gameplay' || (method === 'run.dispatch' && gameplayOperationIds.has(normalizedOperationId))) {
         return deps.dispatch({
           jsonrpc: '2.0',
           version: EDITOR_TRANSPORT_VERSION,
@@ -188,7 +188,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
           scope,
           method: 'gameplay',
           ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
-          params: record(params.input) ?? {},
+          params: method === 'gameplay' ? params : record(params.input) ?? {},
         });
       }
       if (method === 'save' || method === 'reopen') {

@@ -23,7 +23,7 @@ type EditorTransportVisibility = 'visible' | 'hidden';
 
 interface EditorTransportPresence { readonly visibility: EditorTransportVisibility; readonly focused: boolean; readonly gameplay: boolean }
 
-interface EditorTransportConnection { readonly scope: string | null; readonly role: EditorTransportRole | null; readonly presence: EditorTransportPresence }
+interface EditorTransportConnection { readonly scope: string | null; readonly role: EditorTransportRole | null; readonly presence: EditorTransportPresence; readonly engagement: number }
 
 interface EditorTransportCandidateFacts extends JsonRecord {
   readonly scope: string;
@@ -160,6 +160,8 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     });
   };
 
+  let engagementSequence = 0;
+
   const presenceFrom = (value: JsonRecord): EditorTransportPresence | null => {
     if ((value.visibility !== 'visible' && value.visibility !== 'hidden') || typeof value.focused !== 'boolean') return null;
     const capabilities = isRecord(value.capabilities) ? value.capabilities : {};
@@ -180,6 +182,11 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     if (interactive.length === 0) return eligible.at(-1)?.[0];
     const focused = eligible.filter(([, connection]) => connection.presence.focused);
     if (focused.length === 1) return focused[0]![0];
+    // Separate browser processes can both report focus. Only explicit page
+    // interaction resolves that tie; connection order and heartbeats cannot.
+    const engaged = focused.filter(([, connection]) => connection.presence.visibility === 'visible' && connection.engagement > 0)
+      .sort((a, b) => b[1].engagement - a[1].engagement);
+    if (engaged.length > 0) return engaged[0]![0];
     const visible = eligible.filter(([, connection]) => connection.presence.visibility === 'visible');
     if (focused.length === 0 && visible.length === 1) return visible[0]![0];
     return eligible.length === 1 ? eligible[0]![0] : null;
@@ -355,7 +362,7 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
   const open = (socket: ServerWebSocket<EditorTransportSocketData>): void => {
     if (!isSocket(socket)) return;
     connections.set(socket, {
-      scope: null, role: null,
+      scope: null, role: null, engagement: 0,
       presence: { visibility: 'hidden', focused: false, gameplay: false },
     });
     socket.send(JSON.stringify({ type: 'editor-transport/hello', version: EDITOR_TRANSPORT_VERSION }));
@@ -376,8 +383,16 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
       const connection = connections.get(socket);
       if (connection === undefined) return;
       const presence = presenceFrom(value);
-      connections.set(socket, { scope: value.scope, role: value.role, presence: presence ?? connection.presence });
+      connections.set(socket, { scope: value.scope, role: value.role, presence: presence ?? connection.presence, engagement: 0 });
       maybeRetireManaged(value.scope);
+      return;
+    }
+    if (value.type === 'editor-transport/engage') {
+      const connection = connections.get(socket);
+      const presence = presenceFrom(value);
+      if (connection?.scope && connection.role === 'interactive' && presence?.focused && presence.visibility === 'visible') {
+        connections.set(socket, { ...connection, presence, engagement: ++engagementSequence });
+      }
       return;
     }
     if (value.type === 'editor-transport/presence') {

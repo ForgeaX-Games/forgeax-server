@@ -134,6 +134,15 @@ describe('editorTransportHostTools', () => {
     }]);
   });
 
+  test('keeps host metadata outside the strict direct gameplay request', async () => {
+    const requests: Record<string, unknown>[] = [];
+    const tools = editorTransportHostTools({ dispatch: async (request) => { requests.push(request); return { ok: true }; } });
+    await tools[0]!.run!({ method: 'gameplay', permission: 'read',
+      params: { version: 1, operation: 'describe' } }, ctx);
+    expect(requests[0]).toMatchObject({ scope: 'game:spin-cube', method: 'gameplay' });
+    expect(requests[0]!.params).toEqual({ version: 1, operation: 'describe' });
+  });
+
   test('returns structured unavailable when the Studio page is not connected', async () => {
     const tools = editorTransportHostTools();
     await expect(tools[0]!.run!({ method: 'discover' }, ctx)).resolves.toMatchObject({

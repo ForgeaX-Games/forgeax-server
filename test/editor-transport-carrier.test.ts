@@ -378,6 +378,37 @@ describe('Studio editor typed transport carrier', () => {
     expect(passive.sent.some((message) => JSON.parse(message).type === 'editor-transport/request')).toBe(false);
   });
 
+  test('explicit interaction resolves a cross-browser focus tie without heartbeat takeover', async () => {
+    const carrier = createEditorTransportCarrier({ timeoutMs: 100 });
+    const first = socket();
+    const second = socket();
+    const presence = { visibility: 'visible', focused: true, capabilities: { gameplay: true } };
+    for (const page of [first, second]) {
+      carrier.open(page as never);
+      carrier.message(page as never, JSON.stringify({
+        type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive',
+        scope: 'game:spin-cube', ...presence,
+      }));
+    }
+    const assertOwner = async (owner: ReturnType<typeof socket>, suffix: string) => {
+      const next = { ...request, id: suffix, correlationId: suffix };
+      const result = carrier.dispatch(next);
+      await Bun.sleep(0);
+      expect(owner.sent.some((message) => JSON.parse(message).request?.id === suffix)).toBe(true);
+      carrier.message(owner as never, JSON.stringify({ type: 'editor-transport/response', response: {
+        jsonrpc: '2.0', version: 'editor-transport/v1', id: suffix, correlationId: suffix, result: { owner: suffix },
+      } }));
+      await expect(result).resolves.toMatchObject({ result: { owner: suffix } });
+    };
+    carrier.message(first as never, JSON.stringify({ type: 'editor-transport/engage', ...presence }));
+    carrier.message(second as never, JSON.stringify({ type: 'editor-transport/presence', ...presence }));
+    await assertOwner(first, 'first-engaged');
+    carrier.message(second as never, JSON.stringify({ type: 'editor-transport/engage', ...presence }));
+    await assertOwner(second, 'second-engaged');
+    carrier.message(second as never, JSON.stringify({ type: 'editor-transport/presence', ...presence, visibility: 'hidden', focused: false }));
+    await assertOwner(first, 'hidden-cannot-own');
+  });
+
   test('routes gameplay only to a carrier that explicitly declares the gameplay capability', async () => {
     const carrier = createEditorTransportCarrier({ timeoutMs: 100 });
     const focusedWithoutViewport = socket();

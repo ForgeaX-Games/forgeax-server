@@ -60,6 +60,75 @@ afterEach(() => {
 });
 
 describe('product-managed Engine dependency links', () => {
+  test('prepares declared development tools and runnable bins without changing the project manifest', async () => {
+    const { game, engine } = fixture();
+    materializeEngine(engine);
+    const manifest = JSON.stringify({ dependencies: { '@forgeax/engine': 'workspace:*' },
+      devDependencies: { typescript: '^6.0.0', vitest: '4.1.11', '@types/node': '^20.19.40' },
+      scripts: { typecheck: 'tsc --noEmit' } });
+    writeFileSync(join(game, 'package.json'), manifest);
+    for (const [name, version, bin] of [
+      ['typescript', '6.0.3', 'tsc'], ['vitest', '4.1.11', 'vitest'], ['@types/node', '20.19.42', ''],
+    ]) {
+      const dir = join(engine, 'node_modules', name!);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version,
+        ...(bin ? { bin: { [bin]: 'cli.js' } } : {}) }));
+      if (bin) writeFileSync(join(dir, 'cli.js'), '#!/usr/bin/env node\nconsole.log("toolchain-ready");\n', { mode: 0o755 });
+    }
+    await ensureGameProjectDependencies(game, { engineRoot: engine });
+    expect(existsSync(join(game, 'node_modules', '@types/node/package.json'))).toBe(true);
+    expect(realpathSync(join(game, 'node_modules', 'typescript'))).toBe(realpathSync(join(engine, 'node_modules', 'typescript')));
+    const result = Bun.spawnSync(['bun', 'run', 'typecheck'], { cwd: game, stdout: 'pipe', stderr: 'pipe' });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain('toolchain-ready');
+    expect(readFileSync(join(game, 'package.json'), 'utf8')).toBe(manifest);
+    await ensureGameProjectDependencies(game, { engineRoot: engine });
+    expect(readFileSync(join(game, 'package.json'), 'utf8')).toBe(manifest);
+  });
+
+  test('rejects a mismatched bundled tool before linking it', async () => {
+    const { game, engine } = fixture();
+    materializeEngine(engine);
+    writeFileSync(join(game, 'package.json'), JSON.stringify({ dependencies: { '@forgeax/engine': 'workspace:*' }, devDependencies: { typescript: '6.0.3' } }));
+    mkdirSync(join(engine, 'node_modules/typescript'), { recursive: true });
+    writeFileSync(join(engine, 'node_modules/typescript/package.json'), JSON.stringify({ name: 'typescript', version: '5.9.3' }));
+    await expect(ensureGameProjectDependencies(game, { engineRoot: engine })).rejects.toMatchObject({ code: 'project-dependency-conflict' });
+    expect(existsSync(join(game, 'node_modules/typescript'))).toBe(false);
+  });
+
+  test('preserves a matching user-installed tool and its custom executable', async () => {
+    const { game, engine } = fixture();
+    materializeEngine(engine);
+    writeFileSync(join(game, 'package.json'), JSON.stringify({ dependencies: { '@forgeax/engine': 'workspace:*' }, devDependencies: { typescript: '^6.0.0' } }));
+    mkdirSync(join(game, 'node_modules/typescript'), { recursive: true });
+    mkdirSync(join(game, 'node_modules/.bin'));
+    writeFileSync(join(game, 'node_modules/typescript/package.json'), JSON.stringify({ name: 'typescript', version: '6.0.3', bin: { tsc: 'cli.js' } }));
+    writeFileSync(join(game, 'node_modules/typescript/cli.js'), 'process.exit(0);');
+    writeFileSync(join(game, 'node_modules/.bin/tsc'), 'user executable');
+    await ensureGameProjectDependencies(game, { engineRoot: engine });
+    expect(lstatSync(join(game, 'node_modules/typescript')).isDirectory()).toBe(true);
+    expect(readFileSync(join(game, 'node_modules/.bin/tsc'), 'utf8')).toBe('user executable');
+  });
+
+  test('repairs owned tool links on a source move and preserves user edits', async () => {
+    const { game, engine, root } = fixture();
+    writeFileSync(join(game, 'package.json'), JSON.stringify({ dependencies: { '@forgeax/engine': 'workspace:*' }, devDependencies: { '@types/node': '^20.0.0' } }));
+    const moved = join(root, 'moved-engine');
+    for (const source of [engine, moved]) {
+      materializeEngine(source);
+      mkdirSync(join(source, 'node_modules/@types/node'), { recursive: true });
+      writeFileSync(join(source, 'node_modules/@types/node/package.json'), JSON.stringify({ name: '@types/node', version: '20.19.42' }));
+    }
+    await ensureGameProjectDependencies(game, { engineRoot: engine });
+    await ensureGameProjectDependencies(game, { engineRoot: moved });
+    expect(realpathSync(join(game, 'node_modules/@types/node'))).toBe(realpathSync(join(moved, 'node_modules/@types/node')));
+    unlinkSync(join(game, 'node_modules/@types/node'));
+    symlinkSync(join(engine, 'node_modules/@types/node'), join(game, 'node_modules/@types/node'), 'dir');
+    await expect(ensureGameProjectDependencies(game, { engineRoot: moved })).rejects.toMatchObject({ code: 'project-dependency-conflict' });
+    expect(realpathSync(join(game, 'node_modules/@types/node'))).toBe(realpathSync(join(engine, 'node_modules/@types/node')));
+  });
+
   test('uses the source Editor workspace hoist when nested Engine node_modules is incomplete', async () => {
     const { game, engine, root } = fixture({
       dependencies: {
@@ -112,6 +181,29 @@ describe('product-managed Engine dependency links', () => {
     expect(report.status).toBe('linked');
     expect(report.targetPath).toBe(hoist);
     expect(readlinkSync(managedLinkTarget(game))).toBe(hoist);
+  });
+
+  test('uses the Studio prepare scope for its nested Engine source', async () => {
+    const { game, root } = fixture({ dependencies: { '@forgeax/engine': 'workspace:*' } });
+    const engine = join(root, 'packages/editor/packages/engine');
+    mkdirSync(engine, { recursive: true });
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'forgeax-studio' }));
+    const hoist = join(root, 'node_modules/@forgeax');
+    mkdirSync(join(hoist, 'engine'), { recursive: true });
+    writeFileSync(join(hoist, 'engine/package.json'), JSON.stringify({ name: '@forgeax/engine' }));
+    const report = await ensureGameProjectDependencies(game, { engineRoot: engine });
+    expect(report.targetPath).toBe(hoist);
+  });
+
+  test('does not consume an unrelated ancestor scope with the same directory shape', async () => {
+    const { game, root } = fixture({ dependencies: { '@forgeax/engine': 'workspace:*' } });
+    const engine = join(root, 'packages/editor/packages/engine');
+    mkdirSync(engine, { recursive: true });
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'unrelated-project' }));
+    const hoist = join(root, 'node_modules/@forgeax/engine');
+    mkdirSync(hoist, { recursive: true });
+    writeFileSync(join(hoist, 'package.json'), JSON.stringify({ name: '@forgeax/engine' }));
+    await expect(ensureGameProjectDependencies(game, { engineRoot: engine })).rejects.toThrow('dependency source is unavailable');
   });
 
   test('prefers a complete nested Engine scope over a parent Editor hoist', async () => {
