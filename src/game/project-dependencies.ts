@@ -291,17 +291,21 @@ export async function resolveEngineDependencyScope(
     api.resolve(engineRoot, '..', 'node_modules', '@forgeax'),
     api.resolve(engineRoot, '..', '..', 'node_modules', '@forgeax'),
   ];
-  // Studio prepare owns integration links at its root; independent Editor
-  // installs can leave both nested scopes partial. Only admit this known
-  // product root, never an arbitrary ancestor's node_modules.
-  const studioRoot = api.resolve(engineRoot, '../../../..');
-  if (api.resolve(studioRoot, 'packages/editor/packages/engine') === api.resolve(engineRoot)) {
+  // Studio prepare owns integration links at its product root. Identify the
+  // product by its manifest, not the private Editor/Engine checkout layout.
+  // Only that named owner can supply an additional complete dependency scope.
+  let ancestor = api.dirname(api.resolve(engineRoot));
+  while (true) {
     try {
-      const manifest = JSON.parse(await readFile(api.join(studioRoot, 'package.json'), 'utf8'));
+      const manifest = JSON.parse(await readFile(api.join(ancestor, 'package.json'), 'utf8'));
       if (manifest.name === 'forgeax-studio') {
-        candidates.push(api.join(studioRoot, 'node_modules', '@forgeax'));
+        candidates.push(api.join(ancestor, 'node_modules', '@forgeax'));
+        break;
       }
-    } catch { /* A standalone Editor has no Studio integration root. */ }
+    } catch { /* This ancestor is not a readable product package. */ }
+    const parent = api.dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
   }
   const seen = new Set<string>();
   for (const candidate of candidates) {

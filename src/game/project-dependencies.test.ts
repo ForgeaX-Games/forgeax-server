@@ -183,9 +183,9 @@ describe('product-managed Engine dependency links', () => {
     expect(readlinkSync(managedLinkTarget(game))).toBe(hoist);
   });
 
-  test('uses the Studio prepare scope for its nested Engine source', async () => {
+  test.each(['packages/editor/packages/engine', 'sources/renderer/engine', 'vendor/engine'])('uses the Studio prepare scope without coupling to layout %s', async (layout) => {
     const { game, root } = fixture({ dependencies: { '@forgeax/engine': 'workspace:*' } });
-    const engine = join(root, 'packages/editor/packages/engine');
+    const engine = join(root, layout);
     mkdirSync(engine, { recursive: true });
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'forgeax-studio' }));
     const hoist = join(root, 'node_modules/@forgeax');

@@ -53,7 +53,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
   return [{
     name: 'editor_transport',
     description:
-      'Call the versioned Editor transport in the connected Studio page. For live game input, state projections, or canvas capture, first call method "gameplay" with params {"version":1,"operation":"describe"}, then follow the returned live contract. For editing scene/assets, start with "discover" to read the page-owned capability manifest. Use only the closed public methods and typed gameplay route. Omit scope to use the session game, or pass the canonical scope "game:<slug>"; the legacy "active-game" alias is resolved from the game-bound host context. To execute a discovered page operation, call run.dispatch with params {"operationId":"editor.game.select","input":{"slug":"gta-route-dev"}}. If the carrier is unavailable, call discover and retry only after a carrier is reported. Unsupported operations return a structured not-supported error. Do not use a relay eval endpoint.',
+      'Call the versioned Editor transport in the connected Studio page. For live game input, state projections, or canvas capture, first call method "gameplay" with params {"version":1,"operation":"describe"}, then follow the returned live contract. For editing scene/assets, start with "discover" to read the page-owned capability manifest. For method "query", pass the projection object directly as params, for example {"kind":"assets.catalog"}; do not nest it under query or use the gameplay version/operation envelope. Use only the closed public methods and typed gameplay route. Omit scope to use the session game, or pass the canonical scope "game:<slug>"; the legacy "active-game" alias is resolved from the game-bound host context. To execute a discovered page operation, call run.dispatch with params {"operationId":"editor.game.select","input":{"slug":"gta-route-dev"}}. If the carrier is unavailable, call discover and retry only after a carrier is reported. Unsupported operations return a structured not-supported error. Do not use a relay eval endpoint.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -61,11 +61,12 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
         params: {
           type: 'object',
           properties: {
+            kind: { type: 'string', description: 'For query, the page-owned projection kind. Put projection arguments alongside kind.' },
             operationId: { type: 'string', pattern: '^editor\\..+$' },
             input: { type: 'object' },
           },
           additionalProperties: true,
-          description: 'For run.dispatch, operationId is editor.<discovered-operation-id> and input is the operation input object.',
+          description: 'For query, pass {"kind":"assets.catalog"} directly; additional fields follow the page projection contract. For run.dispatch, operationId is editor.<discovered-operation-id> and input is the operation input object.',
         },
         scope: { type: 'string', minLength: 1 },
         sessionId: { type: 'string', minLength: 1 },
