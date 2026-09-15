@@ -40,6 +40,8 @@ export interface RuntimeScopeState {
   readonly status: RuntimeScopeStatus;
   readonly binding?: RuntimeAssetBinding;
   readonly error?: string;
+  /** Structured, project-relative producer failure; never a fabricated ready binding. */
+  readonly diagnostic?: unknown;
 }
 
 export interface RuntimeScopeClientOptions {
@@ -129,6 +131,7 @@ export class RuntimeScopeClient {
   private readonly listeners = new Set<RuntimeScopeListener>();
   private serial: Promise<void> = Promise.resolve();
   private recoveryGeneration = 0;
+  private requestedScope: { scopeId: string } | undefined;
   // Start above any generation a sidecar may have retained across a server
   // restart. A monotonic in-process increment then orders same-process binds.
   private generation = Date.now();
@@ -161,10 +164,72 @@ export class RuntimeScopeClient {
    * of this long-lived server process.
    */
   bind(gameId: string, gameDir: string): Promise<RuntimeScopeState> {
-    // An explicit active-game bind supersedes any background startup recovery
-    // synchronously, before either command reaches the serialized sidecar queue.
+    // Startup retries stop on an explicit bind. Source recovery only expires
+    // when the requested scope changes; a same-game UI refresh is not a switch.
     this.recoveryGeneration += 1;
+    this.selectScope(gameId, gameDir);
     return this.enqueueBind(gameId, gameDir);
+  }
+
+  private selectScope(gameId: string, gameDir: string): { scopeId: string } {
+    const scopeId = scopeIdFor(gameId, gameDir);
+    if (this.requestedScope?.scopeId !== scopeId) this.requestedScope = { scopeId };
+    return this.requestedScope;
+  }
+
+  /** Explicit producer recovery uses the same serialized game-generation authority as bind. */
+  recoverAsset(gameId: string, gameDir: string, sourcePath: string, isCurrent: () => boolean = () => true): Promise<{
+    ok: boolean; metadataRebuilt: boolean | undefined; runtime: RuntimeScopeState; diagnostic?: unknown;
+  }> {
+    this.recoveryGeneration += 1;
+    const requestedScope = this.selectScope(gameId, gameDir);
+    const current = () => requestedScope === this.requestedScope && isCurrent();
+    const stale = (metadataRebuilt: boolean | undefined) => ({ ok: false, metadataRebuilt, runtime: this.snapshot(),
+      diagnostic: { code: 'asset-recovery-game-changed', hint: 'The selected game or pending runtime operation changed during recovery.' } });
+    const run = this.serial.then(async () => {
+      if (!current()) return stale(false);
+      if (!this.secret) return { ok: false, metadataRebuilt: false, runtime: this.snapshot(),
+        diagnostic: { code: 'asset-recovery-unavailable', hint: 'Runtime scope control is not configured.' } };
+      const scopeId = scopeIdFor(gameId, gameDir);
+      const generation = ++this.generation;
+      this.publish({ status: 'transitioning' });
+      let metadataRebuilt: boolean | undefined;
+      try {
+        const response = await this.fetchWithTimeout('/__pack/control/recover-asset', {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-forgeax-runtime-secret': this.secret },
+          body: JSON.stringify({ gameId, gameDir, scopeId, generation, sourcePath }),
+        });
+        const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+        metadataRebuilt = typeof body?.metadataRebuilt === 'boolean'
+          ? body.metadataRebuilt : body?.ok === true ? true : undefined;
+        if (!current()) return stale(metadataRebuilt);
+        const binding = body?.binding;
+        if (!response.ok || body?.ok !== true || !isBinding(binding) || binding.status !== 'ready' || binding.authority === 'degraded'
+          || binding.diagnostics?.some((entry) => entry !== null && typeof entry === 'object' && (entry as { severity?: unknown }).severity === 'blocking')
+          || binding.gameId !== gameId || binding.scopeId !== scopeId || binding.generation !== generation) {
+          throw Object.assign(new Error('Asset recovery did not produce a valid ready runtime binding.'), {
+            diagnostic: body?.diagnostic ?? { code: String(body?.code ?? 'asset-recovery-invalid-binding'),
+              hint: 'Inspect the producer failure and repair the specified source before retrying.',
+              ...(isBinding(binding) ? { detail: { status: binding.status, diagnostics: binding.diagnostics } } : {}) },
+          });
+        }
+        const runtime: RuntimeScopeState = { status: binding.status, binding };
+        this.publish(runtime);
+        return { ok: true, metadataRebuilt, runtime };
+      } catch (error) {
+        if (!current()) return stale(metadataRebuilt);
+        const diagnostic = error !== null && typeof error === 'object'
+          ? (error as { diagnostic?: unknown }).diagnostic : undefined;
+        // Recovery may have written source metadata and advanced the sidecar
+        // generation before failing. The pre-recovery catalog is not proof of
+        // current readiness; only a successful bind can publish ready again.
+        const runtime: RuntimeScopeState = { status: 'unavailable', error: errorMessage(error), diagnostic };
+        this.publish(runtime);
+        return { ok: false, metadataRebuilt, runtime, diagnostic };
+      }
+    });
+    this.serial = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   private enqueueBind(gameId: string, gameDir: string): Promise<RuntimeScopeState> {
@@ -221,6 +286,8 @@ export class RuntimeScopeClient {
         this.publish(state);
         return state;
       } catch (error) {
+        const diagnostic = error !== null && typeof error === 'object'
+          ? (error as { diagnostic?: unknown }).diagnostic : undefined;
         const previousBinding = previousState.binding;
         const state: RuntimeScopeState = previousBinding !== undefined && isReadyStatus(previousBinding.status)
           ? {
@@ -231,8 +298,9 @@ export class RuntimeScopeClient {
                 authority: 'degraded',
               },
               error: errorMessage(error),
+              ...(diagnostic === undefined ? {} : { diagnostic }),
             }
-          : { status: 'unavailable', error: errorMessage(error) };
+          : { status: 'unavailable', error: errorMessage(error), ...(diagnostic === undefined ? {} : { diagnostic }) };
         this.publish(state);
         return state;
       }
@@ -256,6 +324,8 @@ export class RuntimeScopeClient {
     options: RuntimeScopeRecoveryOptions = {},
   ): Promise<RuntimeScopeState> {
     const shouldContinue = options.shouldContinue ?? (() => true);
+    if (!shouldContinue()) return this.snapshot();
+    this.selectScope(gameId, gameDir);
     const retryDelayMs = options.retryDelayMs ?? 500;
     const recoveryGeneration = ++this.recoveryGeneration;
     // One startup recovery is one logical publication. Transport retries must
@@ -325,7 +395,8 @@ export class RuntimeScopeClient {
             : `HTTP ${response.status}`;
           throw Object.assign(
             new Error(`runtime scope bind failed: ${detail}`),
-            { retryable: response.status >= 500 },
+            { retryable: response.status >= 500,
+              diagnostic: body && typeof body === 'object' ? (body as { diagnostic?: unknown }).diagnostic : undefined },
           );
         }
         if (!isBinding(body)) {

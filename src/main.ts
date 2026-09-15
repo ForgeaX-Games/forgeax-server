@@ -1,3 +1,5 @@
+import { runtimeFailureEvent } from './game/editor-runtime-feedback';
+import { GameVerificationEvidence } from './game/game-verification-evidence';
 import { studioActionCatalog, studioHeadlessCompatibilityIds } from './studio-action-catalog';
 // Load $FORGEAX_PROJECT_ROOT/.env into process.env BEFORE any module reads it.
 // Bun auto-loads .env from CWD (packages/server) but the canonical .env lives
@@ -43,6 +45,7 @@ import { getExtensionSnapshot } from '@forgeax/orchestrator';
 import { getActiveGame, setActiveGame } from './game/active-game';
 import { resolveInstanceGame } from './game/instance-game';
 import { ensureGameProjectDependencies } from './game/project-dependencies';
+import { ensureGameProjectSkills } from './game/project-skills';
 import { GameSessionLayout } from './studio-session-layout';
 import { gameSessionSkillRootProvider } from './game/session-skill-root';
 import { studioResidentResourcePolicy } from './desktop/resident-resource-policy';
@@ -117,6 +120,7 @@ import { mountRuntimeCarrierApi } from './runtime-carrier/api';
 import { createRuntimeCarrierSupervisor } from './runtime-carrier/supervisor';
 import { createPlaywrightCarrierHost } from './runtime-carrier/playwright-host';
 import { EDITOR_TRANSPORT_WS_SID, createEditorTransportCarrier } from './game/editor-transport-carrier';
+import { EDITOR_WS_MAX_MESSAGE_BYTES, rejectOversizedWebsocketMessage, websocketPayloadLimit } from './editor-websocket-budget';
 import { registerEditorAssetImportCapability } from './game/editor-asset-import-capability';
 import { RuntimeScopeClient } from './game/runtime-scope-client';
 
@@ -323,7 +327,23 @@ const runtimeCarrierSupervisor = createRuntimeCarrierSupervisor({
     },
   }),
 });
+const gameEvidence = new GameVerificationEvidence();
 const editorTransportCarrier = createEditorTransportCarrier({
+  onRuntimeFailure: ({ context, correlationId, receivedAt, payload }) => {
+    gameEvidence.invalidateContext(context);
+    const session = context.sid ? getSessionManager().peek(context.sid) : null;
+    if (!session || session.config.defaultDir !== context.game) return;
+    const instance = session.tree.resolve(context.agentId);
+    if (!instance) return;
+    const controller = session.supervisor.getController(instance.instanceId);
+    if (!controller) return;
+    const route = session.getAgentHost(context.agentId)?.getExecutionRoute();
+    const event = runtimeFailureEvent({ context, correlationId, receivedAt, payload }, route);
+    session.eventBus.publish(event);
+    void controller.enqueueFeedback(event).catch((error: unknown) => {
+      session.logger.error(context.agentId, undefined, `Runtime feedback delivery failed: ${String(error)}`);
+    });
+  },
   onInteractiveAuthority: async (scope) => {
     const prefix = 'game:';
     if (!scope.startsWith(prefix) || scope.length === prefix.length) return;
@@ -347,8 +367,17 @@ const editorTransportCarrier = createEditorTransportCarrier({
 registerEditorAssetImportCapability(getExtensionCapabilityControl(), editorTransportCarrier.dispatch);
 const studioHostCapabilities = await resolveStudioHostCapabilities();
 const studioTools = studioHostTools(
-  { dispatch: editorTransportCarrier.dispatch },
+  { dispatch: (request, context) => editorTransportCarrier.dispatch(request, { context }) },
   studioHostCapabilities,
+  gameEvidence,
+  {
+    runtime: runtimeScopeClient,
+    resolveGame: (ctx) => resolve(ctx.projectRoot) === resolve(defaultProjectRoot())
+      && getActiveGame(ctx.projectRoot) === ctx.game
+      ? resolveInstanceGame(ctx.projectRoot, ctx.game) : undefined,
+    publish: (ctx, runtime) => setActiveGame(ctx.projectRoot, ctx.game!, runtime, { forceEvent: true }),
+    invalidate: (ctx) => gameEvidence.invalidateContext(ctx),
+  },
 );
 console.log(
   `[forgeax-server] editor relay: ${studioHostCapabilities.editorRelay.available ? 'available' : studioHostCapabilities.editorRelay.reason}`,
@@ -993,7 +1022,7 @@ const wsProxies = new WeakMap<import('bun').ServerWebSocket<WsClientData>, {
   messagesInWindow: number;
 }>();
 const wsHandler: import('bun').WebSocketHandler<WsClientData | PartyWsData> = {
-  maxPayloadLength: Math.max(NPC_WS_MAX_MESSAGE_BYTES, maxFluxRtMessageBytes),
+  maxPayloadLength: Math.max(EDITOR_WS_MAX_MESSAGE_BYTES, NPC_WS_MAX_MESSAGE_BYTES, maxFluxRtMessageBytes),
   closeOnBackpressureLimit: true,
   open(ws) {
     if (isPartyWsData(ws.data)) {
@@ -1068,6 +1097,10 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData | PartyWsData> = {
     return baseWsHandler.open?.(ws as import('bun').ServerWebSocket<WsClientData>);
   },
   message(ws, message) {
+    // Bun's shared parser must admit Editor images. Restore every other
+    // channel's old shared ceiling before any protocol handler receives data.
+    const editorSocket = !isPartyWsData(ws.data) && editorTransportCarrier.isSocket(ws as import('bun').ServerWebSocket<WsClientData>);
+    if (rejectOversizedWebsocketMessage(ws, message, websocketPayloadLimit(editorSocket, Math.max(NPC_WS_MAX_MESSAGE_BYTES, maxFluxRtMessageBytes)))) return;
     if (isPartyWsData(ws.data)) {
       handlePartyMessage(ws as import('bun').ServerWebSocket<PartyWsData>, message as string | ArrayBuffer | Uint8Array);
       return;
@@ -1121,7 +1154,7 @@ const wsHandler: import('bun').WebSocketHandler<WsClientData | PartyWsData> = {
     }
     const clientWs = ws as import('bun').ServerWebSocket<WsClientData>;
     if (editorTransportCarrier.isSocket(clientWs)) {
-      editorTransportCarrier.close(clientWs);
+      editorTransportCarrier.close(clientWs, code, reason);
       return;
     }
     if (clientWs.data.npc) {
@@ -1338,6 +1371,7 @@ if (!/^(0|false|no|off)$/i.test(process.env.FORGEAX_PROJECT_MCP_PREWARM?.trim() 
       // Play can bind the game, so an App move/upgrade cannot leave a stale
       // absolute link behind while the UI is still showing the old project.
       try {
+        await ensureGameProjectSkills(game.gameDir);
         await ensureGameProjectDependencies(game.gameDir);
       } catch (error) {
         console.warn(`[forgeax-server] active game dependency preparation unavailable — ${(error as Error).message}`);

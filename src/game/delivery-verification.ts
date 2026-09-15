@@ -8,13 +8,13 @@ export const GameVerificationSchema = z.object({
   status: z.enum(['passed', 'failed', 'unverified']),
   detail: z.string().trim().min(1).max(200),
   checks: z.array(z.object({
-    kind: z.enum(['input', 'state-change', 'core-result', 'changed-behavior', 'visual', 'audio']),
+    kind: z.enum(['input', 'state-change', 'core-result', 'restart', 'changed-behavior', 'visual', 'audio']),
     observation: z.string().trim().min(1).max(100),
     evidence: z.string().trim().min(1).max(100),
   }).strict()).max(8).default([]),
 }).strict().superRefine((report, ctx) => {
   if (report.status !== 'passed') return;
-  const required = report.scope === 'gameplay' ? ['input', 'state-change', 'core-result'] : ['changed-behavior'];
+  const required = report.scope === 'gameplay' ? ['input', 'state-change', 'visual'] : ['changed-behavior'];
   for (const kind of required) {
     if (!report.checks.some((check) => check.kind === kind && check.evidence.trim() && check.observation.trim())) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['checks'], message: `passed ${report.scope} requires an observed ${kind} check with an evidence reference` });
@@ -29,13 +29,13 @@ export const GAME_VERIFICATION_INPUT_SCHEMA = {
   properties: {
     scope: { enum: ['gameplay', 'changed-behavior'], description: 'Use gameplay for new games or gameplay changes; changed-behavior for a narrowly scoped presentation/content change.' },
     status: { enum: ['passed', 'failed', 'unverified'] },
-    detail: { type: 'string', minLength: 1, maxLength: 200 },
+    detail: { type: 'string', minLength: 1, maxLength: 200, description: 'State the user-requested behavior assessed and any limits. Host evidence authenticates observations, not completeness or gameplay semantics.' },
     checks: { type: 'array', maxItems: 8, items: {
       type: 'object', additionalProperties: false, required: ['kind', 'observation', 'evidence'],
       properties: {
-        kind: { enum: ['input', 'state-change', 'core-result', 'changed-behavior', 'visual', 'audio'] },
+        kind: { enum: ['input', 'state-change', 'core-result', 'restart', 'changed-behavior', 'visual', 'audio'] },
         observation: { type: 'string', minLength: 1, maxLength: 100 },
-        evidence: { type: 'string', minLength: 1, maxLength: 100, description: 'Reference a current normal-path tool call or artifact. A Play start, console silence, timeout, or unavailable result cannot prove gameplay.' },
+        evidence: { type: 'string', minLength: 1, maxLength: 100, description: 'Use the exact host-issued verificationEvidence.id from a current editor_transport result. A Play start, console silence, timeout, or unavailable result cannot prove gameplay.' },
       },
     } },
   },

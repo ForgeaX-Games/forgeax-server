@@ -17,6 +17,7 @@ import {
 import { dirname, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { STUDIO_GAME_AUTHORING_SKILL } from './studio-game-authoring-skill';
+import { STUDIO_ASSET_LIBRARY_SKILL } from './studio-asset-library-skill';
 
 export const PROJECT_SKILL_MOUNT_ROOTS = Object.freeze([
   '.codebuddy/skills',
@@ -415,11 +416,12 @@ async function syncEngineProjectSkillsUnlocked(
     changes.push({ id: entry.name, source, destination });
   }
   if (!Object.keys(hashes).length) throw new Error('engine-skills-empty');
-  const productId = 'forgeax-studio-game-authoring';
+  const productSkills: Record<string, string> = {};
+  for (const [productId, content] of Object.entries({ 'forgeax-studio-game-authoring': STUDIO_GAME_AUTHORING_SKILL, 'forgeax-studio-asset-library': STUDIO_ASSET_LIBRARY_SKILL })) {
   if (productId in hashes) throw new Error(`project-skill-owner-conflict: ${productId}`);
   const productDestination = resolve(destinationRoot, productId);
   const productHash = createHash('sha256').update('SKILL.md').update('\0')
-    .update(STUDIO_GAME_AUTHORING_SKILL).update('\0').digest('hex');
+    .update(content).update('\0').digest('hex');
   const productKind = await pathKind(productDestination);
   if (productKind !== 'missing' && productKind !== 'directory') {
     throw new Error(`project-skill-source-conflict: ${productId}`);
@@ -429,9 +431,10 @@ async function syncEngineProjectSkillsUnlocked(
     if (currentProductHash !== undefined && prior?.productSkills?.[productId] !== currentProductHash) {
       throw new Error(`project-skill-source-conflict: ${productId}; preserve or rename the customized skill before syncing`);
     }
-    changes.push({ id: productId, content: STUDIO_GAME_AUTHORING_SKILL, destination: productDestination });
+    changes.push({ id: productId, content, destination: productDestination });
   }
-  const productSkills = { [productId]: productHash };
+  productSkills[productId] = productHash;
+  }
   // Validate every collision before any replacement. Removed upstream skills
   // remain local and lose Engine ownership; this avoids deleting user references.
   await mkdir(destinationRoot, { recursive: true });

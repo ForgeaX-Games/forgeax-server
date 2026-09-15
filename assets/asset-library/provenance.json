@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "owner": "Studio",
+  "providerCommit": "c181c48fbffc933a7ce9a0836f7878ca5e6d77e1",
+  "artifactKind": "forgeax.asset3d-provider-bundle/1.0.0",
+  "description": "Independent official Provider archives, containing their verifier, locked Python wheels, converter licenses and source inventory. No Game Plugin runtime, CLI, Engine carrier or install code is included.",
+  "targets": {
+    "darwin-arm64": "9492c507a3afe5cafcd50b5f782b313c8716c2e52f5def06592c6a100c0459db",
+    "linux-x64": "e6ac3df76c8b82f9fe2c063dd3f221324a9dad5176fd52535a5144b0ff6002d8"
+  }
+}

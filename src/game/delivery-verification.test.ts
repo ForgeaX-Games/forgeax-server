@@ -10,11 +10,11 @@ test('a smoke check cannot silently become playable acceptance', () => {
     { name: '15 seconds Play, zero console errors', pass: true },
   ]);
 });
-test('a passed gameplay claim requires input, state transition and core result evidence', () => {
+test('a passed gameplay claim requires interaction and visual evidence without imposing game rules', () => {
   for (const checks of [[], [check('input')], [check('input'), check('state-change')], [check('visual')]]) {
     expect(StudioDeliveryClaimSchema.safeParse({ outcome: 'playable', verification: { scope: 'gameplay', status: 'passed', detail: 'checked', checks } }).success).toBe(false);
   }
-  const claim = StudioDeliveryClaimSchema.parse({ outcome: 'playable', verification: { scope: 'gameplay', status: 'passed', detail: 'Collected the item by moving to it', checks: ['input', 'state-change', 'core-result'].map(check) } });
+  const claim = StudioDeliveryClaimSchema.parse({ outcome: 'playable', verification: { scope: 'gameplay', status: 'passed', detail: 'Collected the item by moving to it', checks: ['input', 'state-change', 'visual'].map(check) } });
   const projected = projectGameVerification(claim, 'game');
   expect(projected.tests?.[0]).toMatchObject({ name: 'Gameplay acceptance (agent-reported): PASSED', pass: true });
   expect(DeliverSummaryClaimSchema.safeParse(projected).success).toBe(true);

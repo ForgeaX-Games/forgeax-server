@@ -440,12 +440,14 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
   const prepareGameDependencies = options.ensureGameProjectDependencies ?? ensureGameProjectDependencies;
   let activeGameMutationRevision = 0;
   let activeGameMutationsInFlight = 0;
-  let runtimeRefresh: Promise<void> | undefined;
+  let runtimeRefresh: Promise<RuntimeScopeState | undefined> | undefined;
 
   // ── Active game — one authoritative read/write contract ──
   router.get('/projects/active', async (c) => {
     const projectRoot = defaultProjectRoot();
     const activeSlug = getActiveGame(projectRoot) ?? null;
+    const preparePlay = c.req.query('prepare') === 'play';
+    const preparationRevision = activeGameMutationRevision;
     // UI startup restores through GET, without sending PUT. Await the local
     // filesystem preparation here too: the background sidecar rebind is not
     // a readiness barrier and its log-only failure cannot protect this path.
@@ -466,7 +468,10 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
     // Serve the current projection without waiting for a cold sidecar, then
     // reconcile the same selected game. A sidecar restart loses its binding
     // without restarting Server; the cached ready snapshot is not proof of life.
-    const runtime = options.runtimeScope?.snapshot();
+    let runtime = options.runtimeScope?.snapshot();
+    if (preparePlay && activeGameMutationsInFlight !== 0) {
+      return c.json({ error: 'active project is changing', code: 'active-project-changed' }, 409);
+    }
     if (game !== undefined && options.runtimeScope !== undefined && runtimeRefresh === undefined && activeGameMutationsInFlight === 0) {
       const revision = activeGameMutationRevision;
       const previousRuntime = JSON.stringify(runtime);
@@ -477,13 +482,48 @@ export function createProductApiRouter(options: ProductApiRouterOptions = {}): H
         if (JSON.stringify(next) !== previousRuntime) {
           setActiveGame(projectRoot, game.gameId, next, { forceEvent: true });
         }
+        return next;
       }).catch((error) => {
         console.warn(`[projects/active] runtime reconciliation failed: ${String(error)}`);
+        return { status: 'unavailable' as const, error: String(error) };
       }).finally(() => { runtimeRefresh = undefined; });
+    }
+    if (preparePlay) {
+      // Play must use the binding confirmed by this reconciliation, never the
+      // cached generation captured before a sidecar restart. Ordinary reads
+      // remain non-blocking so they can show startup progress.
+      runtime = await runtimeRefresh;
+      if (preparationRevision !== activeGameMutationRevision
+        || activeGameMutationsInFlight !== 0
+        || (getActiveGame(projectRoot) ?? null) !== activeSlug) {
+        return c.json({ error: 'active project changed during preparation; retry', code: 'active-project-changed' }, 409);
+      }
+      const binding = runtime?.binding;
+      const diagnostic = runtime?.diagnostic ?? binding?.diagnostics?.find((item) =>
+        item !== null && typeof item === 'object' && (item as { severity?: unknown }).severity === 'blocking');
+      // A freshly confirmed producer may be degraded without blocking Play.
+      // A failed rebind retaining an old binding carries state.error; that
+      // fallback is not confirmation, even if its cached catalog was ready.
+      if (!runtime || (runtime.status !== 'ready' && runtime.status !== 'degraded')
+        || !binding || (binding.status !== 'ready' && binding.status !== 'degraded')
+        || binding.gameId !== activeSlug || binding.authority === 'degraded'
+        || runtime.error !== undefined || diagnostic !== undefined) {
+        return c.json({
+          error: runtime?.error ?? 'game runtime is not ready for Play',
+          code: 'play-runtime-not-ready', runtime,
+          ...(diagnostic === undefined ? {} : { diagnostic }),
+        }, 503);
+      }
     }
     return c.json({
       activeSlug,
       ...(runtime === undefined ? {} : { runtime }),
+      ...(preparePlay && runtime?.binding ? { playPreparation: {
+        version: 'play-preparation/v1',
+        gameId: runtime.binding.gameId,
+        scopeId: runtime.binding.scopeId,
+        generation: runtime.binding.generation,
+      } } : {}),
     });
   });
 

@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { Hono } from 'hono';
-import { getEventBus, _resetEventBusForTests } from '@forgeax/orchestrator/events/bus';
-import { initPathManager, resetPathManager } from '@forgeax/orchestrator/fs/path-manager';
+import { getEventBus } from '@forgeax/orchestrator';
+import { initPathManager, resetPathManager } from '@forgeax/orchestrator/session-fs';
 import { ACTIVE_GAME_CHANGED_TOPIC, getActiveGame, setActiveGame } from '../src/game/active-game';
 import { createProductApiRouter } from '../src/game/product-api';
 import { ProjectDependencyError } from '../src/game/project-dependencies';
@@ -23,7 +23,7 @@ beforeEach(() => {
   for (const slug of ['game-a', 'game-b']) mkdirSync(resolve(root, '.forgeax/games', slug), { recursive: true });
   resetPathManager();
   initPathManager({ projectRoot: root });
-  _resetEventBusForTests();
+  getEventBus()._resetForTests();
   ensured = [];
   prepared = [];
   app = new Hono();
@@ -39,7 +39,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  _resetEventBusForTests();
+  getEventBus()._resetForTests();
   resetPathManager();
   if (previousProjectRoot === undefined) delete process.env.FORGEAX_PROJECT_ROOT;
   else process.env.FORGEAX_PROJECT_ROOT = previousProjectRoot;
@@ -49,7 +49,7 @@ afterEach(() => {
 describe('active game resource', () => {
   test('PUT is the only explicit selection route and emits the derived state', async () => {
     setActiveGame(root, 'game-a');
-    _resetEventBusForTests();
+    getEventBus()._resetForTests();
     const events: unknown[] = [];
     const unsubscribe = getEventBus().subscribe(ACTIVE_GAME_CHANGED_TOPIC, (event) => events.push(event.payload));
     const response = await app.request('/api/projects/active', {
@@ -79,7 +79,7 @@ describe('active game resource', () => {
       body: JSON.stringify({ slug: 'game-a' }),
     });
     expect((await request()).status).toBe(200);
-    _resetEventBusForTests();
+    getEventBus()._resetForTests();
     expect((await request()).status).toBe(200);
     expect(getEventBus().recent(ACTIVE_GAME_CHANGED_TOPIC, 10)).toEqual([]);
   });
@@ -204,7 +204,7 @@ describe('active game resource', () => {
 
   test('keeps the previous authority when the candidate runtime cannot commit', async () => {
     setActiveGame(root, 'game-a');
-    _resetEventBusForTests();
+    getEventBus()._resetForTests();
     const events: unknown[] = [];
     const unsubscribe = getEventBus().subscribe(ACTIVE_GAME_CHANGED_TOPIC, (event) => events.push(event.payload));
     const runtimeScope = {
@@ -434,6 +434,77 @@ describe('active game resource', () => {
       expect(getActiveGame(root)).toBe(changeSelection ? 'game-b' : 'game-a');
       expect(events).toEqual(changeSelection ? [] : [{ activeSlug: 'game-a', runtime: recovered }]);
       unsubscribe();
+    });
+  }
+
+  for (const outcome of ['ready', 'unavailable', 'changed'] as const) {
+    test(`Play preparation awaits pending reconciliation: ${outcome}`, async () => {
+      setActiveGame(root, 'game-a');
+      let release!: (state: RuntimeScopeState) => void;
+      const pending = new Promise<RuntimeScopeState>((resolve) => { release = resolve; });
+      let binds = 0;
+      const runtimeScope = {
+        snapshot: () => ({ status: 'unbound' }),
+        bind: () => { binds += 1; return pending; },
+      } as unknown as RuntimeScopeClient;
+      const runtimeApp = new Hono();
+      runtimeApp.route('/api', createProductApiRouter({
+        runtimeScope, ensureGameProjectDependencies: async () => {},
+      }));
+      // A normal startup read has already started reconciliation. Play must
+      // join it, including the interval where the sidecar is still unbound.
+      expect((await runtimeApp.request('/api/projects/active')).status).toBe(200);
+      let settled = false;
+      const response = Promise.resolve(runtimeApp.request('/api/projects/active?prepare=play'))
+        .then((value) => { settled = true; return value; });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+      expect(binds).toBe(1);
+      if (outcome === 'changed') setActiveGame(root, 'game-b');
+      const recovered: RuntimeScopeState = outcome === 'unavailable'
+        ? { status: 'unavailable', error: 'sidecar offline' }
+        : { status: 'ready', binding: {
+          schemaVersion: 'runtime-asset-binding-v1', gameId: 'game-a', scopeId: 'restored',
+          generation: 8, status: 'ready', catalogUrl: '/catalog', importUrlBase: '/import', packageUrlBase: '/asset',
+        } };
+      release(recovered);
+      const result = await response;
+      expect(result.status).toBe(outcome === 'changed' ? 409 : outcome === 'unavailable' ? 503 : 200);
+      const body = await result.json();
+      if (outcome === 'ready') {
+        expect(body.runtime).toEqual(recovered);
+        expect(body.playPreparation).toEqual({ version: 'play-preparation/v1', gameId: 'game-a', scopeId: 'restored', generation: 8 });
+      }
+      else expect(body.code).toBe(outcome === 'changed' ? 'active-project-changed' : 'play-runtime-not-ready');
+      expect(getActiveGame(root)).toBe(outcome === 'changed' ? 'game-b' : 'game-a');
+    });
+  }
+
+  for (const kind of ['warning', 'blocking', 'cached-failure', 'no-authority'] as const) {
+    test(`Play preparation distinguishes degraded ${kind}`, async () => {
+      setActiveGame(root, 'game-a');
+      const diagnostic = { severity: kind === 'blocking' ? 'blocking' : 'warning', code: 'asset-fixture' };
+      const state: RuntimeScopeState = {
+        status: 'degraded',
+        ...(kind === 'cached-failure' ? { error: 'sidecar offline' } : {}),
+        binding: {
+          schemaVersion: 'runtime-asset-binding-v1', gameId: 'game-a', scopeId: 'scope',
+          generation: 8, status: 'degraded', catalogUrl: '/catalog', importUrlBase: '/import', packageUrlBase: '/asset',
+          diagnostics: [diagnostic],
+          authority: kind === 'no-authority' ? 'degraded' : 'authoritative',
+        },
+      };
+      const runtimeApp = new Hono();
+      runtimeApp.route('/api', createProductApiRouter({
+        runtimeScope: { snapshot: () => state, bind: async () => state } as unknown as RuntimeScopeClient,
+        ensureGameProjectDependencies: async () => {},
+      }));
+      const response = await runtimeApp.request('/api/projects/active?prepare=play');
+      const body = await response.json();
+      expect(response.status).toBe(kind === 'warning' ? 200 : 503);
+      expect(body.runtime).toEqual(state);
+      if (kind === 'blocking') expect(body.diagnostic).toEqual(diagnostic);
+      if (kind === 'cached-failure') expect(body.error).toBe('sidecar offline');
     });
   }
 

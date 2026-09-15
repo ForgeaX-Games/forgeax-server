@@ -354,3 +354,183 @@ describe('RuntimeScopeClient', () => {
     expect(requests).toEqual(['game-a', 'game-b']);
   });
 });
+
+describe('RuntimeScopeClient source recovery', () => {
+  test('preserves structured producer diagnostics on failed startup bind', async () => {
+    const diagnostic = { code: 'pack-orphan-meta', detail: { sourcePath: 'assets/kart.glb' }, hint: 'Restore the source.' };
+    const client = new RuntimeScopeClient({ secret: 'secret', retries: 0,
+      fetchImpl: (async () => Response.json({ detail: 'scan-failed', diagnostic }, { status: 409 })) as unknown as typeof fetch });
+    expect(await client.bind('kart', '/project/kart')).toMatchObject({ status: 'unavailable', diagnostic });
+  });
+
+  test('recovery uses trusted game identity, control credential and a fresh generation before accepting ready', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const client = new RuntimeScopeClient({ secret: 'secret', retries: 0,
+      fetchImpl: (async (url: unknown, init?: RequestInit) => {
+        expect(String(url)).toEndWith('/__pack/control/recover-asset');
+        expect(new Headers(init?.headers).get('x-forgeax-runtime-secret')).toBe('secret');
+        const command = JSON.parse(String(init?.body)); seen.push(command);
+        return Response.json({ ok: true, metadataRebuilt: true,
+          binding: binding(command.gameId, command.scopeId, command.generation) });
+      }) as unknown as typeof fetch });
+    const result = await client.recoverAsset('kart', '/project/kart', 'assets/kart.glb');
+    expect(result).toMatchObject({ ok: true, metadataRebuilt: true, runtime: { status: 'ready', binding: { gameId: 'kart' } } });
+    expect(seen[0]).toMatchObject({ gameId: 'kart', gameDir: '/project/kart', sourcePath: 'assets/kart.glb' });
+    await client.recoverAsset('kart', '/project/kart', 'assets/tree.glb');
+    expect(Number(seen[1].generation)).toBeGreaterThan(Number(seen[0].generation));
+  });
+
+  test('metadata recovery is not success when another source still prevents scan', async () => {
+    const diagnostic = { code: 'pack-orphan-meta', detail: { sourcePath: 'assets/tree.png' } };
+    const client = new RuntimeScopeClient({ secret: 'secret', retries: 0,
+      fetchImpl: (async () => Response.json({ metadataRebuilt: true, diagnostic }, { status: 409 })) as unknown as typeof fetch });
+    expect(await client.recoverAsset('kart', '/project/kart', 'assets/kart.glb')).toMatchObject({
+      ok: false, metadataRebuilt: true, diagnostic, runtime: { status: 'unavailable', diagnostic },
+    });
+  });
+
+  test('a stale selected game cannot begin a queued recovery', async () => {
+    const client = new RuntimeScopeClient({ secret: 'secret', retries: 0,
+      fetchImpl: (async () => { throw new Error('must not write'); }) as unknown as typeof fetch });
+    expect(await client.recoverAsset('kart', '/project/kart', 'assets/kart.glb', () => false)).toMatchObject({
+      ok: false, metadataRebuilt: false, diagnostic: { code: 'asset-recovery-game-changed' },
+    });
+  });
+
+  test('a mismatched producer binding cannot become active', async () => {
+    const client = new RuntimeScopeClient({ secret: 'secret', retries: 0,
+      fetchImpl: (async () => Response.json({ ok: true, binding: binding('other', 'wrong', 1) })) as unknown as typeof fetch });
+    expect(await client.recoverAsset('kart', '/project/kart', 'assets/kart.glb')).toMatchObject({ ok: false, runtime: { status: 'unavailable' } });
+  });
+});
+
+test('failed recovery cannot reuse a previously ready catalog after the producer advanced', async () => {
+  const diagnostic = { code: 'scan-failed', detail: { sourcePath: 'assets/other.png' } };
+  const client = new RuntimeScopeClient({ secret: 'secret', retries: 0,
+    fetchImpl: (async (url: unknown, init?: RequestInit) => {
+      const command = JSON.parse(String(init?.body));
+      if (String(url).endsWith('/recover-asset')) return Response.json({ metadataRebuilt: true, diagnostic }, { status: 409 });
+      return Response.json(binding(command.gameId, command.scopeId, command.generation));
+    }) as unknown as typeof fetch });
+  expect(await client.bind('kart', '/project/kart')).toMatchObject({ status: 'ready' });
+  const result = await client.recoverAsset('kart', '/project/kart', 'assets/kart.glb');
+  expect(result).toMatchObject({ ok: false, metadataRebuilt: true, runtime: { status: 'unavailable', diagnostic } });
+  expect(result.runtime.binding).toBeUndefined();
+  expect(client.snapshot().binding).toBeUndefined();
+});
+
+test.each(['success', 'failure'] as const)('a late %s from recovery cannot publish after a newer game bind', async (outcome) => {
+  let finish!: (response: Response) => void;
+  let started!: () => void;
+  const entered = new Promise<void>((resolve) => { started = resolve; });
+  let command: Record<string, any> = {};
+  const client = new RuntimeScopeClient({ secret: 'secret', retries: 0,
+    fetchImpl: (async (url: unknown, init?: RequestInit) => {
+      const input = JSON.parse(String(init?.body));
+      if (String(url).endsWith('/recover-asset')) {
+        command = input; started();
+        return new Promise<Response>((resolve) => { finish = resolve; });
+      }
+      return Response.json(binding(input.gameId, input.scopeId, input.generation));
+    }) as unknown as typeof fetch });
+  const states: Array<{ status: string; game?: string }> = [];
+  client.subscribe((state) => states.push({ status: state.status, game: state.binding?.gameId }));
+  const recovery = client.recoverAsset('kart', '/project/kart', 'assets/kart.glb');
+  await entered;
+  const next = client.bind('other', '/project/other');
+  finish(outcome === 'success'
+    ? Response.json({ ok: true, metadataRebuilt: true, binding: binding(command.gameId, command.scopeId, command.generation) })
+    : Response.json({ metadataRebuilt: true, diagnostic: { code: 'scan-failed' } }, { status: 409 }));
+  expect(await recovery).toMatchObject({ ok: false, metadataRebuilt: true, diagnostic: { code: 'asset-recovery-game-changed' } });
+  expect(await next).toMatchObject({ status: 'ready', binding: { gameId: 'other' } });
+  expect(states.some((state) => state.game === 'kart')).toBe(false);
+  expect(states.some((state) => state.status === 'unavailable')).toBe(false);
+  expect(client.snapshot().binding?.gameId).toBe('other');
+});
+
+
+test('a same-game UI refresh preserves the in-flight source recovery result', async () => {
+  let finish!: (response: Response) => void;
+  let started!: () => void;
+  const entered = new Promise<void>((resolve) => { started = resolve; });
+  let recovered!: RuntimeAssetBinding;
+  const client = new RuntimeScopeClient({ secret: 'secret', retries: 0,
+    fetchImpl: (async (url: unknown, init?: RequestInit) => {
+      if (String(url).endsWith('/runtime-binding.json')) return Response.json(recovered);
+      const input = JSON.parse(String(init?.body));
+      if (String(url).endsWith('/recover-asset')) {
+        recovered = binding(input.gameId, input.scopeId, input.generation);
+        started();
+        return new Promise<Response>((resolve) => { finish = resolve; });
+      }
+      return Response.json(binding(input.gameId, input.scopeId, input.generation));
+    }) as unknown as typeof fetch });
+  const recovery = client.recoverAsset('kart', '/project/kart', 'assets/kart.glb');
+  await entered;
+  const refresh = client.bind('kart', '/project/kart');
+  finish(Response.json({ ok: true, metadataRebuilt: true, binding: recovered }));
+  const result = await recovery;
+  expect(result.ok).toBe(true);
+  expect(result.runtime.binding).toEqual(recovered);
+  expect((await refresh).binding).toEqual(recovered);
+});
+
+test('two same-game source recoveries each run in order and return their actual scan results', async () => {
+  const sources: string[] = [];
+  const client = new RuntimeScopeClient({ secret: 'secret', retries: 0,
+    fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+      const input = JSON.parse(String(init?.body));
+      sources.push(input.sourcePath);
+      if (sources.length === 1) return Response.json({ metadataRebuilt: true,
+        diagnostic: { code: 'scan-failed', detail: { sourcePath: 'assets/tree.glb' } } }, { status: 409 });
+      return Response.json({ ok: true, metadataRebuilt: true,
+        binding: binding(input.gameId, input.scopeId, input.generation) });
+    }) as unknown as typeof fetch });
+  const first = client.recoverAsset('kart', '/project/kart', 'assets/kart.glb');
+  const second = client.recoverAsset('kart', '/project/kart', 'assets/tree.glb');
+  expect(await first).toMatchObject({ ok: false, metadataRebuilt: true, diagnostic: { code: 'scan-failed' } });
+  expect(await second).toMatchObject({ ok: true, metadataRebuilt: true, runtime: { status: 'ready' } });
+  expect(sources).toEqual(['assets/kart.glb', 'assets/tree.glb']);
+});
+
+
+test('an already expired startup attempt cannot cancel the current game recovery', async () => {
+  let finish!: (response: Response) => void;
+  let started!: () => void;
+  const entered = new Promise<void>((resolve) => { started = resolve; });
+  let command: Record<string, any> = {};
+  let calls = 0;
+  const client = new RuntimeScopeClient({ secret: 'secret', retries: 0,
+    fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+      calls += 1;
+      command = JSON.parse(String(init?.body));
+      started();
+      return new Promise<Response>((resolve) => { finish = resolve; });
+    }) as unknown as typeof fetch });
+  const recovery = client.recoverAsset('current', '/project/current', 'assets/kart.glb');
+  await entered;
+  await client.bindWhenAvailable('old', '/project/old', { shouldContinue: () => false });
+  finish(Response.json({ ok: true, metadataRebuilt: true,
+    binding: binding(command.gameId, command.scopeId, command.generation) }));
+  expect(await recovery).toMatchObject({ ok: true, runtime: { status: 'ready', binding: { gameId: 'current' } } });
+  expect(calls).toBe(1);
+});
+
+
+test.each(['degraded', 'blocking', 'degraded-authority'] as const)('recovery rejects a %s catalog even when the control response says ok', async (state) => {
+  const diagnostic = { code: 'scan-failed', severity: 'blocking', hint: 'Repair assets/other.png' };
+  const client = new RuntimeScopeClient({ secret: 'secret', retries: 0,
+    fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+      const input = JSON.parse(String(init?.body));
+      return Response.json({ ok: true, metadataRebuilt: true, binding: {
+        ...binding(input.gameId, input.scopeId, input.generation),
+        ...(state === 'degraded' ? { status: 'degraded' } : {}),
+        ...(state === 'degraded-authority' ? { authority: 'degraded' } : {}),
+        diagnostics: state === 'blocking' ? [diagnostic] : [],
+      } });
+    }) as unknown as typeof fetch });
+  const result = await client.recoverAsset('kart', '/project/kart', 'assets/kart.glb');
+  expect(result).toMatchObject({ ok: false, metadataRebuilt: true, runtime: { status: 'unavailable' } });
+  expect(result.runtime.binding).toBeUndefined();
+  if (state === 'blocking') expect(result.diagnostic).toMatchObject({ detail: { diagnostics: [diagnostic] } });
+});

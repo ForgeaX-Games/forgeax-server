@@ -1,3 +1,5 @@
+import type { HostToolRunCtx } from '@forgeax/orchestrator/seams';
+import { EditorRuntimeFeedback, type RuntimeFailureFeedback } from './editor-runtime-feedback';
 import { Hono } from 'hono';
 import type { ServerWebSocket } from 'bun';
 
@@ -32,11 +34,13 @@ interface EditorTransportCandidateFacts extends JsonRecord {
 }
 
 interface EditorTransportDispatchOptions {
+  readonly context?: HostToolRunCtx;
   /** Preserve the managed carrier fallback for explicit host operations; passive projections opt out. */
   readonly allowCarrierProvisioning?: boolean;
 }
 
 export interface EditorTransportCarrierOptions {
+  readonly onRuntimeFailure?: (feedback: RuntimeFailureFeedback) => void;
   /** Default request deadline; callers may request a shorter or longer bounded deadline. */
   readonly timeoutMs?: number;
   readonly maxTimeoutMs?: number;
@@ -49,7 +53,7 @@ export interface EditorTransportCarrier {
   readonly app: Hono;
   readonly open: (socket: ServerWebSocket<EditorTransportSocketData>) => void;
   readonly message: (socket: ServerWebSocket<EditorTransportSocketData>, message: unknown) => void;
-  readonly close: (socket: ServerWebSocket<EditorTransportSocketData>) => void;
+  readonly close: (socket: ServerWebSocket<EditorTransportSocketData>, code?: number, reason?: string) => void;
   readonly isSocket: (socket: ServerWebSocket<EditorTransportSocketData>) => boolean;
   readonly dispatch: (request: JsonRecord, options?: EditorTransportDispatchOptions) => Promise<JsonRecord>;
 }
@@ -145,6 +149,7 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
   const maxTimeoutMs = boundedTimeout(options.maxTimeoutMs, MAX_EDITOR_TRANSPORT_TIMEOUT_MS, MAX_EDITOR_TRANSPORT_TIMEOUT_MS);
   const defaultTimeoutMs = boundedTimeout(options.timeoutMs, DEFAULT_EDITOR_TRANSPORT_TIMEOUT_MS, maxTimeoutMs);
   const app = new Hono();
+  const feedback = new EditorRuntimeFeedback(value => options.onRuntimeFailure?.(value));
   const pending = new Map<string, PendingRequest>();
   const connections = new Map<ServerWebSocket<EditorTransportSocketData>, EditorTransportConnection>();
   const scopeConnections = (scope: string) => [...connections].filter(([socket, connection]) => socket.readyState === 1 && connection.scope === scope);
@@ -203,7 +208,7 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     };
   };
 
-  const failPending = (socket: ServerWebSocket<EditorTransportSocketData>, hint: string): void => {
+  const failPending = (socket: ServerWebSocket<EditorTransportSocketData>, hint: string, close?: { code?: number; reason?: string }): void => {
     const settledScopes = new Set<string>();
     for (const [key, entry] of pending) {
       if (entry.socket !== socket) continue;
@@ -211,7 +216,7 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
       pending.delete(key);
       settledScopes.add(entry.scope);
       entry.resolve(carrierError(entry.request, 'editor-carrier-unavailable', hint, ['editor.discover', 'request.retry'], {
-        observed: candidateFacts(entry.scope),
+        observed: { ...candidateFacts(entry.scope), ...(close ? { close } : {}) },
       }));
     }
     for (const scope of settledScopes) maybeRetireManaged(scope);
@@ -302,6 +307,7 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
       }, remainingMs);
       pending.set(key, { request: parsed, socket: target, scope, resolve, timer });
       try {
+        feedback.dispatch(target, parsed, dispatchOptions.context);
         target.send(JSON.stringify({ type: 'editor-transport/request', request: parsed }));
       } catch {
         clearTimeout(timer);
@@ -382,6 +388,7 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
       ) return;
       const connection = connections.get(socket);
       if (connection === undefined) return;
+      if (connection.scope !== value.scope) feedback.close(socket);
       const presence = presenceFrom(value);
       connections.set(socket, { scope: value.scope, role: value.role, presence: presence ?? connection.presence, engagement: 0 });
       maybeRetireManaged(value.scope);
@@ -404,6 +411,11 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
       }
       return;
     }
+    if (value.type === 'editor-transport/runtime-event') {
+      const scope = connections.get(socket)?.scope;
+      if (scope) feedback.message(socket, scope, value);
+      return;
+    }
     if (value.type !== 'editor-transport/response') return;
     const response = responseShape(value.response);
     if (response === null) return;
@@ -418,12 +430,16 @@ export function createEditorTransportCarrier(options: EditorTransportCarrierOpti
     maybeRetireManaged(scope);
   };
 
-  const close = (socket: ServerWebSocket<EditorTransportSocketData>): void => {
+  const close = (socket: ServerWebSocket<EditorTransportSocketData>, code?: number, reason?: string): void => {
     if (!isSocket(socket)) return;
     const scope = connections.get(socket)?.scope;
     if (scope === undefined) return;
+    feedback.close(socket);
     connections.delete(socket);
-    failPending(socket, `The Editor page for scope "${scope ?? 'unregistered'}" disconnected; retry after it is ready.`);
+    failPending(socket, `The Editor page for scope "${scope ?? 'unregistered'}" disconnected; retry after it is ready.`, {
+      ...(Number.isInteger(code) ? { code } : {}),
+      ...(reason ? { reason: reason.replace(/[\u0000-\u001f\u007f]/gu, '').slice(0, 256) } : {}),
+    });
   };
 
   return { app, open, message, close, isSocket, dispatch };

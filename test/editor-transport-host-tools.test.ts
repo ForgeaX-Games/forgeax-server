@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   EDITOR_TRANSPORT_PUBLIC_DISCOVERY,
+  EDITOR_TRANSPORT_VERSION,
   editorTransportHostTools,
 } from '../src/game/editor-transport-host-tools';
 import { studioHostTools } from '../src/game/host-tools';
@@ -12,6 +13,7 @@ export const EXPECTED_STUDIO_TOOLS = [
       'deliver_summary',
       'list_games',
       'npc_wire',
+      'search_game_assets',
       'editor_transport',
       'editor_gateway_eval',
       'editor_ui_browse',
@@ -44,6 +46,7 @@ describe('editorTransportHostTools', () => {
       'run.dispatch',
       'run.get',
       'run.wait',
+      'run.list',
       'save',
       'reopen',
     ]);
@@ -257,4 +260,54 @@ describe('editorTransportHostTools', () => {
     });
     expect(calls).toBe(0);
   });
+});
+
+test('trusted caller context stays out of the page request and reaches the carrier separately', async () => {
+  const context = { ...ctx, sid: 'original-session' };
+  let owner: unknown, wire: any;
+  const tool = editorTransportHostTools({ dispatch: async (request, trusted) => { wire = request; owner = trusted; return {}; } })[0]!;
+  await tool.run!({ method: 'run.dispatch', params: { operationId: 'editor.play' } }, context);
+  expect(owner).toBe(context);
+  expect(wire).not.toHaveProperty('context');
+});
+
+
+test('failed dispatch exposes the outer queryable run after host error flattening', async () => {
+  const requests: Record<string, unknown>[] = [];
+  const failure = { code: 'produce-failed', hint: 'repair producer', runId: 'operation-run-2', cause: { code: 'pack-source-external-closure-mismatch', detail: { unusedDeclaredGuids: ['unused'] } } };
+  const tool = editorTransportHostTools({
+    idFactory: (() => { let n = 0; return () => `receipt-${++n}`; })(),
+    dispatch: async request => {
+      requests.push(request);
+      if (request.method === 'run.dispatch') return { jsonrpc: '2.0', version: 'editor-transport/v1', id: request.id, correlationId: request.correlationId, runId: `transport-${request.id}`, error: failure };
+      return { result: { runId: (request.params as Record<string, unknown>).runId, status: 'failed', error: failure } };
+    },
+  })[0]!;
+  const ctx = { agentId: 'forge', game: 'spin-cube', sid: 'session-a', projectRoot: '/tmp' };
+  const result = await tool.run!({ method: 'run.dispatch', permission: 'execute', params: { operationId: 'editor.asset-source.cold-cook', input: { requestId: 'cook-a' } } }, ctx) as { error: Record<string, unknown> };
+  // The existing host-tool bridge serializes only .error on failure.
+  const visible = JSON.parse(JSON.stringify(result.error));
+  expect(visible).toMatchObject({ ...failure, runId: 'transport-receipt-1', sourceRunId: 'operation-run-2', transport: { requestId: 'receipt-1', correlationId: 'receipt-2', scope: 'game:spin-cube' } });
+  expect(await tool.run!({ method: 'run.get', permission: 'read', params: { runId: visible.runId } }, ctx)).toMatchObject({ result: { runId: visible.runId, status: 'failed' } });
+  expect(requests[1]).toMatchObject({ scope: 'game:spin-cube', params: { sessionId: 'session-a', permission: 'read' } });
+});
+
+test('run.list recovery is callable through the same scoped dispatch', async () => {
+  const requests: Record<string, unknown>[] = [];
+  const tool = editorTransportHostTools({ dispatch: async request => { requests.push(request); return { result: { items: [] } }; } })[0]!;
+  expect(await tool.run!({ method: 'run.list', permission: 'read', params: { limit: 2 } }, { agentId: 'forge', game: 'spin-cube', projectRoot: '/tmp' })).toMatchObject({ result: { items: [] } });
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ method: 'run.list', scope: 'game:spin-cube', params: { limit: 2, permission: 'read' } });
+});
+
+test('an inner run without a transport journal receipt is not advertised as queryable', async () => {
+  const tool = editorTransportHostTools({ dispatch: async request => ({
+    version: EDITOR_TRANSPORT_VERSION, id: request.id, correlationId: request.correlationId,
+    error: { code: 'produce-failed', hint: 'repair source', runId: 'operation-run-local' },
+  }) })[0]!;
+  const result = await tool.run!({ method: 'run.dispatch', permission: 'execute', params: {
+    operationId: 'editor.asset-source.cold-cook', input: {},
+  } }, { agentId: 'forge', game: 'spin-cube', projectRoot: '/tmp' }) as { error: Record<string, unknown> };
+  expect(result.error).toMatchObject({ sourceRunId: 'operation-run-local', transport: { scope: 'game:spin-cube' } });
+  expect(result.error).not.toHaveProperty('runId');
 });

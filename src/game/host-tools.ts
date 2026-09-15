@@ -1,3 +1,5 @@
+import { assetRecoveryHostTools, type AssetRecoveryHostDeps } from './asset-recovery-host-tools';
+import { GameVerificationEvidence } from './game-verification-evidence';
 import { GAME_VERIFICATION_INPUT_SCHEMA, StudioDeliveryClaimSchema, projectGameVerification } from './delivery-verification';
 /** gameHostTools — the studio shell's game-domain host tools, injected into the
  *  orchestration layer via the `HostToolSpec` seam (Stage A §3 / P1-7).
@@ -21,6 +23,7 @@ import {
 } from '@forgeax/types/npc-protocol';
 import { NPC_TOOL_CONTRACTS } from '@forgeax/types/npc-tools';
 import { editorTransportHostTools, type EditorTransportHostToolsDeps } from './editor-transport-host-tools';
+import { assetLibraryHostTools } from './asset-library-host-tools';
 // 双轨期:上游已切换到 typed editor_transport(禁 JS relay);行走协议 editor_ui_browse
 // 的编辑器腿仍走 relay-eval —— 本轮并存,迁移到 transport 记为显性债(见 docs/ai-native)。
 import { editorGatewayHostTools } from './editor-gateway-host-tools';
@@ -78,7 +81,7 @@ export const DELIVER_SUMMARY_INPUT_SCHEMA = {
 } as const;
 
 const DELIVER_SUMMARY_DESCRIPTION =
-  'Optionally record semantic completion metadata for a meaningful task. Provide outcome as 1-5 concise, user-meaningful completion or confirmation points in the user\'s language (not a file-count statement). Include tests actually run with pass/fail and a short detail, and include up to 5 useful next recommendations or user decisions when applicable. Do not include changed files, line counts, duration, agents, cost, or artifact ids; the host derives file changes independently. For game work, report scoped verification with status passed, failed, or unverified and current evidence references. A passed gameplay report requires observed input, state-change, and core-result checks. Missing verification is displayed as UNVERIFIED. These are agent-reported observations, not host-certified acceptance.';
+  'Optionally record semantic completion metadata for a meaningful task. Provide outcome as 1-5 concise, user-meaningful completion or confirmation points in the user\'s language (not a file-count statement). Include tests actually run with pass/fail and a short detail, and include up to 5 useful next recommendations or user decisions when applicable. Do not include changed files, line counts, duration, agents, cost, or artifact ids; the host derives file changes independently. For game work, report scoped verification with status passed, failed, or unverified and current evidence references. A passed gameplay report requires input followed by an observed state change and visual evidence. Reference exact verificationEvidence.id values from current editor_transport results. Edits, new Play attempts and gameplay failures invalidate prior evidence. Core-result and restart are request-specific observations, not mandatory game mechanics. Assess completeness against the user request; host receipts do not certify that assessment. Use changed-behavior for explicitly scoped partial validation. Missing verification is displayed as UNVERIFIED. These are agent-reported observations, not host-certified acceptance.';
 
 function formatDeliverSummaryIssues(error: { issues: Array<{ path: PropertyKey[]; message: string }> }): string {
   return error.issues
@@ -89,7 +92,7 @@ function formatDeliverSummaryIssues(error: { issues: Array<{ path: PropertyKey[]
     .join('; ');
 }
 
-async function runDeliverSummary(args: unknown, ctx: HostToolRunCtx): Promise<unknown> {
+async function runDeliverSummary(args: unknown, ctx: HostToolRunCtx, evidence: GameVerificationEvidence): Promise<unknown> {
   const parsed = StudioDeliveryClaimSchema.safeParse(args);
   if (!parsed.success) {
     return {
@@ -103,6 +106,8 @@ async function runDeliverSummary(args: unknown, ctx: HostToolRunCtx): Promise<un
       error: 'deliver_summary enrichment unavailable: orchestrator delivery seam is not configured',
     };
   }
+  const evidenceError = ctx.game && ctx.game !== 'default' ? evidence.validate(parsed.data.verification, ctx) : undefined;
+  if (evidenceError) return { ok: false, error: `Gameplay verification not accepted: ${evidenceError}` };
   const projected = DeliverSummaryClaimSchema.safeParse(projectGameVerification(parsed.data, ctx.game));
   if (!projected.success) return {
     ok: false,
@@ -477,13 +482,14 @@ function wireNpc(args: Record<string, unknown>, ctx: HostToolRunCtx): unknown {
 
 export function gameHostTools(
   capabilities: StudioHostCapabilities = DEFAULT_STUDIO_HOST_CAPABILITIES,
+  evidence = new GameVerificationEvidence(),
 ): HostToolSpec[] {
   return [
     {
       name: 'deliver_summary',
       description: DELIVER_SUMMARY_DESCRIPTION,
       inputSchema: DELIVER_SUMMARY_INPUT_SCHEMA,
-      run: runDeliverSummary,
+      run: (args, ctx) => runDeliverSummary(args, ctx, evidence),
     },
     {
       name: 'list_games',
@@ -509,13 +515,18 @@ export function gameHostTools(
 export function studioHostTools(
   editorTransport?: EditorTransportHostToolsDeps,
   capabilities: StudioHostCapabilities = DEFAULT_STUDIO_HOST_CAPABILITIES,
+  suppliedEvidence = new GameVerificationEvidence(),
+  assetRecovery?: AssetRecoveryHostDeps,
 ): HostToolSpec[] {
+  const evidence = suppliedEvidence;
   const relay = capabilities.editorRelay.available && capabilities.editorRelay.baseUrl
     ? { bridgeUrl: capabilities.editorRelay.baseUrl }
     : undefined;
   return [
-    ...gameHostTools(capabilities),
-    ...editorTransportHostTools(editorTransport),
+    ...gameHostTools(capabilities, evidence),
+    ...assetLibraryHostTools(editorTransport),
+    ...assetRecoveryHostTools(assetRecovery),
+    ...editorTransportHostTools(editorTransport).map(tool => evidence.wrap(tool)),
     ...(relay ? editorGatewayHostTools(relay) : []),
     ...(relay ? editorUiBrowseHostTools(relay) : []),
   ];

@@ -1,4 +1,4 @@
-import type { HostToolSpec } from '@forgeax/orchestrator/seams';
+import type { HostToolRunCtx, HostToolSpec } from '@forgeax/orchestrator/seams';
 import { MAX_EDITOR_TRANSPORT_TIMEOUT_MS } from './editor-transport-carrier';
 
 export const EDITOR_TRANSPORT_VERSION = 'editor-transport/v1' as const;
@@ -11,6 +11,7 @@ const publicMethods: readonly string[] = Object.freeze([
   'run.dispatch',
   'run.get',
   'run.wait',
+  'run.list',
   'save',
   'reopen',
 ]);
@@ -31,7 +32,7 @@ export const EDITOR_TRANSPORT_PUBLIC_DISCOVERY = Object.freeze({
 const gameplayOperationIds = new Set(['editor.gameplay.input', 'editor.gameplay.describe', 'editor.gameplay.projection']);
 
 type TransportRequest = Record<string, unknown>;
-type DispatchTransport = (request: TransportRequest) => Promise<unknown>;
+type DispatchTransport = (request: TransportRequest, context?: HostToolRunCtx) => Promise<unknown>;
 
 export interface EditorTransportHostToolsDeps {
   readonly dispatch?: DispatchTransport;
@@ -77,6 +78,23 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
       additionalProperties: false,
     },
     run: async (args, ctx) => {
+      const dispatch = async (request: TransportRequest) => {
+        const result = await deps.dispatch!(request, ctx);
+        const envelope = record(result);
+        const error = record(envelope?.error);
+        if (error === null || envelope?.version !== EDITOR_TRANSPORT_VERSION
+          || envelope.id !== request.id || envelope.correlationId !== request.correlationId) return result;
+        // The host-tool bridge serializes only .error. Preserve the owning
+        // transport receipt there, instead of exposing a Gateway-local run ID.
+        const runId = typeof envelope.runId === 'string' ? envelope.runId : undefined;
+        const { runId: sourceRunId, ...failure } = error;
+        return { ...envelope, error: {
+          ...failure,
+          ...(typeof sourceRunId === 'string' && sourceRunId !== runId ? { sourceRunId } : {}),
+          ...(runId === undefined ? {} : { runId }),
+          transport: { requestId: request.id, correlationId: request.correlationId, scope: request.scope },
+        } };
+      };
       const method = typeof args.method === 'string' ? args.method.trim() : '';
       if (!method) return {
         ok: false,
@@ -181,7 +199,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
           ? 'editor.stop'
           : requestedOperationId;
       if (method === 'gameplay' || (method === 'run.dispatch' && gameplayOperationIds.has(normalizedOperationId))) {
-        return deps.dispatch({
+        return dispatch({
           jsonrpc: '2.0',
           version: EDITOR_TRANSPORT_VERSION,
           id: id('editor-request', deps.idFactory),
@@ -195,7 +213,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
       if (method === 'save' || method === 'reopen') {
         const input = record(params.input) ?? params;
         const requestId = typeof input.requestId === 'string' && input.requestId.trim() ? input.requestId : id(`${method}-request`, deps.idFactory);
-        return deps.dispatch({
+        return dispatch({
           jsonrpc: '2.0',
           version: EDITOR_TRANSPORT_VERSION,
           id: id('editor-request', deps.idFactory),
@@ -207,7 +225,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
         });
       }
       if (method === 'query') {
-        return deps.dispatch({
+        return dispatch({
           jsonrpc: '2.0',
           version: EDITOR_TRANSPORT_VERSION,
           id: id('editor-request', deps.idFactory),
@@ -218,7 +236,7 @@ export function editorTransportHostTools(deps: EditorTransportHostToolsDeps = {}
           params: record(params.input) ?? params,
         });
       }
-      return deps.dispatch({
+      return dispatch({
         jsonrpc: '2.0',
         version: EDITOR_TRANSPORT_VERSION,
         id: id('editor-request', deps.idFactory),

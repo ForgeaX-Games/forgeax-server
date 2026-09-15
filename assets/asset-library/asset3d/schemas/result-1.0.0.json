@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forgeax.asset3d-search-result/1.0.0",
+  "title": "ForgeaX Asset3D Search Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "total",
+    "succeeded",
+    "failed",
+    "results"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "forgeax.asset3d-search-result/1.0.0"
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "succeeded": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16
+    },
+    "failed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16
+    },
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/success"
+          },
+          {
+            "$ref": "#/$defs/error"
+          }
+        ]
+      }
+    },
+    "receipt": {
+      "$ref": "receipt-1.0.0.json"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "succeeded": {
+            "minimum": 1
+          }
+        }
+      },
+      "then": {
+        "required": ["receipt"]
+      }
+    }
+  ],
+  "$defs": {
+    "queryIndex": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 15
+    },
+    "safeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "not": {
+        "enum": [".", ".."]
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\u0000]+$"
+    },
+    "manifestEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "role", "bytes", "sha256"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "role": {
+          "enum": [
+            "primary-model",
+            "animation",
+            "auxiliary-model",
+            "texture",
+            "metadata"
+          ]
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 134217728
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "success": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "queryIndex",
+        "query",
+        "provider",
+        "providerAssetId",
+        "assetName",
+        "deliveredFormat",
+        "sha256",
+        "bytes",
+        "primaryModel",
+        "manifest",
+        "originSetDigest"
+      ],
+      "properties": {
+        "status": {
+          "const": "ok"
+        },
+        "queryIndex": {
+          "$ref": "#/$defs/queryIndex"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "provider": {
+          "const": "ea-3d"
+        },
+        "providerAssetId": {
+          "$ref": "#/$defs/safeId"
+        },
+        "assetName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "deliveredFormat": {
+          "const": "glb"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 268435456
+        },
+        "primaryModel": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "manifest": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1024,
+          "items": {
+            "$ref": "#/$defs/manifestEntry"
+          }
+        },
+        "originSetDigest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "downloaded_to": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\u0000]+$"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "queryIndex",
+        "query",
+        "code",
+        "retryable",
+        "message"
+      ],
+      "properties": {
+        "status": {
+          "const": "error"
+        },
+        "queryIndex": {
+          "$ref": "#/$defs/queryIndex"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "code": {
+          "enum": [
+            "asset_not_found",
+            "asset_identity_missing",
+            "search_timeout",
+            "search_upstream_error",
+            "download_timeout",
+            "download_origin_rejected",
+            "download_too_large",
+            "archive_rejected",
+            "conversion_failed",
+            "digest_failed",
+            "batch_timeout",
+            "internal_error"
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        }
+      }
+    }
+  }
+}

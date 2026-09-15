@@ -23,8 +23,9 @@
     "test:manifest-html": "bun test test/extension-static-root.test.ts",
     "migrate:video-assets": "bun scripts/migrate-video-assets.ts",
     "e2e:inner-ring": "bun test/inner-ring-e2e.ts",
-    "e2e:full": "bun test/full-flow-e2e.ts"
-    ,"service:release:verify": "bun scripts/service-release-verify.ts"
+    "e2e:full": "bun test/full-flow-e2e.ts",
+    "service:release:verify": "bun scripts/service-release-verify.ts",
+    "build:asset-library": "bun scripts/build-asset-library.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1091.0",

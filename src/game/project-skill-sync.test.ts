@@ -92,3 +92,13 @@ test('product guidance shares native mounts but keeps independent ownership and 
   expect(await readFile(join(project, 'skills/engine-app/SKILL.md'), 'utf8')).toBe('# v1');
   expect(await readFile(join(project, 'skills', id, 'SKILL.md'), 'utf8')).toBe('# My edited authoring instructions');
 });
+
+test('Studio installs the asset skill by default without the standalone connector', async () => {
+  const { source, project } = await fixture();
+  await syncEngineProjectSkills(project, source, { engineCommit: 'v1' });
+  const installed = await readFile(join(project, '.agents/skills/forgeax-studio-asset-library/SKILL.md'), 'utf8');
+  expect(installed).toContain('search_game_assets');
+  expect(installed).toContain('editor.importAsset');
+  expect(installed).toContain('defaults\nto EA');
+  expect(installed).not.toContain('@forgeax/game');
+});

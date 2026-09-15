@@ -511,3 +511,24 @@ describe('Studio editor typed transport carrier', () => {
     await expect(recovered).resolves.toMatchObject({ result: { recovered: true } });
   });
 });
+
+test('runtime feedback uses the selected socket and original host caller after Play has returned', async () => {
+  const received: any[] = [];
+  const carrier = createEditorTransportCarrier({ onRuntimeFailure: value => received.push(value) });
+  const client = socket(); carrier.open(client as never);
+  carrier.message(client as never, JSON.stringify({ type: 'editor-transport/ready', version: 'editor-transport/v1', role: 'interactive', scope: request.scope }));
+  const play = { ...request, method: 'run.dispatch', params: { operationId: 'editor.play' } };
+  const pending = carrier.dispatch(play, { context: { sid: 'original', agentId: 'forge', game: 'spin-cube', projectRoot: '/project' } });
+  await Bun.sleep(0);
+  carrier.message(client as never, JSON.stringify({ type: 'editor-transport/response', response: {
+    jsonrpc: '2.0', version: 'editor-transport/v1', id: play.id, correlationId: play.correlationId, result: { status: 'succeeded' },
+  } }));
+  await pending;
+  const failure = { type: 'editor-transport/runtime-event', version: 'editor-transport/v1', correlationId: play.correlationId, event: {
+    type: 'VAG_CARRIER_FAILURE', payload: { version: 1, scope: { projectId: '/project', gameId: 'spin-cube' }, runtimeId: 'r', runtimeGeneration: 1, pageNonce: 'p', failure: { code: 'app-system-update-failed', hint: 'missing entity', at: new Date().toISOString() } },
+  } };
+  carrier.message(client as never, JSON.stringify(failure));
+  expect(received).toHaveLength(1);
+  expect(received[0].context.sid).toBe('original');
+  carrier.close(client as never);
+});

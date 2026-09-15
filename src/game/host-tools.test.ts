@@ -83,3 +83,36 @@ describe('deliver_summary host tool', () => {
     });
   });
 });
+
+it('normal Studio composition shares live evidence with delivery and rejects edits before enrichment', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const projectRoot = mkdtempSync(join(tmpdir(), 'studio-delivery-'));
+  const root = join(projectRoot, '.forgeax/games/kart');
+  mkdirSync(join(root, 'src'), { recursive: true });
+  writeFileSync(join(root, 'forge.json'), '{}'); writeFileSync(join(root, 'src/main.ts'), 'candidate A');
+  let enrichments = 0;
+  const ctx = { agentId: 'forge', sid: 'session', game: 'kart', projectRoot, delivery: { enrich: async (claim: any) => {
+    enrichments++; return { ...claim, files: [], meta: { durationMs: 0, agents: ['forge'] } };
+  } } };
+  const tools = studioHostTools({ dispatch: async req => ({ jsonrpc: '2.0', result: req.method === 'run.dispatch' ? { status: 'succeeded' } : {
+    ok: true, operation: (req.params as any).operation, data: req.params,
+    identity: { runtimeId: 'runtime', scope: { gameId: 'kart', projectId: projectRoot }, rendererGeneration: 1, canvasIdentity: 'canvas' },
+  } }) });
+  const run = (name: string, args: any) => tools.find(t => t.name === name)!.run!(args, ctx) as Promise<any>;
+  try {
+    await run('editor_transport', { method: 'run.dispatch', params: { operationId: 'editor.play' } });
+    const checks = [];
+    for (const [kind, operation] of [['input', 'input'], ['state-change', 'query'], ['core-result', 'query'], ['input', 'input'], ['restart', 'query'], ['visual', 'capture']]) {
+      const result = await run('editor_transport', { method: 'gameplay', params: { operation, observation: kind } });
+      checks.push({ kind, observation: kind, evidence: result.verificationEvidence.id });
+    }
+    const args = { outcome: 'Race completed and restarted', verification: { scope: 'gameplay', status: 'passed', detail: 'Normal controls', checks } };
+    expect(await run('deliver_summary', args)).toMatchObject({ ok: true });
+    expect(enrichments).toBe(1);
+    writeFileSync(join(root, 'src/main.ts'), 'candidate B');
+    expect(await run('deliver_summary', args)).toMatchObject({ ok: false, error: expect.stringContaining('stale') });
+    expect(enrichments).toBe(1);
+  } finally { rmSync(projectRoot, { recursive: true, force: true }); }
+});
